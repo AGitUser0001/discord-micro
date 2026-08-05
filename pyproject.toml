@@ -1,0 +1,30 @@
+[project]
+name = "Micro"
+version = "0.1.0"
+description = "Microservice-based Discord bot framework."
+readme = "README.md"
+authors = [
+    { name = "AGitUser0001", email = "123198477+AGitUser0001@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "uvloop>=0.22.1; sys_platform == 'darwin' or sys_platform == 'linux'",
+    "winloop>=0.6.3; sys_platform == 'win32'",
+]
+
+[project.scripts]
+micro = "micro:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+indent-width = 2
+
+[tool.ruff.format]
+quote-style = "preserve"
+
+[tool.ruff.lint]
+extend-select = ["I", "RUF022"]
+ignore = ["B010", "BLE001"]
