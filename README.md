@@ -109,3 +109,31 @@ per-connection sequence, and Hikari's raw payload. Connection callbacks report
 connect, disconnect, ready, resume, invalidation, and clean-close transitions.
 The gateway starts and closes with ASGI lifespan, so it can run directly under
 Uvicorn.
+
+## Local graph store
+
+The local development database is PostgreSQL with Apache AGE. Start it with:
+
+```console
+docker compose -f examples/apache_age/compose.yaml up --build -d age
+```
+
+The development defaults are:
+
+- host: `127.0.0.1`
+- port: `5455`
+- database: `micro`
+- user: `micro`
+- password: `micro`
+- graph: `micro`
+
+Set `MICRO_AGE_PORT` or `MICRO_AGE_PASSWORD` before starting Compose to override
+the exposed port or password. Existing database volumes retain the credentials
+with which they were initialized.
+
+AGE clients must load the extension and select its catalog on every connection:
+
+```sql
+LOAD 'age';
+SET search_path = ag_catalog, "$user", public;
+```
