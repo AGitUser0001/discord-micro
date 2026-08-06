@@ -30,6 +30,9 @@ class FakeGatewayBot:
   async def close(self) -> None:
     self.close_calls += 1
 
+  async def join(self) -> None:
+    pass
+
   async def emit(self, event_type: type[Any], **values: Any) -> None:
     await self.listeners[event_type](SimpleNamespace(**values))
 
@@ -75,6 +78,16 @@ def test_gateway_lifespan_starts_assigned_shards_and_closes() -> None:
       "shard_count": 4,
     }
   ]
+  assert bot.close_calls == 1
+
+
+def test_gateway_run_owns_the_event_loop_and_lifecycle() -> None:
+  bot = FakeGatewayBot()
+  gateway = make_gateway(bot)
+
+  gateway.run()
+
+  assert len(bot.start_calls) == 1
   assert bot.close_calls == 1
 
 

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -8,6 +9,8 @@ import hikari
 from starlette.types import Receive, Scope, Send
 
 from micro.service import Service
+
+from ._runner import event_loop_factory
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,8 @@ class _GatewayBot(Protocol):
   ) -> None: ...
 
   async def close(self) -> None: ...
+
+  async def join(self) -> None: ...
 
 
 async def _ignore_connection_event(event: ConnectionEvent) -> None:
@@ -108,6 +113,14 @@ class Gateway:
   def dynamic_schema(self, *, root_path: str = "") -> dict[str, Any]:
     return self._service.dynamic_schema(root_path=root_path)
 
+  def run(self) -> None:
+    """Run the Gateway until it closes, using an accelerated loop if available."""
+    try:
+      with asyncio.Runner(loop_factory=event_loop_factory) as runner:
+        runner.run(self._run_until_closed())
+    except KeyboardInterrupt:
+      pass
+
   async def start(self) -> None:
     if self._started:
       raise RuntimeError("Gateway is already running.")
@@ -134,6 +147,13 @@ class Gateway:
           ConnectionEvent(ConnectionEventKind.CLOSED, shard_id, connection_id)
         )
       self._started = False
+
+  async def _run_until_closed(self) -> None:
+    try:
+      await self.start()
+      await self._bot.join()
+    finally:
+      await self.close()
 
   async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
     if scope["type"] != "lifespan":

@@ -47,6 +47,16 @@ client = [
 discord = [
     "pydantic>=2.12.5",
 ]
+uvloop = [
+    "uvloop>=0.22.1; sys_platform == 'darwin' or sys_platform == 'linux'",
+]
+winloop = [
+    "winloop>=0.6.3; sys_platform == 'win32'",
+]
+accel = [
+    "uvloop>=0.22.1; sys_platform == 'darwin' or sys_platform == 'linux'",
+    "winloop>=0.6.3; sys_platform == 'win32'",
+]
 all = [
     "hikari>=2.5.0",
     "httpx2>=2.9.1",
