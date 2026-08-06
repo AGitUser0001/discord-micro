@@ -57,3 +57,8 @@ app.mount("/micro", service)
 provides `/schema`, `/health/live`, `/health/ready`, and `/health/drained`.
 The schema endpoint accounts for its ASGI mount path without changing the
 implementation hash.
+
+For request/response operations, declare a `RequestSchema[Input, Output]` and
+register its handler with `@service.handle(...)`. Unlike an event listener,
+the handler's returned JSON is checked against the declared output schema and
+returned with a `200 OK` response.

@@ -14,8 +14,10 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from ._event import EventSchema, JsonValue
+from ._request import RequestSchema
 
 type EventHandler[T] = Callable[[T], Awaitable[None]]
+type RequestHandler[InputT, OutputT] = Callable[[InputT], Awaitable[OutputT]]
 
 _SERVICE_NAME_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 _STANDARD_PATHS = frozenset(
@@ -24,6 +26,10 @@ _STANDARD_PATHS = frozenset(
 
 
 class DuplicateEventHandlerError(ValueError):
+  pass
+
+
+class DuplicateRequestHandlerError(ValueError):
   pass
 
 
@@ -42,6 +48,9 @@ class Service:
     self._accepting = True
     self._sealed = False
     self._events: dict[str, tuple[EventSchema[Any], EventHandler[Any]]] = {}
+    self._requests: dict[
+      str, tuple[RequestSchema[Any, Any], RequestHandler[Any, Any]]
+    ] = {}
     self._paths: set[str] = set(_STANDARD_PATHS)
     self._app = Starlette(
       routes=[
@@ -82,6 +91,38 @@ class Service:
 
     return register
 
+  def handle[InputT, OutputT](
+    self,
+    request: RequestSchema[InputT, OutputT],
+  ) -> Callable[[RequestHandler[InputT, OutputT]], RequestHandler[InputT, OutputT]]:
+    def register(
+      handler: RequestHandler[InputT, OutputT],
+    ) -> RequestHandler[InputT, OutputT]:
+      if self._sealed:
+        raise RuntimeError("Request handlers cannot be added after the service starts.")
+      if request.id in self._requests:
+        raise DuplicateRequestHandlerError(
+          f"Service {self.name!r} already handles request {request.id!r}."
+        )
+      if request.endpoint in self._paths:
+        raise DuplicateEndpointError(
+          f"Service {self.name!r} already has an endpoint at {request.endpoint!r}."
+        )
+      if not inspect.iscoroutinefunction(handler):
+        raise TypeError("Request handlers must be async functions.")
+
+      self._requests[request.id] = (request, handler)
+      self._paths.add(request.endpoint)
+      self._app.add_route(
+        request.endpoint,
+        self._request_endpoint(request, handler),
+        methods=["POST"],
+        name=f"request:{request.id}",
+      )
+      return handler
+
+    return register
+
   def drain(self) -> None:
     self._accepting = False
 
@@ -103,6 +144,14 @@ class Service:
       events.append(document)
     events.sort(key=lambda value: str(value["id"]) if isinstance(value, dict) else "")
 
+    requests: list[JsonValue] = []
+    for request, handler in self._requests.values():
+      document = request.document()
+      document["path"] = f"{root_path}{request.endpoint}"
+      document["handler"] = f"{handler.__module__}:{handler.__qualname__}"
+      requests.append(document)
+    requests.sort(key=lambda value: str(value["id"]) if isinstance(value, dict) else "")
+
     return {
       "format": 1,
       "service": self.name,
@@ -116,6 +165,7 @@ class Service:
         },
       },
       "events": events,
+      "requests": requests,
     }
 
   async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -161,6 +211,53 @@ class Service:
         )
       await handler(decoded)
       return Response(status_code=204)
+
+    return endpoint
+
+  def _request_endpoint[InputT, OutputT](
+    self,
+    request_schema: RequestSchema[InputT, OutputT],
+    handler: RequestHandler[InputT, OutputT],
+  ) -> Callable[[Request], Awaitable[Response]]:
+    async def endpoint(request: Request) -> Response:
+      if not self._accepting:
+        return JSONResponse({"detail": "Service is draining."}, status_code=503)
+      content_type = request.headers.get("content-type", "").partition(";")[0].strip()
+      if content_type != "application/json":
+        return JSONResponse(
+          {"detail": "Requests require application/json."}, status_code=415
+        )
+      try:
+        value: JsonValue = await request.json()
+      except JSONDecodeError, UnicodeDecodeError:
+        return JSONResponse(
+          {"detail": "Request body is not valid JSON."}, status_code=400
+        )
+      try:
+        decoded = request_schema.decode(value)
+      except ValidationError as exc:
+        return JSONResponse(
+          {
+            "detail": "Request input does not match its schema.",
+            "path": list(exc.absolute_path),
+            "message": exc.message,
+          },
+          status_code=422,
+        )
+      except (TypeError, ValueError) as exc:
+        return JSONResponse(
+          {"detail": "Request input could not be decoded.", "message": str(exc)},
+          status_code=422,
+        )
+
+      result = await handler(decoded)
+      try:
+        encoded = request_schema.encode(result)
+      except ValidationError, TypeError, ValueError:
+        return JSONResponse(
+          {"detail": "Handler output does not match its schema."}, status_code=500
+        )
+      return JSONResponse(encoded)
 
     return endpoint
 

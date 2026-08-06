@@ -8,9 +8,11 @@ from starlette.testclient import TestClient
 from micro.service import (
   DuplicateEndpointError,
   DuplicateEventHandlerError,
+  DuplicateRequestHandlerError,
   EventSchema,
   EventScope,
   JsonValue,
+  RequestSchema,
   Service,
 )
 
@@ -24,6 +26,22 @@ MESSAGE = EventSchema[dict[str, Any]](
       "content": {"type": "string"},
     },
     "required": ["guild_id", "content"],
+    "additionalProperties": False,
+  },
+)
+
+GREETING = RequestSchema[dict[str, str], dict[str, str]](
+  id="example.greeting",
+  input={
+    "type": "object",
+    "properties": {"name": {"type": "string"}},
+    "required": ["name"],
+    "additionalProperties": False,
+  },
+  output={
+    "type": "object",
+    "properties": {"message": {"type": "string"}},
+    "required": ["message"],
     "additionalProperties": False,
   },
 )
@@ -187,3 +205,55 @@ def test_handlers_cannot_be_added_after_start() -> None:
     @service.listen(later)
     async def handler(event: dict[str, Any]) -> None:
       pass
+
+
+def test_request_handler_returns_validated_json() -> None:
+  service = Service("greetings")
+
+  @service.handle(GREETING)
+  async def greet(request: dict[str, str]) -> dict[str, str]:
+    return {"message": f"Hello, {request['name']}!"}
+
+  with TestClient(service) as client:
+    response = client.post("/requests/example.greeting", json={"name": "Lucas"})
+
+  assert response.status_code == 200
+  assert response.json() == {"message": "Hello, Lucas!"}
+
+
+def test_request_input_and_output_are_validated() -> None:
+  invalid_input_service = Service("invalid-input")
+
+  @invalid_input_service.handle(GREETING)
+  async def input_handler(request: dict[str, str]) -> dict[str, str]:
+    raise AssertionError("Invalid input must not reach the handler.")
+
+  with TestClient(invalid_input_service) as client:
+    invalid_input = client.post("/requests/example.greeting", json={})
+
+  assert invalid_input.status_code == 422
+
+  invalid_output_service = Service("invalid-output")
+
+  @invalid_output_service.handle(GREETING)
+  async def output_handler(request: dict[str, str]) -> dict[str, str]:
+    return {"wrong": "shape"}
+
+  with TestClient(invalid_output_service) as client:
+    invalid_output = client.post("/requests/example.greeting", json={"name": "Lucas"})
+
+  assert invalid_output.status_code == 500
+
+
+def test_duplicate_request_fails_during_declaration() -> None:
+  service = Service("greetings")
+
+  @service.handle(GREETING)
+  async def first(request: dict[str, str]) -> dict[str, str]:
+    return {"message": request["name"]}
+
+  with pytest.raises(DuplicateRequestHandlerError):
+
+    @service.handle(GREETING)
+    async def second(request: dict[str, str]) -> dict[str, str]:
+      return {"message": request["name"]}
