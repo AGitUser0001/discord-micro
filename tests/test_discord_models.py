@@ -12,9 +12,7 @@ def test_gateway_payload_parses_hello() -> None:
   )
 
   assert isinstance(payload.root, gateway.GatewayReceivePayload)
-  assert isinstance(
-    payload.root.root, gateway.GatewayNonDispatchReceivePayload
-  )
+  assert isinstance(payload.root.root, gateway.GatewayNonDispatchReceivePayload)
   hello = payload.root.root.root
   assert isinstance(hello, gateway.GatewayHello)
   assert hello.d.heartbeat_interval == 41_250

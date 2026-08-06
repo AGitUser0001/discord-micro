@@ -1,7 +1,7 @@
 from micro.discord._schema import normalize
 
 
-def test_normalizer_prunes_inlines_and_adds_discriminator() -> None:
+def test_normalizer_prunes_and_adds_discriminator() -> None:
   schema = {
     "$ref": "#/definitions/Payload",
     "definitions": {
@@ -29,26 +29,27 @@ def test_normalizer_prunes_inlines_and_adds_discriminator() -> None:
 
   assert stats == {
     "removed": 1,
-    "inlined": 2,
     "tuples": 0,
     "discriminators": 1,
   }
   assert schema["definitions"] == {
     "Payload": {
       "oneOf": [
-        {
-          "type": "object",
-          "properties": {"op": {"const": 1}},
-          "required": ["op"],
-        },
-        {
-          "type": "object",
-          "properties": {"op": {"const": 2}},
-          "required": ["op"],
-        },
+        {"$ref": "#/definitions/FieldDataOne"},
+        {"$ref": "#/definitions/_DataPayloadTwo"},
       ],
       "discriminator": {"propertyName": "op"},
-    }
+    },
+    "FieldDataOne": {
+      "type": "object",
+      "properties": {"op": {"const": 1}},
+      "required": ["op"],
+    },
+    "_DataPayloadTwo": {
+      "type": "object",
+      "properties": {"op": {"const": 2}},
+      "required": ["op"],
+    },
   }
 
 

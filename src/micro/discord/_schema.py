@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -16,9 +15,7 @@ type Json = dict[str, Any] | list[Any] | str | int | float | bool | None
 def _definition_name(reference: str) -> str | None:
   for prefix in ("#/definitions/", "#/components/schemas/"):
     if reference.startswith(prefix):
-      return (
-        unquote(reference[len(prefix) :]).replace("~1", "/").replace("~0", "~")
-      )
+      return unquote(reference[len(prefix) :]).replace("~1", "/").replace("~0", "~")
   return None
 
 
@@ -66,46 +63,13 @@ def _prune_unreachable(schema: dict[str, Any]) -> int:
 
   removed = len(definitions) - len(reachable)
   retained = {
-    name: definition
-    for name, definition in definitions.items()
-    if name in reachable
+    name: definition for name, definition in definitions.items() if name in reachable
   }
   if "definitions" in schema:
     schema["definitions"] = retained
   else:
     schema["components"]["schemas"] = retained
   return removed
-
-
-def _inline_single_use_field_data(schema: dict[str, Any]) -> int:
-  definitions = _definitions(schema)
-  counts = Counter(_references(schema))
-  candidates = {
-    name
-    for name in definitions
-    if name.startswith(("FieldData", "_DataPayload"))
-    and counts[name] == 1
-  }
-
-  def inline(value: Json) -> Json:
-    if isinstance(value, dict):
-      reference = value.get("$ref")
-      name = _definition_name(reference) if isinstance(reference, str) else None
-      if name in candidates and len(value) == 1:
-        return inline(deepcopy(definitions[name]))
-      return {key: inline(child) for key, child in value.items()}
-    if isinstance(value, list):
-      return [inline(child) for child in value]
-    return value
-
-  normalized = inline(schema)
-  assert isinstance(normalized, dict)
-  schema.clear()
-  schema.update(normalized)
-  definitions = _definitions(schema)
-  for name in candidates:
-    definitions.pop(name, None)
-  return len(candidates)
 
 
 def _object_shape(
@@ -238,13 +202,13 @@ def _add_discriminators(schema: dict[str, Any]) -> int:
       if any(shape is None for shape in shapes):
         continue
       complete_shapes = [shape for shape in shapes if shape is not None]
-      common = set.intersection(
-        *(required for _, required in complete_shapes)
-      )
+      common = set.intersection(*(required for _, required in complete_shapes))
       for field in ("t", "op", *sorted(common - {"t", "op"})):
         if field not in common:
           continue
-        literals = [_literal(properties.get(field)) for properties, _ in complete_shapes]
+        literals = [
+          _literal(properties.get(field)) for properties, _ in complete_shapes
+        ]
         if None not in literals and len(set(literals)) == len(literals):
           value["discriminator"] = {"propertyName": field}
           added += 1
@@ -259,12 +223,10 @@ def _add_discriminators(schema: dict[str, Any]) -> int:
 
 def normalize(schema: dict[str, Any]) -> dict[str, int]:
   removed = _prune_unreachable(schema)
-  inlined = _inline_single_use_field_data(schema)
   tuples = _normalize_homogeneous_tuples(schema)
   discriminators = _add_discriminators(schema)
   return {
     "removed": removed,
-    "inlined": inlined,
     "tuples": tuples,
     "discriminators": discriminators,
   }
@@ -280,7 +242,6 @@ def main() -> None:
   print(
     "Normalized Gateway schema: "
     f"removed {stats['removed']} unreachable definitions, "
-    f"inlined {stats['inlined']} single-use FieldData definitions, "
     f"normalized {stats['tuples']} homogeneous tuple schemas, "
     f"added {stats['discriminators']} discriminators."
   )
