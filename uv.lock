@@ -245,6 +245,29 @@ wheels = [
 ]
 
 [[package]]
+name = "graphglot"
+version = "0.14.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "pyyaml" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1d/23/ed4eda7c6fe0281a54ed354e1906bc2740b5e31548793aa1b53c77ad108f/graphglot-0.14.1.tar.gz", hash = "sha256:351769bc6b257b0879cab1fd592059f340cd6e31998c4739ae41f4d5be8b70f3", size = 736763, upload-time = "2026-07-10T09:02:58.576Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/52/20/e57a7909b068d3e9185d2c6ac6b719b146888be1888a080f544dcf614773/graphglot-0.14.1-py3-none-any.whl", hash = "sha256:175af557ac0f0e63f90dda64909152d18f6e4afdf01540fdf6bb88b75fe244e2", size = 333041, upload-time = "2026-07-10T09:02:56.736Z" },
+]
+
+[[package]]
+name = "graphql-core"
+version = "3.2.11"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4d/90/f2aff026ab4aebd80eb71905106a0885f4cfde85dcf965543f45bed0d9ee/graphql_core-3.2.11.tar.gz", hash = "sha256:e7e156d10beb127cab5c89ff0da71416fc73d27c484a4757d3b2d35633774802", size = 528407, upload-time = "2026-06-05T13:45:22.915Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/15/b92b4e1d88d02c6eff9733c9eea21846ab435cc4d813d84ccc5d335955df/graphql_core-3.2.11-py3-none-any.whl", hash = "sha256:0b3e35ff41e9adba53021ab0cef475eb18f57c7f53f0f2ca55567fbf3c537ea0", size = 214879, upload-time = "2026-06-05T13:45:21.245Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -376,6 +399,18 @@ wheels = [
 ]
 
 [[package]]
+name = "markdown-it-py"
+version = "4.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mdurl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/06/ff/7841249c247aa650a76b9ee4bbaeae59370dc8bfd2f6c01f3630c35eb134/markdown_it_py-4.2.0.tar.gz", hash = "sha256:04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49", size = 82454, upload-time = "2026-05-07T12:08:28.36Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/81/4da04ced5a082363ecfa159c010d200ecbd959ae410c10c0264a38cac0f5/markdown_it_py-4.2.0-py3-none-any.whl", hash = "sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a", size = 91687, upload-time = "2026-05-07T12:08:27.182Z" },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -406,6 +441,15 @@ wheels = [
 ]
 
 [[package]]
+name = "mdurl"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
 name = "micro"
 version = "0.1.0"
 source = { editable = "." }
@@ -416,6 +460,8 @@ accel = [
     { name = "winloop", marker = "sys_platform == 'win32'" },
 ]
 all = [
+    { name = "graphglot" },
+    { name = "graphql-core" },
     { name = "hikari" },
     { name = "httpx2" },
     { name = "jsonschema" },
@@ -440,6 +486,11 @@ service = [
     { name = "jsonschema" },
     { name = "starlette" },
 ]
+store = [
+    { name = "graphglot" },
+    { name = "graphql-core" },
+    { name = "starlette" },
+]
 uvloop = [
     { name = "uvloop", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
@@ -450,6 +501,8 @@ winloop = [
 [package.dev-dependencies]
 dev = [
     { name = "datamodel-code-generator" },
+    { name = "graphglot" },
+    { name = "graphql-core" },
     { name = "hikari" },
     { name = "httpx2" },
     { name = "jsonschema" },
@@ -463,6 +516,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "graphglot", marker = "extra == 'all'", specifier = ">=0.14.1,<0.15" },
+    { name = "graphglot", marker = "extra == 'store'", specifier = ">=0.14.1,<0.15" },
+    { name = "graphql-core", marker = "extra == 'all'", specifier = ">=3.2.11,<3.3" },
+    { name = "graphql-core", marker = "extra == 'store'", specifier = ">=3.2.11,<3.3" },
     { name = "hikari", marker = "extra == 'all'", specifier = ">=2.5.0" },
     { name = "hikari", marker = "extra == 'gateway'", specifier = ">=2.5.0" },
     { name = "httpx2", marker = "extra == 'all'", specifier = ">=2.9.1" },
@@ -478,16 +535,19 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'client'", specifier = ">=1.4.1" },
     { name = "starlette", marker = "extra == 'gateway'", specifier = ">=1.4.1" },
     { name = "starlette", marker = "extra == 'service'", specifier = ">=1.4.1" },
+    { name = "starlette", marker = "extra == 'store'", specifier = ">=1.4.1" },
     { name = "uvloop", marker = "(sys_platform == 'darwin' and extra == 'accel') or (sys_platform == 'linux' and extra == 'accel')", specifier = ">=0.22.1" },
     { name = "uvloop", marker = "(sys_platform == 'darwin' and extra == 'uvloop') or (sys_platform == 'linux' and extra == 'uvloop')", specifier = ">=0.22.1" },
     { name = "winloop", marker = "sys_platform == 'win32' and extra == 'accel'", specifier = ">=0.6.3" },
     { name = "winloop", marker = "sys_platform == 'win32' and extra == 'winloop'", specifier = ">=0.6.3" },
 ]
-provides-extras = ["service", "client", "discord", "uvloop", "winloop", "accel", "all", "gateway"]
+provides-extras = ["service", "client", "discord", "store", "uvloop", "winloop", "accel", "all", "gateway"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "datamodel-code-generator", specifier = ">=0.72.2" },
+    { name = "graphglot", specifier = ">=0.14.1,<0.15" },
+    { name = "graphql-core", specifier = ">=3.2.11,<3.3" },
     { name = "hikari", specifier = ">=2.5.0" },
     { name = "httpx2", specifier = ">=2.9.1" },
     { name = "jsonschema", specifier = ">=4.26.0" },
@@ -800,6 +860,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/58/ca301544e1fa93ed4f80d724bf5b194f6e4b945841c5bfd555878eea9fcb/referencing-0.37.0-py3-none-any.whl", hash = "sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231", size = 26766, upload-time = "2025-10-13T15:30:47.625Z" },
+]
+
+[[package]]
+name = "rich"
+version = "15.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markdown-it-py" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz", hash = "sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36", size = 230680, upload-time = "2026-04-12T08:24:00.75Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl", hash = "sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb", size = 310654, upload-time = "2026-04-12T08:24:02.83Z" },
 ]
 
 [[package]]

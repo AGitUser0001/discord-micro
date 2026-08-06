@@ -47,6 +47,11 @@ client = [
 discord = [
     "pydantic>=2.12.5",
 ]
+store = [
+    "graphglot>=0.14.1,<0.15",
+    "graphql-core>=3.2.11,<3.3",
+    "starlette>=1.4.1",
+]
 uvloop = [
     "uvloop>=0.22.1; sys_platform == 'darwin' or sys_platform == 'linux'",
 ]
@@ -58,6 +63,8 @@ accel = [
     "winloop>=0.6.3; sys_platform == 'win32'",
 ]
 all = [
+    "graphglot>=0.14.1,<0.15",
+    "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
     "httpx2>=2.9.1",
     "jsonschema>=4.26.0",
@@ -74,6 +81,8 @@ gateway = [
 [dependency-groups]
 dev = [
     "datamodel-code-generator>=0.72.2",
+    "graphglot>=0.14.1,<0.15",
+    "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
     "httpx2>=2.9.1",
     "jsonschema>=4.26.0",
