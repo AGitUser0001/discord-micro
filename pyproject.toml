@@ -45,13 +45,20 @@ client = [
     "starlette>=1.4.1",
 ]
 all = [
+    "hikari>=2.5.0",
     "httpx2>=2.9.1",
+    "jsonschema>=4.26.0",
+    "starlette>=1.4.1",
+]
+gateway = [
+    "hikari>=2.5.0",
     "jsonschema>=4.26.0",
     "starlette>=1.4.1",
 ]
 
 [dependency-groups]
 dev = [
+    "hikari>=2.5.0",
     "httpx2>=2.9.1",
     "jsonschema>=4.26.0",
     "pyright>=1.1.411",

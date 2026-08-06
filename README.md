@@ -84,3 +84,28 @@ A service configured with `Service(..., state_receiver=client)` accepts complete
 directory snapshots at `POST /state`. Snapshots contain a non-negative
 `revision` and an `instances` list; older revisions are rejected rather than
 overwriting newer topology.
+
+## Gateway workers
+
+Install the Gateway component with `Micro[gateway]`. `Gateway` is an ASGI
+application backed by Hikari's shard/session implementation. Hikari's resource
+cache and automatic member chunking are disabled: Micro receives raw dispatch
+payloads, while its connection-scoped graph projection will control complete
+guild/member ingestion separately.
+
+```python
+gateway = Gateway(
+  token,
+  intents=hikari.Intents.GUILDS | hikari.Intents.GUILD_MESSAGES,
+  dispatch=forward_dispatch,
+  connection=update_connection_graph,
+  shard_ids=[0, 2],
+  shard_count=4,
+)
+```
+
+The dispatch callback receives the event name, shard ID, connection ID, a local
+per-connection sequence, and Hikari's raw payload. Connection callbacks report
+connect, disconnect, ready, resume, invalidation, and clean-close transitions.
+The gateway starts and closes with ASGI lifespan, so it can run directly under
+Uvicorn.
