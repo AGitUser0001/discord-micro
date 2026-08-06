@@ -215,10 +215,10 @@ def test_request_handler_returns_validated_json() -> None:
     return {"message": f"Hello, {request['name']}!"}
 
   with TestClient(service) as client:
-    response = client.post("/requests/example.greeting", json={"name": "Lucas"})
+    response = client.post("/requests/example.greeting", json={"name": "World"})
 
   assert response.status_code == 200
-  assert response.json() == {"message": "Hello, Lucas!"}
+  assert response.json() == {"message": "Hello, World!"}
 
 
 def test_request_input_and_output_are_validated() -> None:
@@ -240,7 +240,7 @@ def test_request_input_and_output_are_validated() -> None:
     return {"wrong": "shape"}
 
   with TestClient(invalid_output_service) as client:
-    invalid_output = client.post("/requests/example.greeting", json={"name": "Lucas"})
+    invalid_output = client.post("/requests/example.greeting", json={"name": "World"})
 
   assert invalid_output.status_code == 500
 
