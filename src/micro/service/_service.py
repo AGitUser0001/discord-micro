@@ -4,7 +4,7 @@ import json
 from collections.abc import Awaitable, Callable
 from json import JSONDecodeError
 from re import fullmatch
-from typing import Any
+from typing import Any, Protocol
 
 from jsonschema import ValidationError
 from starlette.applications import Starlette
@@ -21,8 +21,12 @@ type RequestHandler[InputT, OutputT] = Callable[[InputT], Awaitable[OutputT]]
 
 _SERVICE_NAME_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 _STANDARD_PATHS = frozenset(
-  ("/health/drained", "/health/live", "/health/ready", "/schema")
+  ("/health/drained", "/health/live", "/health/ready", "/schema", "/state")
 )
+
+
+class StateReceiver(Protocol):
+  def apply_state(self, state: JsonValue) -> None: ...
 
 
 class DuplicateEventHandlerError(ValueError):
@@ -38,7 +42,7 @@ class DuplicateEndpointError(ValueError):
 
 
 class Service:
-  def __init__(self, name: str) -> None:
+  def __init__(self, name: str, *, state_receiver: StateReceiver | None = None) -> None:
     if fullmatch(_SERVICE_NAME_PATTERN, name) is None:
       raise ValueError(
         "Service names must contain only letters, numbers, dots, underscores, and "
@@ -46,6 +50,7 @@ class Service:
       )
     self.name = name
     self._accepting = True
+    self._state_receiver = state_receiver
     self._sealed = False
     self._events: dict[str, tuple[EventSchema[Any], EventHandler[Any]]] = {}
     self._requests: dict[
@@ -58,6 +63,7 @@ class Service:
         Route("/health/ready", self._ready, methods=["GET"]),
         Route("/health/drained", self._drained, methods=["GET"]),
         Route("/schema", self._schema, methods=["GET"]),
+        Route("/state", self._state, methods=["POST"]),
       ]
     )
 
@@ -162,6 +168,7 @@ class Service:
           "live": f"{root_path}/health/live",
           "ready": f"{root_path}/health/ready",
           "drained": f"{root_path}/health/drained",
+          "state": f"{root_path}/state",
         },
       },
       "events": events,
@@ -274,6 +281,31 @@ class Service:
     return JSONResponse(
       self.dynamic_schema(root_path=request.scope.get("root_path", ""))
     )
+
+  async def _state(self, request: Request) -> Response:
+    if self._state_receiver is None:
+      return JSONResponse(
+        {"detail": "This service does not consume overseer state."},
+        status_code=503,
+      )
+    content_type = request.headers.get("content-type", "").partition(";")[0].strip()
+    if content_type != "application/json":
+      return JSONResponse(
+        {"detail": "Overseer state requires application/json."}, status_code=415
+      )
+    try:
+      state: JsonValue = await request.json()
+      self._state_receiver.apply_state(state)
+    except JSONDecodeError, UnicodeDecodeError:
+      return JSONResponse(
+        {"detail": "Request body is not valid JSON."}, status_code=400
+      )
+    except (TypeError, ValueError) as exc:
+      return JSONResponse(
+        {"detail": "Overseer state was rejected.", "message": str(exc)},
+        status_code=409,
+      )
+    return Response(status_code=204)
 
   @staticmethod
   def _root_path(value: str) -> str:

@@ -54,13 +54,19 @@ class RequestSchema[InputT, OutputT]:
     return self.path or f"/requests/{self.id}"
 
   def decode(self, value: JsonValue) -> InputT:
-    self._input_validator.validate(value)
+    self.validate_input(value)
     return self.decoder(value)
 
   def encode(self, value: OutputT) -> JsonValue:
     encoded = self.encoder(value)
-    self._output_validator.validate(encoded)
+    self.validate_output(encoded)
     return encoded
+
+  def validate_input(self, value: JsonValue) -> None:
+    self._input_validator.validate(value)
+
+  def validate_output(self, value: JsonValue) -> None:
+    self._output_validator.validate(value)
 
   def document(self) -> dict[str, JsonValue]:
     return {

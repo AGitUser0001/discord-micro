@@ -7,6 +7,7 @@ from ._service import (
   EventHandler,
   RequestHandler,
   Service,
+  StateReceiver,
 )
 
 __all__ = (
@@ -22,4 +23,5 @@ __all__ = (
   "RequestSchema",
   "ScopeKind",
   "Service",
+  "StateReceiver",
 )

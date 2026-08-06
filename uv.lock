@@ -133,6 +133,12 @@ source = { editable = "." }
 
 [package.optional-dependencies]
 all = [
+    { name = "httpx2" },
+    { name = "jsonschema" },
+    { name = "starlette" },
+]
+client = [
+    { name = "httpx2" },
     { name = "jsonschema" },
     { name = "starlette" },
 ]
@@ -154,12 +160,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx2", marker = "extra == 'all'", specifier = ">=2.9.1" },
+    { name = "httpx2", marker = "extra == 'client'", specifier = ">=2.9.1" },
     { name = "jsonschema", marker = "extra == 'all'", specifier = ">=4.26.0" },
+    { name = "jsonschema", marker = "extra == 'client'", specifier = ">=4.26.0" },
     { name = "jsonschema", marker = "extra == 'service'", specifier = ">=4.26.0" },
     { name = "starlette", marker = "extra == 'all'", specifier = ">=1.4.1" },
+    { name = "starlette", marker = "extra == 'client'", specifier = ">=1.4.1" },
     { name = "starlette", marker = "extra == 'service'", specifier = ">=1.4.1" },
 ]
-provides-extras = ["service", "all"]
+provides-extras = ["service", "client", "all"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -62,3 +62,25 @@ For request/response operations, declare a `RequestSchema[Input, Output]` and
 register its handler with `@service.handle(...)`. Unlike an event listener,
 the handler's returned JSON is checked against the declared output schema and
 returned with a `200 OK` response.
+
+## Calling services
+
+`ServiceClient` routes calls across every compatible instance currently known to
+it. Registrations can be supplied initially, added or removed individually, or
+replaced atomically from an overseer state snapshot. During rolling updates it
+compares the advertised operation contract, not only its ID.
+
+```python
+from micro.client import ServiceClient
+
+client = ServiceClient()
+client.add("hello-1", "http://127.0.0.1:8001", service_schema)
+
+await client.emit(Greeting, {"name": "World"})
+reply = await client.request(GreetingRequest, {"name": "World"})
+```
+
+A service configured with `Service(..., state_receiver=client)` accepts complete
+directory snapshots at `POST /state`. Snapshots contain a non-negative
+`revision` and an `instances` list; older revisions are rejected rather than
+overwriting newer topology.
