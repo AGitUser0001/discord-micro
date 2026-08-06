@@ -136,9 +136,13 @@ class Store:
     if not isinstance(query, str):
       return self._errors("GraphQL request requires a string query.", status_code=400)
     if variables is not None and not isinstance(variables, dict):
-      return self._errors("GraphQL variables must be an object or null.", status_code=400)
+      return self._errors(
+        "GraphQL variables must be an object or null.", status_code=400
+      )
     if operation_name is not None and not isinstance(operation_name, str):
-      return self._errors("GraphQL operationName must be a string or null.", status_code=400)
+      return self._errors(
+        "GraphQL operationName must be a string or null.", status_code=400
+      )
 
     try:
       document = parse(query)
@@ -150,9 +154,7 @@ class Store:
       )
     operation = get_operation_ast(document, operation_name)
     if operation is None:
-      return self._errors(
-        "GraphQL operation could not be selected.", status_code=400
-      )
+      return self._errors("GraphQL operation could not be selected.", status_code=400)
 
     coerced = get_variable_values(
       self.schema,
