@@ -44,25 +44,32 @@ client = [
     "jsonschema>=4.26.0",
     "starlette>=1.4.1",
 ]
+discord = [
+    "pydantic>=2.12.5",
+]
 all = [
     "hikari>=2.5.0",
     "httpx2>=2.9.1",
     "jsonschema>=4.26.0",
+    "pydantic>=2.12.5",
     "starlette>=1.4.1",
 ]
 gateway = [
     "hikari>=2.5.0",
     "jsonschema>=4.26.0",
+    "pydantic>=2.12.5",
     "starlette>=1.4.1",
 ]
 
 [dependency-groups]
 dev = [
+    "datamodel-code-generator>=0.72.2",
     "hikari>=2.5.0",
     "httpx2>=2.9.1",
     "jsonschema>=4.26.0",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
+    "pydantic>=2.12.5",
     "ruff>=0.16.1",
     "starlette>=1.4.1",
     "uvicorn>=0.52.1",
@@ -73,6 +80,7 @@ requires = ["uv_build>=0.12.1,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.ruff]
+extend-exclude = ["src/micro/discord/models/*.py"]
 indent-width = 2
 
 [tool.ruff.format]
