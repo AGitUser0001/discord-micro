@@ -3,25 +3,36 @@ from typing import Any
 
 import httpx2
 import pytest
+from pydantic import BaseModel, ConfigDict
 from starlette.testclient import TestClient
 
 from micro.client import NoCompatibleInstanceError, ServiceClient
 from micro.service import EventSchema, RequestSchema, Service
 
-NOTICE = EventSchema[dict[str, Any]](
+
+class Notice(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  text: str
+
+
+class EchoInput(BaseModel):
+  value: int
+
+
+class EchoOutput(BaseModel):
+  echoed: bool
+
+
+NOTICE = EventSchema[Notice](
   id="example.notice",
-  payload={
-    "type": "object",
-    "properties": {"text": {"type": "string"}},
-    "required": ["text"],
-    "additionalProperties": False,
-  },
+  payload=Notice,
 )
 
-ECHO = RequestSchema[dict[str, Any], dict[str, Any]](
+ECHO = RequestSchema[EchoInput, EchoOutput](
   id="example.echo",
-  input={"type": "object"},
-  output={"type": "object"},
+  input=EchoInput,
+  output=EchoOutput,
 )
 
 
@@ -29,12 +40,12 @@ def service_schema() -> dict[str, Any]:
   service = Service("receiver")
 
   @service.listen(NOTICE)
-  async def notice(event: dict[str, Any]) -> None:
+  async def notice(event: Notice) -> None:
     pass
 
   @service.handle(ECHO)
-  async def echo(request: dict[str, Any]) -> dict[str, Any]:
-    return request
+  async def echo(request: EchoInput) -> EchoOutput:
+    return EchoOutput(echoed=bool(request.value))
 
   return service.dynamic_schema()
 
@@ -55,8 +66,8 @@ def test_client_routes_across_compatible_instances() -> None:
       ],
       transport=httpx2.MockTransport(respond),
     ) as client:
-      await client.emit(NOTICE, {"text": "first"})
-      await client.emit(NOTICE, {"text": "second"})
+      await client.emit(NOTICE, Notice(text="first"))
+      await client.emit(NOTICE, Notice(text="second"))
 
   asyncio.run(exercise())
   assert calls == ["one.internal", "two.internal"]
@@ -71,8 +82,8 @@ def test_client_validates_request_response() -> None:
       [("receiver", "http://receiver.internal", service_schema())],
       transport=httpx2.MockTransport(respond),
     ) as client:
-      response = await client.request(ECHO, {"value": 42})
-      assert response == {"echoed": True}
+      response = await client.request(ECHO, EchoInput(value=42))
+      assert response == EchoOutput(echoed=True)
 
   asyncio.run(exercise())
 
@@ -86,7 +97,7 @@ def test_client_rejects_an_incompatible_schema() -> None:
       [("receiver", "http://receiver.internal", incompatible)]
     ) as client:
       with pytest.raises(NoCompatibleInstanceError):
-        await client.emit(NOTICE, {"text": "hello"})
+        await client.emit(NOTICE, Notice(text="hello"))
 
   asyncio.run(exercise())
 

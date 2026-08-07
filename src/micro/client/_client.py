@@ -110,26 +110,25 @@ class ServiceClient:
   def state_revision(self) -> int:
     return self._state_revision
 
-  async def emit[T](self, event: EventSchema[T], payload: JsonValue) -> None:
-    event.validate(payload)
+  async def emit[T](self, event: EventSchema[T], payload: T) -> None:
+    encoded = event.encode(payload)
     instance, endpoint = self._select("events", event.id, event.document())
-    response = await self._http.post(f"{instance.base_url}{endpoint}", json=payload)
+    response = await self._http.post(f"{instance.base_url}{endpoint}", json=encoded)
     if not response.is_success:
       raise RemoteServiceError(instance.id, response.status_code, response.text)
 
   async def request[InputT, OutputT](
     self,
     request: RequestSchema[InputT, OutputT],
-    payload: JsonValue,
-  ) -> JsonValue:
-    request.validate_input(payload)
+    payload: InputT,
+  ) -> OutputT:
+    encoded = request.encode_input(payload)
     instance, endpoint = self._select("requests", request.id, request.document())
-    response = await self._http.post(f"{instance.base_url}{endpoint}", json=payload)
+    response = await self._http.post(f"{instance.base_url}{endpoint}", json=encoded)
     if not response.is_success:
       raise RemoteServiceError(instance.id, response.status_code, response.text)
     value: JsonValue = response.json()
-    request.validate_output(value)
-    return value
+    return request.decode_output(value)
 
   async def aclose(self) -> None:
     await self._http.aclose()

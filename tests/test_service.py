@@ -1,6 +1,7 @@
-from typing import Any
+from typing import Annotated, Any, cast
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.applications import Starlette
 from starlette.routing import Mount
 from starlette.testclient import TestClient
@@ -11,48 +12,52 @@ from micro.service import (
   DuplicateRequestHandlerError,
   EventSchema,
   EventScope,
-  JsonValue,
   RequestSchema,
   Service,
 )
 
-MESSAGE = EventSchema[dict[str, Any]](
+
+class Message(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  guild_id: str
+  content: str
+
+
+class Greeting(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  name: str
+
+
+class GreetingResponse(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  message: str
+
+
+type PositiveInt = Annotated[int, Field(gt=0)]
+
+
+MESSAGE = EventSchema[Message](
   id="discord.message-create",
   scope=EventScope.guild(),
-  payload={
-    "type": "object",
-    "properties": {
-      "guild_id": {"type": "string"},
-      "content": {"type": "string"},
-    },
-    "required": ["guild_id", "content"],
-    "additionalProperties": False,
-  },
+  payload=Message,
 )
 
-GREETING = RequestSchema[dict[str, str], dict[str, str]](
+GREETING = RequestSchema[Greeting, GreetingResponse](
   id="example.greeting",
-  input={
-    "type": "object",
-    "properties": {"name": {"type": "string"}},
-    "required": ["name"],
-    "additionalProperties": False,
-  },
-  output={
-    "type": "object",
-    "properties": {"message": {"type": "string"}},
-    "required": ["message"],
-    "additionalProperties": False,
-  },
+  input=Greeting,
+  output=GreetingResponse,
 )
 
 
 def test_event_endpoint_invokes_handler() -> None:
   service = Service("messages")
-  received: list[dict[str, Any]] = []
+  received: list[Message] = []
 
   @service.listen(MESSAGE)
-  async def message(event: dict[str, Any]) -> None:
+  async def message(event: Message) -> None:
     received.append(event)
 
   with TestClient(service) as client:
@@ -62,14 +67,14 @@ def test_event_endpoint_invokes_handler() -> None:
     )
 
   assert response.status_code == 204
-  assert received == [{"guild_id": "123", "content": "hello"}]
+  assert received == [Message(guild_id="123", content="hello")]
 
 
 def test_event_payload_is_validated() -> None:
   service = Service("messages")
 
   @service.listen(MESSAGE)
-  async def message(event: dict[str, Any]) -> None:
+  async def message(event: Message) -> None:
     raise AssertionError("Invalid events must not reach handlers.")
 
   with TestClient(service) as client:
@@ -86,28 +91,28 @@ def test_duplicate_event_fails_during_declaration() -> None:
   service = Service("messages")
 
   @service.listen(MESSAGE)
-  async def first(event: dict[str, Any]) -> None:
+  async def first(event: Message) -> None:
     pass
 
   with pytest.raises(DuplicateEventHandlerError):
 
     @service.listen(MESSAGE)
-    async def second(event: dict[str, Any]) -> None:
+    async def second(event: Message) -> None:
       pass
 
 
 def test_duplicate_path_fails_during_declaration() -> None:
   service = Service("messages")
-  custom = EventSchema[dict[str, Any]](
+  custom = EventSchema[Any](
     id="custom.health",
     path="/health/ready",
-    payload=True,
+    payload=Any,
   )
 
   with pytest.raises(DuplicateEndpointError):
 
     @service.listen(custom)
-    async def health(event: dict[str, Any]) -> None:
+    async def health(event: Any) -> None:
       pass
 
 
@@ -115,7 +120,7 @@ def test_schema_accounts_for_mount_path_without_changing_hash() -> None:
   service = Service("messages")
 
   @service.listen(MESSAGE)
-  async def message(event: dict[str, Any]) -> None:
+  async def message(event: Message) -> None:
     pass
 
   direct_schema = service.dynamic_schema()
@@ -135,7 +140,7 @@ def test_drain_updates_health_and_rejects_events() -> None:
   service = Service("messages")
 
   @service.listen(MESSAGE)
-  async def message(event: dict[str, Any]) -> None:
+  async def message(event: Message) -> None:
     pass
 
   service.drain()
@@ -150,18 +155,11 @@ def test_drain_updates_health_and_rejects_events() -> None:
   assert response.status_code == 503
 
 
-def test_custom_decoder_supplies_typed_event() -> None:
+def test_pydantic_adapter_supplies_typed_event() -> None:
   service = Service("numbers")
-
-  def decode_number(value: JsonValue) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-      raise TypeError("Expected an integer.")
-    return value
-
   number = EventSchema[int](
     id="example.number",
-    payload={"type": "integer"},
-    decoder=decode_number,
+    payload=PositiveInt,
   )
   received: list[int] = []
 
@@ -180,7 +178,7 @@ def test_event_endpoint_requires_json_content_type() -> None:
   service = Service("messages")
 
   @service.listen(MESSAGE)
-  async def message(event: dict[str, Any]) -> None:
+  async def message(event: Message) -> None:
     raise AssertionError("Non-JSON requests must not reach handlers.")
 
   with TestClient(service) as client:
@@ -195,7 +193,7 @@ def test_event_endpoint_requires_json_content_type() -> None:
 
 def test_handlers_cannot_be_added_after_start() -> None:
   service = Service("messages")
-  later = EventSchema[dict[str, Any]](id="example.later", payload=True)
+  later = EventSchema[Any](id="example.later", payload=Any)
 
   with TestClient(service) as client:
     assert client.get("/health/live").status_code == 204
@@ -203,7 +201,7 @@ def test_handlers_cannot_be_added_after_start() -> None:
   with pytest.raises(RuntimeError):
 
     @service.listen(later)
-    async def handler(event: dict[str, Any]) -> None:
+    async def handler(event: Any) -> None:
       pass
 
 
@@ -211,8 +209,8 @@ def test_request_handler_returns_validated_json() -> None:
   service = Service("greetings")
 
   @service.handle(GREETING)
-  async def greet(request: dict[str, str]) -> dict[str, str]:
-    return {"message": f"Hello, {request['name']}!"}
+  async def greet(request: Greeting) -> GreetingResponse:
+    return GreetingResponse(message=f"Hello, {request.name}!")
 
   with TestClient(service) as client:
     response = client.post("/requests/example.greeting", json={"name": "World"})
@@ -225,7 +223,7 @@ def test_request_input_and_output_are_validated() -> None:
   invalid_input_service = Service("invalid-input")
 
   @invalid_input_service.handle(GREETING)
-  async def input_handler(request: dict[str, str]) -> dict[str, str]:
+  async def input_handler(request: Greeting) -> GreetingResponse:
     raise AssertionError("Invalid input must not reach the handler.")
 
   with TestClient(invalid_input_service) as client:
@@ -236,8 +234,8 @@ def test_request_input_and_output_are_validated() -> None:
   invalid_output_service = Service("invalid-output")
 
   @invalid_output_service.handle(GREETING)
-  async def output_handler(request: dict[str, str]) -> dict[str, str]:
-    return {"wrong": "shape"}
+  async def output_handler(request: Greeting) -> GreetingResponse:
+    return cast(Any, {"wrong": "shape"})
 
   with TestClient(invalid_output_service) as client:
     invalid_output = client.post("/requests/example.greeting", json={"name": "World"})
@@ -249,11 +247,11 @@ def test_duplicate_request_fails_during_declaration() -> None:
   service = Service("greetings")
 
   @service.handle(GREETING)
-  async def first(request: dict[str, str]) -> dict[str, str]:
-    return {"message": request["name"]}
+  async def first(request: Greeting) -> GreetingResponse:
+    return GreetingResponse(message=request.name)
 
   with pytest.raises(DuplicateRequestHandlerError):
 
     @service.handle(GREETING)
-    async def second(request: dict[str, str]) -> dict[str, str]:
-      return {"message": request["name"]}
+    async def second(request: Greeting) -> GreetingResponse:
+      return GreetingResponse(message=request.name)

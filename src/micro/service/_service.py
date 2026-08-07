@@ -6,7 +6,7 @@ from json import JSONDecodeError
 from re import fullmatch
 from typing import Any, Protocol
 
-from jsonschema import ValidationError
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -200,14 +200,14 @@ class Service:
           {"detail": "Request body is not valid JSON."}, status_code=400
         )
       try:
-        event.validate(value)
         decoded = event.decode(value)
       except ValidationError as exc:
+        error = exc.errors(include_url=False)[0]
         return JSONResponse(
           {
             "detail": "Event payload does not match its schema.",
-            "path": list(exc.absolute_path),
-            "message": exc.message,
+            "path": list(error["loc"]),
+            "message": error["msg"],
           },
           status_code=422,
         )
@@ -243,11 +243,12 @@ class Service:
       try:
         decoded = request_schema.decode(value)
       except ValidationError as exc:
+        error = exc.errors(include_url=False)[0]
         return JSONResponse(
           {
             "detail": "Request input does not match its schema.",
-            "path": list(exc.absolute_path),
-            "message": exc.message,
+            "path": list(error["loc"]),
+            "message": error["msg"],
           },
           status_code=422,
         )

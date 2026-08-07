@@ -17,25 +17,29 @@ pip install "Micro[service]" uvicorn
 Declare an event schema and its single handler:
 
 ```python
+from typing import Annotated
+
+from pydantic import BaseModel, Field
+
 from micro.service import EventSchema, EventScope, Service
 
 service = Service("hello")
 
-Greeting = EventSchema[dict](
+
+class GreetingPayload(BaseModel):
+  name: Annotated[str, Field(min_length=1)]
+
+
+Greeting = EventSchema[GreetingPayload](
   id="example.greeting",
   scope=EventScope.keyed("name"),
-  payload={
-    "type": "object",
-    "properties": {"name": {"type": "string", "minLength": 1}},
-    "required": ["name"],
-    "additionalProperties": False,
-  },
+  payload=GreetingPayload,
 )
 
 
 @service.listen(Greeting)
-async def greet(event: dict) -> None:
-  print(f"Hello, {event['name']}!")
+async def greet(event: GreetingPayload) -> None:
+  print(f"Hello, {event.name}!")
 ```
 
 The service is an ASGI application and can run directly:
@@ -58,10 +62,10 @@ provides `/schema`, `/health/live`, `/health/ready`, and `/health/drained`.
 The schema endpoint accounts for its ASGI mount path without changing the
 implementation hash.
 
-For request/response operations, declare a `RequestSchema[Input, Output]` and
-register its handler with `@service.handle(...)`. Unlike an event listener,
-the handler's returned JSON is checked against the declared output schema and
-returned with a `200 OK` response.
+Pydantic validates and decodes inbound values. Its generated JSON Schemas remain
+the wire format used for discovery and compatibility. For request/response
+operations, declare a `RequestSchema[Input, Output]` using input and output
+models and register its handler with `@service.handle(...)`.
 
 ## Calling services
 
@@ -76,8 +80,9 @@ from micro.client import ServiceClient
 client = ServiceClient()
 client.add("hello-1", "http://127.0.0.1:8001", service_schema)
 
-await client.emit(Greeting, {"name": "World"})
-reply = await client.request(GreetingRequest, {"name": "World"})
+payload = GreetingPayload(name="World")
+await client.emit(Greeting, payload)
+reply = await client.request(GreetingRequest, payload)
 ```
 
 A service configured with `Service(..., state_receiver=client)` accepts complete
