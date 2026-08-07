@@ -47,9 +47,16 @@ class EventSchema[T]:
   def decode(self, value: JsonValue) -> T:
     return self._adapter.validate_python(value)
 
+  def decode_json(self, value: bytes) -> T:
+    return self._adapter.validate_json(value)
+
   def encode(self, value: T) -> JsonValue:
     validated = self._adapter.validate_python(value)
     return cast(JsonValue, self._adapter.dump_python(validated, mode="json"))
+
+  def encode_json(self, value: T) -> bytes:
+    validated = self._adapter.validate_python(value)
+    return self._adapter.dump_json(validated)
 
   def document(self) -> dict[str, JsonValue]:
     return {

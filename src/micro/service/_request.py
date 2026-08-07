@@ -54,16 +54,30 @@ class RequestSchema[InputT, OutputT]:
   def decode(self, value: JsonValue) -> InputT:
     return self._input_adapter.validate_python(value)
 
+  def decode_json(self, value: bytes) -> InputT:
+    return self._input_adapter.validate_json(value)
+
   def encode_input(self, value: InputT) -> JsonValue:
     validated = self._input_adapter.validate_python(value)
     return cast(JsonValue, self._input_adapter.dump_python(validated, mode="json"))
 
+  def encode_input_json(self, value: InputT) -> bytes:
+    validated = self._input_adapter.validate_python(value)
+    return self._input_adapter.dump_json(validated)
+
   def decode_output(self, value: JsonValue) -> OutputT:
     return self._output_adapter.validate_python(value)
+
+  def decode_output_json(self, value: bytes) -> OutputT:
+    return self._output_adapter.validate_json(value)
 
   def encode(self, value: OutputT) -> JsonValue:
     validated = self._output_adapter.validate_python(value)
     return cast(JsonValue, self._output_adapter.dump_python(validated, mode="json"))
+
+  def encode_json(self, value: OutputT) -> bytes:
+    validated = self._output_adapter.validate_python(value)
+    return self._output_adapter.dump_json(validated)
 
   def document(self) -> dict[str, JsonValue]:
     return {

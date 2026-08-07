@@ -194,15 +194,13 @@ class Service:
           status_code=415,
         )
       try:
-        value: JsonValue = await request.json()
-      except JSONDecodeError, UnicodeDecodeError:
-        return JSONResponse(
-          {"detail": "Request body is not valid JSON."}, status_code=400
-        )
-      try:
-        decoded = event.decode(value)
+        decoded = event.decode_json(await request.body())
       except ValidationError as exc:
         error = exc.errors(include_url=False)[0]
+        if error["type"] == "json_invalid":
+          return JSONResponse(
+            {"detail": "Request body is not valid JSON."}, status_code=400
+          )
         return JSONResponse(
           {
             "detail": "Event payload does not match its schema.",
@@ -235,15 +233,13 @@ class Service:
           {"detail": "Requests require application/json."}, status_code=415
         )
       try:
-        value: JsonValue = await request.json()
-      except JSONDecodeError, UnicodeDecodeError:
-        return JSONResponse(
-          {"detail": "Request body is not valid JSON."}, status_code=400
-        )
-      try:
-        decoded = request_schema.decode(value)
+        decoded = request_schema.decode_json(await request.body())
       except ValidationError as exc:
         error = exc.errors(include_url=False)[0]
+        if error["type"] == "json_invalid":
+          return JSONResponse(
+            {"detail": "Request body is not valid JSON."}, status_code=400
+          )
         return JSONResponse(
           {
             "detail": "Request input does not match its schema.",
@@ -260,12 +256,12 @@ class Service:
 
       result = await handler(decoded)
       try:
-        encoded = request_schema.encode(result)
+        encoded = request_schema.encode_json(result)
       except ValidationError, TypeError, ValueError:
         return JSONResponse(
           {"detail": "Handler output does not match its schema."}, status_code=500
         )
-      return JSONResponse(encoded)
+      return Response(encoded, media_type="application/json")
 
     return endpoint
 
