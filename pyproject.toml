@@ -36,26 +36,26 @@ micro = "micro:main"
 
 [project.optional-dependencies]
 service = [
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.4",
     "starlette>=1.4.1",
 ]
 client = [
     "httpx2>=2.9.1",
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.4",
     "starlette>=1.4.1",
 ]
 discord = [
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.4",
 ]
 store = [
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.4",
     "starlette>=1.4.1",
 ]
 overseer = [
     "httpx2>=2.9.1",
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.4",
     "starlette>=1.4.1",
 ]
 uvloop = [
@@ -73,12 +73,12 @@ all = [
     "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
     "httpx2>=2.9.1",
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.4",
     "starlette>=1.4.1",
 ]
 gateway = [
     "hikari>=2.5.0",
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.4",
     "starlette>=1.4.1",
 ]
 
@@ -89,10 +89,10 @@ dev = [
     "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
     "httpx2>=2.9.1",
-    "psycopg[binary,pool]>=3.2.9,<4",
+    "psycopg[binary,pool]>=3.3.4,<4",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.4",
     "ruff>=0.16.1",
     "starlette>=1.4.1",
     "uvicorn>=0.52.1",
