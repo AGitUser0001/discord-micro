@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import pytest
 from graphql import GraphQLError
@@ -7,10 +7,12 @@ from starlette.testclient import TestClient
 from micro.service import JsonValue
 from micro.store import (
   CompiledOperation,
+  GraphCompiler,
   GraphQLRequest,
   GraphResult,
   GraphStatement,
   Store,
+  StoreModule,
 )
 
 
@@ -123,3 +125,73 @@ def test_store_returns_explicit_graphql_errors() -> None:
     "data": None,
     "errors": [{"message": "Operation is unavailable."}],
   }
+
+
+def test_overseer_topology_activates_distributed_store_module() -> None:
+  class ModuleCompiler:
+    def compile(self, request: GraphQLRequest) -> CompiledOperation:
+      statement = GraphStatement("RETURN 'active' AS status", columns=("status",))
+      return CompiledOperation(
+        statement,
+        lambda result: {"moduleStatus": result.rows[0]["status"]},
+      )
+
+  class ModuleExecutor(Executor):
+    async def execute(self, statement: GraphStatement) -> GraphResult:
+      self.statements.append(statement)
+      return GraphResult(({"status": "active"},))
+
+  class Composer:
+    def compose(
+      self, base: GraphCompiler, modules: Sequence[StoreModule]
+    ) -> ModuleCompiler:
+      assert tuple(modules) == (module,)
+      return ModuleCompiler()
+
+  module = StoreModule(
+    id="example.status",
+    schema="extend type Query { moduleStatus: String! }",
+  )
+  store = Store(
+    SCHEMA,
+    compiler=Compiler(),
+    executor=ModuleExecutor(),
+    module_composer=Composer(),
+  )
+
+  with TestClient(store) as client:
+    assert (
+      client.post("/graphql", json={"query": "{ moduleStatus }"}).status_code == 400
+    )
+    activated = client.post(
+      "/topology",
+      json={"revision": 0, "modules": [module.model_dump(by_alias=True)]},
+    )
+    response = client.post("/graphql", json={"query": "{ moduleStatus }"})
+
+  assert activated.status_code == 204
+  assert response.json() == {"data": {"moduleStatus": "active"}}
+  assert store.active_modules == ("example.status",)
+  assert store.topology_revision == 0
+
+
+def test_store_rejects_modules_without_a_composer() -> None:
+  store = Store(SCHEMA, compiler=Compiler(), executor=Executor())
+
+  with TestClient(store) as client:
+    response = client.post(
+      "/topology",
+      json={
+        "revision": 0,
+        "modules": [
+          {
+            "id": "example.status",
+            "schema": "extend type Query { moduleStatus: String! }",
+          }
+        ],
+      },
+    )
+
+  assert response.status_code == 409
+  assert store.active_modules == ()
+  assert store.topology_revision == -1

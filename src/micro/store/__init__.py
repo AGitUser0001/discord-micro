@@ -5,8 +5,11 @@ from ._store import (
   GraphQLRequest,
   GraphResult,
   GraphStatement,
+  ModuleComposer,
   ResultShaper,
   Store,
+  StoreModule,
+  StoreTopology,
 )
 
 __all__ = (
@@ -16,6 +19,9 @@ __all__ = (
   "GraphQLRequest",
   "GraphResult",
   "GraphStatement",
+  "ModuleComposer",
   "ResultShaper",
   "Store",
+  "StoreModule",
+  "StoreTopology",
 )

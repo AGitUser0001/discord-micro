@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from json import JSONDecodeError
 from types import MappingProxyType
@@ -15,6 +15,7 @@ from graphql import (
   OperationDefinitionNode,
   build_schema,
   execute_sync,
+  extend_schema,
   get_operation_ast,
   parse,
   print_schema,
@@ -22,15 +23,26 @@ from graphql import (
 )
 from graphql.error import GraphQLSyntaxError
 from graphql.execution.values import get_variable_values
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
+from micro._store_module import StoreModule
 from micro.service import JsonValue
 
 type ResultShaper = Callable[[GraphResult], Mapping[str, JsonValue]]
+
+
+class StoreTopology(BaseModel):
+  """The overseer-controlled module set exposed by a store instance."""
+
+  model_config = ConfigDict(extra="forbid", frozen=True)
+
+  revision: int = Field(ge=0)
+  modules: tuple[StoreModule, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +99,23 @@ class GraphExecutor(Protocol):
   async def close(self) -> None: ...
 
 
+class ModuleComposer(Protocol):
+  """Builds one compiler for an overseer-provided set of store modules."""
+
+  def compose(
+    self,
+    base: GraphCompiler,
+    modules: Sequence[StoreModule],
+  ) -> GraphCompiler: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _StoreRuntime:
+  schema: GraphQLSchema
+  compiler: GraphCompiler
+  module_ids: tuple[str, ...]
+
+
 class Store:
   """Database-neutral GraphQL ASGI frontend for a graph store."""
 
@@ -96,15 +125,20 @@ class Store:
     *,
     compiler: GraphCompiler,
     executor: GraphExecutor,
+    module_composer: ModuleComposer | None = None,
   ) -> None:
-    self.schema = build_schema(schema) if isinstance(schema, str) else schema
-    self.compiler = compiler
+    self._base_schema = build_schema(schema) if isinstance(schema, str) else schema
+    self._base_compiler = compiler
     self.executor = executor
+    self._module_composer = module_composer
+    self._runtime = _StoreRuntime(self._base_schema, compiler, ())
+    self._topology_revision = -1
     self._ready = False
     self._app = Starlette(
       routes=[
         Route("/graphql", self._graphql, methods=["POST"]),
         Route("/schema", self._schema, methods=["GET"]),
+        Route("/topology", self._topology, methods=["POST"]),
         Route("/health/live", self._live, methods=["GET"]),
         Route("/health/ready", self._health_ready, methods=["GET"]),
       ]
@@ -144,11 +178,12 @@ class Store:
         "GraphQL operationName must be a string or null.", status_code=400
       )
 
+    runtime = self._runtime
     try:
       document = parse(query)
     except GraphQLSyntaxError as exc:
       return JSONResponse({"errors": [exc.formatted]}, status_code=400)
-    if errors := validate(self.schema, document):
+    if errors := validate(runtime.schema, document):
       return JSONResponse(
         {"errors": [error.formatted for error in errors]}, status_code=400
       )
@@ -157,7 +192,7 @@ class Store:
       return self._errors("GraphQL operation could not be selected.", status_code=400)
 
     coerced = get_variable_values(
-      self.schema,
+      runtime.schema,
       operation.variable_definitions or (),
       variables or {},
     )
@@ -168,7 +203,7 @@ class Store:
 
     if self._is_introspection(operation):
       result = execute_sync(
-        self.schema,
+        runtime.schema,
         document,
         variable_values=coerced,
         operation_name=operation_name,
@@ -179,14 +214,14 @@ class Store:
       return JSONResponse(response)
 
     graphql_request = GraphQLRequest(
-      self.schema,
+      runtime.schema,
       document,
       operation,
       MappingProxyType(coerced),
       operation_name,
     )
     try:
-      compiled = self.compiler.compile(graphql_request)
+      compiled = runtime.compiler.compile(graphql_request)
       result = await self.executor.execute(compiled.statement)
       data = dict(compiled.shape(result))
     except GraphQLError as exc:
@@ -194,7 +229,57 @@ class Store:
     return JSONResponse({"data": data})
 
   async def _schema(self, request: Request) -> Response:
-    return PlainTextResponse(print_schema(self.schema), media_type="text/plain")
+    return PlainTextResponse(
+      print_schema(self._runtime.schema), media_type="text/plain"
+    )
+
+  async def _topology(self, request: Request) -> Response:
+    if (
+      request.headers.get("content-type", "").partition(";")[0].strip()
+      != "application/json"
+    ):
+      return self._errors("Store topology requires application/json.", status_code=415)
+    try:
+      topology = StoreTopology.model_validate_json(await request.body())
+      self.apply_topology(topology)
+    except (TypeError, ValueError) as exc:
+      return JSONResponse(
+        {"errors": [{"message": "Store topology was rejected.", "detail": str(exc)}]},
+        status_code=409,
+      )
+    return Response(status_code=204)
+
+  def apply_topology(self, topology: StoreTopology) -> None:
+    if topology.revision < self._topology_revision:
+      raise ValueError(
+        f"Topology revision {topology.revision} is older than {self._topology_revision}."
+      )
+    if topology.revision == self._topology_revision:
+      return
+    module_ids = tuple(module.id for module in topology.modules)
+    if len(set(module_ids)) != len(module_ids):
+      raise ValueError("Store topology contains duplicate module IDs.")
+    if topology.modules and self._module_composer is None:
+      raise ValueError("This store has no module composer configured.")
+
+    schema = self._base_schema
+    for module in topology.modules:
+      schema = extend_schema(schema, parse(module.graphql_schema))
+    if topology.modules:
+      assert self._module_composer is not None
+      compiler = self._module_composer.compose(self._base_compiler, topology.modules)
+    else:
+      compiler = self._base_compiler
+    self._runtime = _StoreRuntime(schema, compiler, module_ids)
+    self._topology_revision = topology.revision
+
+  @property
+  def active_modules(self) -> tuple[str, ...]:
+    return self._runtime.module_ids
+
+  @property
+  def topology_revision(self) -> int:
+    return self._topology_revision
 
   async def _live(self, request: Request) -> Response:
     return Response(status_code=204)
