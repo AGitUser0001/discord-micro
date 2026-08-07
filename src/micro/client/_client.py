@@ -211,10 +211,9 @@ def _compatible(
   advertised: Mapping[str, Any],
 ) -> bool:
   fields = (
-    ("scope", "payload")
+    ("payload",)
     if collection == "events"
     else (
-      "scope",
       "input",
       "output",
     )

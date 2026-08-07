@@ -1,4 +1,4 @@
-from ._event import EventSchema, EventScope, JsonSchema, JsonValue, ScopeKind
+from ._event import EventSchema, JsonSchema, JsonValue
 from ._request import RequestSchema
 from ._service import (
   DuplicateEndpointError,
@@ -16,12 +16,10 @@ __all__ = (
   "DuplicateRequestHandlerError",
   "EventHandler",
   "EventSchema",
-  "EventScope",
   "JsonSchema",
   "JsonValue",
   "RequestHandler",
   "RequestSchema",
-  "ScopeKind",
   "Service",
   "StateReceiver",
 )

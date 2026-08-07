@@ -11,7 +11,6 @@ from micro.service import (
   DuplicateEventHandlerError,
   DuplicateRequestHandlerError,
   EventSchema,
-  EventScope,
   RequestSchema,
   Service,
 )
@@ -41,7 +40,6 @@ type PositiveInt = Annotated[int, Field(gt=0)]
 
 MESSAGE = EventSchema[Message](
   id="discord.message-create",
-  scope=EventScope.guild(),
   payload=Message,
 )
 

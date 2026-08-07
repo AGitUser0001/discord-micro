@@ -53,10 +53,10 @@ store = [
     "starlette>=1.4.1",
 ]
 uvloop = [
-    "uvloop>=0.22.1; sys_platform == 'darwin' or sys_platform == 'linux'",
+    "uvloop>=0.22.1",
 ]
 winloop = [
-    "winloop>=0.6.3; sys_platform == 'win32'",
+    "winloop>=0.6.3",
 ]
 accel = [
     "uvloop>=0.22.1; sys_platform == 'darwin' or sys_platform == 'linux'",

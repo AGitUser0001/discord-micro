@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from pydantic import TypeAdapter
 
-from ._event import EventScope, JsonValue
+from ._event import JsonValue
 
 _REQUEST_ID_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 
@@ -15,7 +15,6 @@ class RequestSchema[InputT, OutputT]:
   id: str
   input: Any
   output: Any
-  scope: EventScope = field(default_factory=EventScope)
   path: str | None = None
   _input_adapter: TypeAdapter[InputT] = field(init=False, repr=False, compare=False)
   _output_adapter: TypeAdapter[OutputT] = field(init=False, repr=False, compare=False)
@@ -70,7 +69,6 @@ class RequestSchema[InputT, OutputT]:
     return {
       "id": self.id,
       "path": self.endpoint,
-      "scope": self.scope.document(),
       "input": deepcopy(self._input_schema),
       "output": deepcopy(self._output_schema),
     }

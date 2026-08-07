@@ -1,6 +1,5 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
-from enum import StrEnum
 from re import fullmatch
 from typing import Any, cast
 
@@ -14,49 +13,10 @@ type JsonSchema = bool | dict[str, JsonValue]
 _EVENT_ID_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 
 
-class ScopeKind(StrEnum):
-  GLOBAL = "global"
-  GUILD = "guild"
-  SHARD = "shard"
-  KEYED = "keyed"
-
-
-@dataclass(frozen=True, slots=True)
-class EventScope:
-  kind: ScopeKind = ScopeKind.GLOBAL
-  field: str | None = None
-
-  def __post_init__(self) -> None:
-    if self.kind is ScopeKind.GLOBAL:
-      if self.field is not None:
-        raise ValueError("A global event scope cannot have a field.")
-    elif not self.field:
-      raise ValueError(f"A {self.kind.value} event scope requires a field.")
-
-  @classmethod
-  def guild(cls, field: str = "guild_id") -> EventScope:
-    return cls(ScopeKind.GUILD, field)
-
-  @classmethod
-  def shard(cls, field: str = "shard_id") -> EventScope:
-    return cls(ScopeKind.SHARD, field)
-
-  @classmethod
-  def keyed(cls, field: str) -> EventScope:
-    return cls(ScopeKind.KEYED, field)
-
-  def document(self) -> dict[str, JsonValue]:
-    document: dict[str, JsonValue] = {"kind": self.kind.value}
-    if self.field is not None:
-      document["field"] = self.field
-    return document
-
-
 @dataclass(frozen=True, slots=True)
 class EventSchema[T]:
   id: str
   payload: Any
-  scope: EventScope = field(default_factory=EventScope)
   path: str | None = None
   _adapter: TypeAdapter[T] = field(init=False, repr=False, compare=False)
   _payload_schema: dict[str, JsonValue] = field(init=False, repr=False, compare=False)
@@ -95,6 +55,5 @@ class EventSchema[T]:
     return {
       "id": self.id,
       "path": self.endpoint,
-      "scope": self.scope.document(),
       "payload": deepcopy(self._payload_schema),
     }

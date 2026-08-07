@@ -2,7 +2,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from micro.service import EventSchema, EventScope, RequestSchema, Service
+from micro.service import EventSchema, RequestSchema, Service
 
 service = Service("hello")
 
@@ -19,7 +19,6 @@ class GreetingResponse(BaseModel):
 
 Greeting = EventSchema[GreetingPayload](
   id="example.greeting",
-  scope=EventScope.keyed("name"),
   payload=GreetingPayload,
 )
 
