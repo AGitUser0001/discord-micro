@@ -40,8 +40,6 @@ class Service(Microservice):
   def __init__(
     self,
     name: str,
-    *,
-    state_receiver: StateReceiver | None = None,
   ) -> None:
     if fullmatch(_SERVICE_NAME_PATTERN, name) is None:
       raise ValueError(
@@ -57,7 +55,6 @@ class Service(Microservice):
       self.store,
       self.gateway,
       self.queue,
-      *((state_receiver,) if state_receiver is not None else ()),
     )
     super().__init__("service", state_receiver=_StateReceivers(receivers))
     self.name = name

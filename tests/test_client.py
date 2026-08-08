@@ -106,8 +106,7 @@ def test_client_rejects_an_incompatible_schema() -> None:
 
 
 def test_overseer_state_atomically_replaces_instances() -> None:
-  client = ServiceClient()
-  service = Service("consumer", state_receiver=client)
+  service = Service("consumer")
   schema = service_schema()
 
   with TestClient(service) as test_client:
@@ -129,11 +128,10 @@ def test_overseer_state_atomically_replaces_instances() -> None:
       json={"revision": 3, "instances": []},
     )
 
-  asyncio.run(client.aclose())
   assert response.status_code == 204
   assert stale.status_code == 409
-  assert client.state_revision == 4
-  assert client.instance_ids == ("receiver-1",)
+  assert service.client.state_revision == 4
+  assert service.client.instance_ids == ("receiver-1",)
 
 
 def test_service_owns_clients_for_every_microservice_kind() -> None:
@@ -160,6 +158,7 @@ def test_service_owns_clients_for_every_microservice_kind() -> None:
           }
         ],
         "gateways": [{"id": "gateway-1", "base_url": "http://gateway.internal"}],
+        "queues": [{"id": "queue-1", "base_url": "http://queue.internal"}],
       },
     )
 
@@ -167,6 +166,7 @@ def test_service_owns_clients_for_every_microservice_kind() -> None:
     assert service.client.instance_ids == ("receiver-1",)
     assert service.store.instance_ids == ("store-1",)
     assert service.gateway.instance_ids == ("gateway-1",)
+    assert service.queue.instance_ids == ("queue-1",)
 
 
 def test_store_and_gateway_clients_share_the_microservice_client_backbone() -> None:
