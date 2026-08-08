@@ -68,26 +68,21 @@ models and register its handler with `@service.handle(...)`.
 
 ## Calling services
 
-`ServiceClient` routes calls across every compatible instance currently known to
-it. Registrations can be supplied initially, added or removed individually, or
-replaced atomically from an overseer state snapshot. During rolling updates it
-compares the advertised operation contract, not only its ID.
+Every `Service` owns three clients populated by overseer state: `service.client`
+for events and typed requests, `service.store` for GraphQL stores, and
+`service.gateway` for Gateway control operations. `ServiceClient` routes calls
+across every compatible service instance currently known to it. During rolling
+updates it compares the advertised operation contract, not only its ID.
 
 ```python
-from micro.client import ServiceClient
-
-client = ServiceClient()
-client.add("hello-1", "http://127.0.0.1:8001", service_schema)
-
 payload = GreetingPayload(name="World")
-await client.emit(Greeting, payload)
-reply = await client.request(GreetingRequest, payload)
+await service.client.emit(Greeting, payload)
+reply = await service.client.request(GreetingRequest, payload)
 ```
 
-A service configured with `Service(..., state_receiver=client)` accepts complete
-directory snapshots at `POST /state`. Snapshots contain a non-negative
-`revision` and an `instances` list; older revisions are rejected rather than
-overwriting newer topology.
+`POST /state` atomically replaces the clients' directory snapshot. Snapshots
+contain a non-negative revision plus service, store, and Gateway routes; older
+revisions are rejected rather than overwriting newer topology.
 
 ## Gateway workers
 

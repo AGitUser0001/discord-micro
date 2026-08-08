@@ -68,6 +68,21 @@ def test_event_endpoint_invokes_handler() -> None:
   assert received == [Message(guild_id="123", content="hello")]
 
 
+def test_service_name_is_optional_because_operations_identify_the_schema() -> None:
+  service = Service()
+
+  @service.listen(MESSAGE)
+  async def message(event: Message) -> None:
+    pass
+
+  schema = service.dynamic_schema()
+  events = cast(list[dict[str, Any]], schema["events"])
+
+  assert schema["kind"] == "service"
+  assert "service" not in schema
+  assert events[0]["id"] == MESSAGE.id
+
+
 def test_event_payload_is_validated() -> None:
   service = Service("messages")
 

@@ -1,3 +1,5 @@
+from micro._microservices import StoreClient
+
 from ._compiler import (
   MicroGraphCompiler,
   entity_identity,
@@ -46,6 +48,7 @@ __all__ = (
   "ModuleComposer",
   "ResultShaper",
   "Store",
+  "StoreClient",
   "StoreModule",
   "StoreTopology",
   "compose_graph",

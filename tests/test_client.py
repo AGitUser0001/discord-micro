@@ -6,8 +6,11 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 from starlette.testclient import TestClient
 
+from micro._microservices import MicroserviceClient
 from micro.client import NoCompatibleInstanceError, ServiceClient
+from micro.gateway import GatewayClient
 from micro.service import EventSchema, RequestSchema, Service
+from micro.store import StoreClient
 
 
 class Notice(BaseModel):
@@ -131,3 +134,41 @@ def test_overseer_state_atomically_replaces_instances() -> None:
   assert stale.status_code == 409
   assert client.state_revision == 4
   assert client.instance_ids == ("receiver-1",)
+
+
+def test_service_owns_clients_for_every_microservice_kind() -> None:
+  service = Service("consumer")
+  schema = service_schema()
+
+  with TestClient(service) as test_client:
+    response = test_client.post(
+      "/state",
+      json={
+        "revision": 2,
+        "instances": [
+          {
+            "id": "receiver-1",
+            "base_url": "http://receiver.internal",
+            "schema": schema,
+          }
+        ],
+        "stores": [
+          {
+            "id": "store-1",
+            "base_url": "http://store.internal",
+            "modules": ["example"],
+          }
+        ],
+        "gateways": [{"id": "gateway-1", "base_url": "http://gateway.internal"}],
+      },
+    )
+
+    assert response.status_code == 204
+    assert service.client.instance_ids == ("receiver-1",)
+    assert service.store.instance_ids == ("store-1",)
+    assert service.gateway.instance_ids == ("gateway-1",)
+
+
+def test_store_and_gateway_clients_share_the_microservice_client_backbone() -> None:
+  assert issubclass(StoreClient, MicroserviceClient)
+  assert issubclass(GatewayClient, MicroserviceClient)

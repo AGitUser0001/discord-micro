@@ -1,10 +1,8 @@
 from schemas import AUDIT, AuditEntry
 
-from micro.client import ServiceClient
 from micro.service import Service
 
-routes = ServiceClient()
-service = Service("example.audit", state_receiver=routes)
+service = Service("example.audit")
 
 
 @service.listen(AUDIT)

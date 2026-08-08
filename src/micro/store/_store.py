@@ -21,14 +21,11 @@ from graphql import (
 )
 from graphql.error import GraphQLSyntaxError
 from graphql.execution.values import get_variable_values
-from pydantic import BaseModel, ConfigDict, Field
-from starlette.applications import Starlette
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
-from starlette.routing import Route
-from starlette.types import Receive, Scope, Send
 
-from micro.service import JsonValue
+from micro._microservices import Microservice
 
 from ._module import GraphModule
 
@@ -120,7 +117,7 @@ class _StoreRuntime:
   module_ids: tuple[str, ...]
 
 
-class Store:
+class Store(Microservice):
   """Database-neutral GraphQL ASGI frontend for a graph store."""
 
   def __init__(
@@ -131,6 +128,7 @@ class Store:
     executor: GraphExecutor,
     module_composer: ModuleComposer | None = None,
   ) -> None:
+    super().__init__("store")
     schema = schema or "type Query { _micro: Boolean }"
     self._base_schema = build_schema(schema) if isinstance(schema, str) else schema
     self._base_compiler = compiler or _UnavailableCompiler()
@@ -140,26 +138,27 @@ class Store:
     self._topology_revision = -1
     self._desired_topology_revision = -1
     self._composition_error: str | None = None
-    self._running = False
     self._graph_available = True
-    self._app = Starlette(
-      routes=[
-        Route("/graphql", self._graphql, methods=["POST"]),
-        Route("/schema", self._schema, methods=["GET"]),
-        Route("/topology", self._topology, methods=["POST"]),
-        Route("/health/live", self._live, methods=["GET"]),
-        Route("/health/ready", self._health_ready, methods=["GET"]),
-      ]
+    self.add_route("/graphql", self._graphql, methods=("POST",), name="store:graphql")
+    self.add_route(
+      "/topology", self._topology, methods=("POST",), name="store:topology"
     )
 
-  async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-    if scope["type"] != "lifespan":
-      await self._app(scope, receive, send)
-      return
-    await self._lifespan(receive, send)
+  @property
+  def component_ready(self) -> bool:
+    return self._graph_available
+
+  async def start(self) -> None:
+    await self.executor.start()
+
+  async def close(self) -> None:
+    await self.executor.close()
+
+  def unavailable_response(self) -> Response:
+    return self._unavailable()
 
   async def _graphql(self, request: Request) -> Response:
-    if not self._available:
+    if not self.ready:
       return self._unavailable()
     content_type = request.headers.get("content-type", "").partition(";")[0].strip()
     if content_type != "application/json":
@@ -236,8 +235,8 @@ class Store:
       return JSONResponse({"data": None, "errors": [exc.formatted]})
     return JSONResponse({"data": data})
 
-  async def _schema(self, request: Request) -> Response:
-    if not self._available:
+  async def _schema_endpoint(self, request: Request) -> Response:
+    if not self.ready:
       return self._unavailable()
     return PlainTextResponse(
       print_schema(self._runtime.schema), media_type="text/plain"
@@ -317,39 +316,6 @@ class Store:
   @property
   def composition_error(self) -> str | None:
     return self._composition_error
-
-  @property
-  def _available(self) -> bool:
-    return self._running and self._graph_available
-
-  async def _live(self, request: Request) -> Response:
-    return Response(status_code=204)
-
-  async def _health_ready(self, request: Request) -> Response:
-    if self._available:
-      return Response(status_code=204)
-    return self._unavailable()
-
-  async def _lifespan(self, receive: Receive, send: Send) -> None:
-    while True:
-      message = await receive()
-      if message["type"] == "lifespan.startup":
-        try:
-          await self.executor.start()
-        except BaseException as exc:
-          await send({"type": "lifespan.startup.failed", "message": str(exc)})
-          return
-        self._running = True
-        await send({"type": "lifespan.startup.complete"})
-      elif message["type"] == "lifespan.shutdown":
-        self._running = False
-        try:
-          await self.executor.close()
-        except BaseException as exc:
-          await send({"type": "lifespan.shutdown.failed", "message": str(exc)})
-          return
-        await send({"type": "lifespan.shutdown.complete"})
-        return
 
   @staticmethod
   def _is_introspection(operation: OperationDefinitionNode) -> bool:

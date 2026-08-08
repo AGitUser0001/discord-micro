@@ -1,3 +1,5 @@
+from micro._microservices import GatewayClient
+
 from ._gateway import (
   ConnectionEvent,
   ConnectionEventKind,
@@ -14,4 +16,5 @@ __all__ = (
   "Dispatch",
   "DispatchSink",
   "Gateway",
+  "GatewayClient",
 )

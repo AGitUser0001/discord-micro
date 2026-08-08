@@ -450,6 +450,7 @@ discord = [
 ]
 gateway = [
     { name = "hikari" },
+    { name = "httpx2" },
     { name = "pydantic" },
     { name = "starlette" },
 ]
@@ -460,6 +461,7 @@ overseer = [
     { name = "starlette" },
 ]
 service = [
+    { name = "httpx2" },
     { name = "pydantic" },
     { name = "starlette" },
 ]
@@ -503,7 +505,9 @@ requires-dist = [
     { name = "hikari", marker = "extra == 'gateway'", specifier = ">=2.5.0" },
     { name = "httpx2", marker = "extra == 'all'", specifier = ">=2.9.1" },
     { name = "httpx2", marker = "extra == 'client'", specifier = ">=2.9.1" },
+    { name = "httpx2", marker = "extra == 'gateway'", specifier = ">=2.9.1" },
     { name = "httpx2", marker = "extra == 'overseer'", specifier = ">=2.9.1" },
+    { name = "httpx2", marker = "extra == 'service'", specifier = ">=2.9.1" },
     { name = "pydantic", marker = "extra == 'all'", specifier = ">=2.13.4" },
     { name = "pydantic", marker = "extra == 'client'", specifier = ">=2.13.4" },
     { name = "pydantic", marker = "extra == 'discord'", specifier = ">=2.13.4" },

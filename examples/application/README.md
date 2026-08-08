@@ -53,8 +53,8 @@ curl -sS http://127.0.0.1:8102/requests/example.greet \
   -d '{"name":"World"}'
 ```
 
-The API service looks up a greeting through GraphQL, emits
-`example.audit` through `ServiceClient`, and returns the response. The audit
+The API service looks up a greeting through `service.store`, emits
+`example.audit` through `service.client`, and returns the response. The audit
 worker prints the event.
 
 The stored graph data can also be queried directly:

@@ -6,9 +6,9 @@ from typing import Any, Protocol
 from uuid import uuid7
 
 import hikari
-from starlette.types import Receive, Scope, Send
+from pydantic import JsonValue
 
-from micro.service import Service
+from micro._microservices import Microservice
 
 from ._runner import event_loop_factory
 
@@ -66,7 +66,7 @@ async def _ignore_connection_event(event: ConnectionEvent) -> None:
   pass
 
 
-class Gateway:
+class Gateway(Microservice):
   def __init__(
     self,
     token: str,
@@ -80,13 +80,13 @@ class Gateway:
   ) -> None:
     if not token:
       raise ValueError("token cannot be empty.")
+    super().__init__("gateway")
     self._shard_ids, self._shard_count = _validate_shards(shard_ids, shard_count)
     self._dispatch_sink = dispatch
     self._connection_sink = connection
     self._sequences: dict[int, int] = {}
     self._connections: dict[int, str] = {}
     self._started = False
-    self._service = Service("micro.gateway")
     self._bot = bot or hikari.GatewayBot(
       token,
       intents=intents,
@@ -99,8 +99,8 @@ class Gateway:
     self._subscribe()
 
   @property
-  def service(self) -> Service:
-    return self._service
+  def service(self) -> Microservice:
+    return self
 
   @property
   def shard_ids(self) -> tuple[int, ...] | None:
@@ -110,8 +110,12 @@ class Gateway:
   def shard_count(self) -> int | None:
     return self._shard_count
 
-  def dynamic_schema(self, *, root_path: str = "") -> dict[str, Any]:
-    return self._service.dynamic_schema(root_path=root_path)
+  def schema_document(self, root_path: str) -> dict[str, JsonValue]:
+    document = super().schema_document(root_path)
+    document["service"] = "micro.gateway"
+    document["events"] = []
+    document["requests"] = []
+    return document
 
   def run(self) -> None:
     """Run the Gateway until it closes, using an accelerated loop if available."""
@@ -154,12 +158,6 @@ class Gateway:
       await self._bot.join()
     finally:
       await self.close()
-
-  async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-    if scope["type"] != "lifespan":
-      await self._service(scope, receive, send)
-      return
-    await self._lifespan(receive, send)
 
   def _subscribe(self) -> None:
     self._bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
@@ -223,25 +221,6 @@ class Gateway:
         self._connections.get(shard_id),
       )
     )
-
-  async def _lifespan(self, receive: Receive, send: Send) -> None:
-    while True:
-      message = await receive()
-      if message["type"] == "lifespan.startup":
-        try:
-          await self.start()
-        except BaseException as exc:
-          await send({"type": "lifespan.startup.failed", "message": str(exc)})
-          return
-        await send({"type": "lifespan.startup.complete"})
-      elif message["type"] == "lifespan.shutdown":
-        try:
-          await self.close()
-        except BaseException as exc:
-          await send({"type": "lifespan.shutdown.failed", "message": str(exc)})
-          return
-        await send({"type": "lifespan.shutdown.complete"})
-        return
 
 
 def _validate_shards(

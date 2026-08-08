@@ -36,6 +36,7 @@ micro = "micro:main"
 
 [project.optional-dependencies]
 service = [
+    "httpx2>=2.9.1",
     "pydantic>=2.13.4",
     "starlette>=1.4.1",
 ]
@@ -79,6 +80,7 @@ all = [
 ]
 gateway = [
     "hikari>=2.5.0",
+    "httpx2>=2.9.1",
     "pydantic>=2.13.4",
     "starlette>=1.4.1",
 ]

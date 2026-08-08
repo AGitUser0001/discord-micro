@@ -17,8 +17,7 @@ from graphql import (
   get_named_type,
   is_leaf_type,
 )
-
-from micro.service import JsonValue
+from pydantic import JsonValue
 
 from ._store import CompiledOperation, GraphQLRequest, GraphResult, GraphStatement
 from .composer import MicroGraph

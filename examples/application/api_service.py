@@ -1,34 +1,21 @@
-import httpx2
 from schemas import AUDIT, GREET, AuditEntry, GreetingInput, GreetingOutput
-from topology import ApplicationTopology
 
-from micro.client import ServiceClient
 from micro.service import Service
 
-services = ServiceClient()
-topology = ApplicationTopology(services)
-http = httpx2.AsyncClient(timeout=5.0)
-service = Service("example.api", state_receiver=topology)
+service = Service("example.api")
 
 
 @service.handle(GREET)
 async def greet(request: GreetingInput) -> GreetingOutput:
-  if topology.store_url is None:
-    raise RuntimeError("The overseer has not supplied a graph-store route.")
-
-  response = await http.post(
-    f"{topology.store_url}/graphql",
-    json={
-      "query": """
+  body = await service.store.execute(
+    """
         query Greeting($name: String!) {
           greeting(name: $name) { message }
         }
-      """,
-      "variables": {"name": request.name},
-    },
+    """,
+    variables={"name": request.name},
+    module="example.greetings",
   )
-  response.raise_for_status()
-  body = response.json()
   if body.get("errors"):
     raise RuntimeError(f"Store query failed: {body['errors']}")
 
@@ -39,5 +26,5 @@ async def greet(request: GreetingInput) -> GreetingOutput:
     else f"Hello, {request.name}!"
   )
 
-  await services.emit(AUDIT, AuditEntry(action="greeted", subject=request.name))
+  await service.client.emit(AUDIT, AuditEntry(action="greeted", subject=request.name))
   return GreetingOutput(message=message)
