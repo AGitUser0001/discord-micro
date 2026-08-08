@@ -24,7 +24,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = [
+    "httpx2>=2.9.1",
+    "pydantic>=2.13.4",
+    "starlette>=1.4.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/AGitUser0001/discord-micro"
@@ -35,30 +39,14 @@ Issues = "https://github.com/AGitUser0001/discord-micro/issues"
 micro = "micro:main"
 
 [project.optional-dependencies]
-service = [
-    "httpx2>=2.9.1",
-    "pydantic>=2.13.4",
-    "starlette>=1.4.1",
-]
-client = [
-    "httpx2>=2.9.1",
-    "pydantic>=2.13.4",
-    "starlette>=1.4.1",
-]
-discord = [
-    "pydantic>=2.13.4",
-]
+service = []
+client = []
 store = [
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",
-    "pydantic>=2.13.4",
-    "starlette>=1.4.1",
 ]
 overseer = [
     "graphql-core>=3.2.11,<3.3",
-    "httpx2>=2.9.1",
-    "pydantic>=2.13.4",
-    "starlette>=1.4.1",
 ]
 uvloop = [
     "uvloop>=0.22.1",
@@ -74,15 +62,9 @@ all = [
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
-    "httpx2>=2.9.1",
-    "pydantic>=2.13.4",
-    "starlette>=1.4.1",
 ]
 gateway = [
     "hikari>=2.5.0",
-    "httpx2>=2.9.1",
-    "pydantic>=2.13.4",
-    "starlette>=1.4.1",
 ]
 
 [dependency-groups]
@@ -91,13 +73,10 @@ dev = [
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
-    "httpx2>=2.9.1",
     "psycopg[binary,pool]>=3.3.4,<4",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
-    "pydantic>=2.13.4",
     "ruff>=0.16.1",
-    "starlette>=1.4.1",
     "uvicorn>=0.52.1",
 ]
 
