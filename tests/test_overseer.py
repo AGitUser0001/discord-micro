@@ -6,10 +6,9 @@ from starlette.testclient import TestClient
 
 from micro.overseer import (
   DiscoveredInstance,
-  GraphQLModule,
+  GraphModule,
   NetworkDiscovery,
   Overseer,
-  StoreModule,
 )
 
 SERVICE_SCHEMA: dict[str, Any] = {
@@ -72,11 +71,11 @@ def test_overseer_pushes_discovered_topology() -> None:
       discovery,
       transport=httpx2.MockTransport(respond),
       modules=(
-        StoreModule(
+        GraphModule(
           id="guilds",
           schema="extend type Query { guild(id: ID!): String }",
         ),
-        StoreModule(
+        GraphModule(
           id="members",
           schema="extend type Query { member(id: ID!): String }",
         ),
@@ -116,8 +115,8 @@ def test_overseer_composes_each_store_assignment_independently() -> None:
     )
   )
   modules = (
-    StoreModule(id="guilds", schema="type Query { item: String }"),
-    StoreModule(id="audit", schema="type Query { item: Int }"),
+    GraphModule(id="guilds", schema="type Query { item: String }"),
+    GraphModule(id="audit", schema="type Query { item: Int }"),
   )
 
   async def exercise() -> Overseer:
@@ -137,9 +136,9 @@ def test_overseer_composes_each_store_assignment_independently() -> None:
   assert overseer.store_graphs["audit-store"].modules == ("audit",)
 
 
-def test_overseer_loads_replaces_and_unloads_graphql_modules() -> None:
+def test_overseer_loads_replaces_and_unloads_graph_modules() -> None:
   overseer = Overseer(NetworkDiscovery())
-  valid = GraphQLModule(
+  valid = GraphModule(
     id="guilds",
     schema="""
       type Guild @entity(key: ["id"]) { id: ID! }
@@ -148,7 +147,7 @@ def test_overseer_loads_replaces_and_unloads_graphql_modules() -> None:
       }
     """,
   )
-  invalid_replacement = GraphQLModule(
+  invalid_replacement = GraphModule(
     id="guilds",
     schema="""
       type Guild @entity(key: ["id"]) { id: ID! }
@@ -156,12 +155,12 @@ def test_overseer_loads_replaces_and_unloads_graphql_modules() -> None:
     """,
   )
 
-  overseer.load_graphql_module(valid)
+  overseer.load_graph_module(valid)
   assert overseer.graph_modules == (valid,)
 
-  overseer.load_graphql_module(invalid_replacement)
+  overseer.load_graph_module(invalid_replacement)
   assert overseer.graph_modules == (invalid_replacement,)
 
-  assert overseer.unload_graphql_module("guilds")
+  assert overseer.unload_graph_module("guilds")
   assert overseer.graph_modules == ()
-  assert not overseer.unload_graphql_module("guilds")
+  assert not overseer.unload_graph_module("guilds")

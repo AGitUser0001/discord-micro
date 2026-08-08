@@ -15,8 +15,3 @@ class GraphModule(BaseModel):
     if any(character.isspace() for character in value):
       raise ValueError("graph module IDs cannot contain whitespace")
     return value
-
-
-# Transitional names for applications written against the initial store API.
-GraphQLModule = GraphModule
-StoreModule = GraphModule

@@ -270,10 +270,10 @@ class Overseer:
   def store_graphs(self) -> dict[str, MicroGraph]:
     return dict(self._store_graphs)
 
-  def load_graphql_module(self, module: GraphModule) -> None:
+  def load_graph_module(self, module: GraphModule) -> None:
     self._modules[module.id] = module
 
-  def unload_graphql_module(self, module_id: str) -> bool:
+  def unload_graph_module(self, module_id: str) -> bool:
     if module_id not in self._modules:
       return False
     del self._modules[module_id]

@@ -5,8 +5,8 @@ from uuid import uuid4
 from graphglot.dialect import Dialect
 from psycopg import AsyncConnection, sql
 from psycopg_pool import AsyncConnectionPool
+from pydantic import JsonValue
 
-from micro.service import JsonValue
 from micro.store import GraphResult, GraphStatement
 
 

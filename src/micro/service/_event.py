@@ -5,8 +5,6 @@ from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
 
-type JsonSchema = bool | dict[str, JsonValue]
-
 _EVENT_ID_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 
 

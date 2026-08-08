@@ -3,10 +3,10 @@ from graphql import GraphQLError
 from starlette.testclient import TestClient
 
 from micro.store import (
+  GraphModule,
   GraphResult,
   GraphStatement,
   Store,
-  StoreModule,
 )
 
 
@@ -28,7 +28,7 @@ class Executor:
     self.closed = True
 
 
-PEOPLE = StoreModule(
+PEOPLE = GraphModule(
   id="people",
   schema="""
     type Person @entity(key: ["name"]) { name: String! }
@@ -39,7 +39,7 @@ PEOPLE = StoreModule(
 )
 
 
-def activate(client: TestClient, module: StoreModule = PEOPLE) -> None:
+def activate(client: TestClient, module: GraphModule = PEOPLE) -> None:
   response = client.post(
     "/topology",
     json={"revision": 0, "modules": [module.model_dump(by_alias=True)]},
@@ -125,7 +125,7 @@ def test_store_returns_explicit_graphql_errors() -> None:
 
 
 def test_overseer_topology_activates_distributed_store_module() -> None:
-  module = StoreModule(
+  module = GraphModule(
     id="example.status",
     schema="""
       type Status @entity(key: ["value"]) { value: String! }
@@ -189,14 +189,14 @@ def test_store_becomes_unavailable_for_an_uncomposable_topology() -> None:
 
 def test_store_can_retry_a_failed_desired_revision() -> None:
   store = Store(executor=Executor())
-  invalid = StoreModule(
+  invalid = GraphModule(
     id="people",
     schema="""
       type Person @entity(key: ["name"]) { name: String! }
       type Query { person(name: String!): Person }
     """,
   )
-  valid = StoreModule(
+  valid = GraphModule(
     id="people",
     schema="""
       type Person @entity(key: ["name"]) { name: String! }

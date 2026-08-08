@@ -8,7 +8,7 @@ from ._compiler import (
   physical_reference,
   physical_type,
 )
-from ._module import GraphModule, GraphQLModule, StoreModule
+from ._module import GraphModule
 from ._store import (
   CompiledOperation,
   GraphExecutor,
@@ -50,7 +50,6 @@ __all__ = (
   "GraphCompositionError",
   "GraphExecutor",
   "GraphModule",
-  "GraphQLModule",
   "GraphQLRequest",
   "GraphResult",
   "GraphStatement",
@@ -58,7 +57,6 @@ __all__ = (
   "ResultShaper",
   "Store",
   "StoreClient",
-  "StoreModule",
   "StoreTopology",
   "TypeDirectiveBindContext",
   "TypeDirectiveBinding",

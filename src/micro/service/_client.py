@@ -7,7 +7,6 @@ from micro._microservices import (
   InvalidMicroserviceSchemaError,
   MicroserviceClient,
   NoCompatibleInstanceError,
-  RemoteMicroserviceError,
 )
 from micro._microservices._client import (
   Instance,
@@ -19,9 +18,6 @@ from ._request import RequestSchema
 
 type ServiceSchema = Mapping[str, Any]
 type ServiceRegistration = tuple[str, str, ServiceSchema]
-
-InvalidServiceSchemaError = InvalidMicroserviceSchemaError
-RemoteServiceError = RemoteMicroserviceError
 
 
 class ServiceClient(MicroserviceClient):
@@ -57,23 +53,23 @@ class ServiceClient(MicroserviceClient):
   def validate_schema(self, schema: MicroserviceSchema) -> dict[str, Any]:
     document = super().validate_schema(schema)
     if document.get("kind") != "service":
-      raise InvalidServiceSchemaError("Schema does not describe a service.")
+      raise InvalidMicroserviceSchemaError("Schema does not describe a service.")
     for collection in ("events", "requests"):
       operations = document.get(collection)
       if not isinstance(operations, list):
-        raise InvalidServiceSchemaError(
+        raise InvalidMicroserviceSchemaError(
           f"Service schema must contain a {collection} list."
         )
       for operation in operations:
         if not isinstance(operation, dict):
-          raise InvalidServiceSchemaError(
+          raise InvalidMicroserviceSchemaError(
             f"Every {collection} entry must be an object."
           )
         if not isinstance(operation.get("id"), str):
-          raise InvalidServiceSchemaError(f"Every {collection} entry needs an ID.")
+          raise InvalidMicroserviceSchemaError(f"Every {collection} entry needs an ID.")
         path = operation.get("path")
         if not isinstance(path, str) or not path.startswith("/"):
-          raise InvalidServiceSchemaError(
+          raise InvalidMicroserviceSchemaError(
             f"Every {collection} entry needs an absolute path."
           )
     return document

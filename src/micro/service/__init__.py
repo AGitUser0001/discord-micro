@@ -1,6 +1,6 @@
 from micro._microservices import DuplicateEndpointError, StateReceiver
 
-from ._event import EventSchema, JsonSchema, JsonValue
+from ._event import EventSchema
 from ._request import RequestSchema
 from ._service import (
   DuplicateEventHandlerError,
@@ -16,8 +16,6 @@ __all__ = (
   "DuplicateRequestHandlerError",
   "EventHandler",
   "EventSchema",
-  "JsonSchema",
-  "JsonValue",
   "RequestHandler",
   "RequestSchema",
   "Service",

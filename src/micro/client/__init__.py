@@ -1,15 +1,17 @@
-from micro._microservices import StaleStateError
-from micro.service._client import (
-  InvalidServiceSchemaError,
+from micro._microservices import (
+  InvalidMicroserviceSchemaError,
   NoCompatibleInstanceError,
-  RemoteServiceError,
+  RemoteMicroserviceError,
+  StaleStateError,
+)
+from micro.service._client import (
   ServiceClient,
 )
 
 __all__ = (
-  "InvalidServiceSchemaError",
+  "InvalidMicroserviceSchemaError",
   "NoCompatibleInstanceError",
-  "RemoteServiceError",
+  "RemoteMicroserviceError",
   "ServiceClient",
   "StaleStateError",
 )

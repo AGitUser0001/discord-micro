@@ -2,7 +2,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from micro.overseer import StoreModule
+from micro.overseer import GraphModule
 from micro.service import EventSchema, RequestSchema
 
 
@@ -34,7 +34,7 @@ AUDIT = EventSchema[AuditEntry](
   payload=AuditEntry,
 )
 
-GREETING_STORE = StoreModule(
+GREETING_STORE = GraphModule(
   id="example.greetings",
   schema="""
     type Greeting @entity(key: ["name"]) {
