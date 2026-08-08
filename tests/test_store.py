@@ -1,34 +1,13 @@
-from collections.abc import Mapping, Sequence
-
 import pytest
 from graphql import GraphQLError
 from starlette.testclient import TestClient
 
-from micro.service import JsonValue
 from micro.store import (
-  CompiledOperation,
-  GraphCompiler,
-  GraphQLRequest,
   GraphResult,
   GraphStatement,
   Store,
   StoreModule,
 )
-
-
-class Compiler:
-  def compile(self, request: GraphQLRequest) -> CompiledOperation:
-    name = request.variables["name"]
-    statement = GraphStatement(
-      "MATCH (person:Person) WHERE person.name = $name RETURN person.name AS name",
-      {"name": name},
-      ("name",),
-    )
-
-    def shape(result: GraphResult) -> Mapping[str, JsonValue]:
-      return {"person": dict(result.rows[0]) if result.rows else None}
-
-    return CompiledOperation(statement, shape)
 
 
 class Executor:
@@ -42,23 +21,38 @@ class Executor:
 
   async def execute(self, statement: GraphStatement) -> GraphResult:
     self.statements.append(statement)
-    return GraphResult(({"name": statement.parameters["name"]},))
+    values = ("person:Ada", "Ada")
+    return GraphResult((dict(zip(statement.columns, values, strict=True)),))
 
   async def close(self) -> None:
     self.closed = True
 
 
-SCHEMA = """
-  type Person { name: String! }
-  type Query { person(name: String!): Person }
-"""
+PEOPLE = StoreModule(
+  id="people",
+  schema="""
+    type Person @entity(key: ["name"]) { name: String! }
+    type Query {
+      person(name: String!): Person @from(key: "{'name': name}")
+    }
+  """,
+)
+
+
+def activate(client: TestClient, module: StoreModule = PEOPLE) -> None:
+  response = client.post(
+    "/topology",
+    json={"revision": 0, "modules": [module.model_dump(by_alias=True)]},
+  )
+  assert response.status_code == 204
 
 
 def test_store_executes_compiled_graphql_operation() -> None:
   executor = Executor()
-  store = Store(SCHEMA, compiler=Compiler(), executor=executor)
+  store = Store(executor=executor)
 
   with TestClient(store) as client:
+    activate(client)
     assert client.get("/health/ready").status_code == 204
     response = client.post(
       "/graphql",
@@ -72,14 +66,15 @@ def test_store_executes_compiled_graphql_operation() -> None:
   assert response.json() == {"data": {"person": {"name": "Ada"}}}
   assert executor.started
   assert executor.closed
-  assert executor.statements[0].parameters == {"name": "Ada"}
+  assert executor.statements[0].columns == ("c0", "c1")
 
 
 def test_store_serves_graphql_introspection_without_using_database() -> None:
   executor = Executor()
-  store = Store(SCHEMA, compiler=Compiler(), executor=executor)
+  store = Store(executor=executor)
 
   with TestClient(store) as client:
+    activate(client)
     response = client.post(
       "/graphql",
       json={"query": "{ __schema { queryType { name } } }"},
@@ -92,9 +87,10 @@ def test_store_serves_graphql_introspection_without_using_database() -> None:
 
 def test_store_rejects_invalid_graphql_before_compilation() -> None:
   executor = Executor()
-  store = Store(SCHEMA, compiler=Compiler(), executor=executor)
+  store = Store(executor=executor)
 
   with TestClient(store) as client:
+    activate(client)
     response = client.post("/graphql", json={"query": "{ missing }"})
 
   assert response.status_code == 400
@@ -108,13 +104,14 @@ def test_graph_statement_requires_valid_gql() -> None:
 
 
 def test_store_returns_explicit_graphql_errors() -> None:
-  class FailingCompiler:
-    def compile(self, request: GraphQLRequest) -> CompiledOperation:
+  class FailingExecutor(Executor):
+    async def execute(self, statement: GraphStatement) -> GraphResult:
       raise GraphQLError("Operation is unavailable.")
 
-  store = Store(SCHEMA, compiler=FailingCompiler(), executor=Executor())
+  store = Store(executor=FailingExecutor())
 
   with TestClient(store) as client:
+    activate(client)
     response = client.post(
       "/graphql",
       json={"query": '{ person(name: "Ada") { name } }'},
@@ -128,36 +125,16 @@ def test_store_returns_explicit_graphql_errors() -> None:
 
 
 def test_overseer_topology_activates_distributed_store_module() -> None:
-  class ModuleCompiler:
-    def compile(self, request: GraphQLRequest) -> CompiledOperation:
-      statement = GraphStatement("RETURN 'active' AS status", columns=("status",))
-      return CompiledOperation(
-        statement,
-        lambda result: {"moduleStatus": result.rows[0]["status"]},
-      )
-
-  class ModuleExecutor(Executor):
-    async def execute(self, statement: GraphStatement) -> GraphResult:
-      self.statements.append(statement)
-      return GraphResult(({"status": "active"},))
-
-  class Composer:
-    def compose(
-      self, base: GraphCompiler, modules: Sequence[StoreModule]
-    ) -> ModuleCompiler:
-      assert tuple(modules) == (module,)
-      return ModuleCompiler()
-
   module = StoreModule(
     id="example.status",
-    schema="extend type Query { moduleStatus: String! }",
+    schema="""
+      type Status @entity(key: ["value"]) { value: String! }
+      type Query {
+        moduleStatus(value: String!): Status @from(key: "{'value': value}")
+      }
+    """,
   )
-  store = Store(
-    SCHEMA,
-    compiler=Compiler(),
-    executor=ModuleExecutor(),
-    module_composer=Composer(),
-  )
+  store = Store(executor=Executor())
 
   with TestClient(store) as client:
     assert (
@@ -167,16 +144,18 @@ def test_overseer_topology_activates_distributed_store_module() -> None:
       "/topology",
       json={"revision": 0, "modules": [module.model_dump(by_alias=True)]},
     )
-    response = client.post("/graphql", json={"query": "{ moduleStatus }"})
+    response = client.post(
+      "/graphql", json={"query": "{ moduleStatus(value: \"Ada\") { value } }"}
+    )
 
   assert activated.status_code == 204
-  assert response.json() == {"data": {"moduleStatus": "active"}}
+  assert response.json() == {"data": {"moduleStatus": {"value": "Ada"}}}
   assert store.active_modules == ("example.status",)
   assert store.topology_revision == 0
 
 
 def test_store_becomes_unavailable_for_an_uncomposable_topology() -> None:
-  store = Store(SCHEMA, compiler=Compiler(), executor=Executor())
+  store = Store(executor=Executor())
 
   with TestClient(store) as client:
     response = client.post(
@@ -209,7 +188,7 @@ def test_store_becomes_unavailable_for_an_uncomposable_topology() -> None:
 
 
 def test_store_can_retry_a_failed_desired_revision() -> None:
-  store = Store(SCHEMA, compiler=Compiler(), executor=Executor())
+  store = Store(executor=Executor())
   invalid = StoreModule(
     id="people",
     schema="""

@@ -1,7 +1,7 @@
 # Complete application example
 
 This example runs a small Micro deployment across four independent ASGI
-processes and one AGE database:
+processes and the reusable `examples/apache_age` adapter and database:
 
 | Port | Process |
 | --- | --- |
@@ -18,13 +18,15 @@ routable service and store locations to the application services.
 
 ## Run it
 
-From this directory, start AGE:
+From this directory, start AGE. The Compose service builds the Docker context
+from `../apache_age`:
 
 ```console
 docker compose up --build -d age
 ```
 
-Install the example environment:
+Install the example environment. Its local `micro-age` dependency also
+comes from `../apache_age`, so the application does not duplicate the executor:
 
 ```console
 uv sync

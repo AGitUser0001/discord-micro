@@ -1,8 +1,13 @@
 # Apache AGE store example
 
-This example keeps all database-specific implementation outside `micro.store`.
+This importable example package keeps all database-specific implementation
+outside `micro.store`.
 It translates Micro's canonical GQL into AGE-compatible Cypher and executes it
 through an async Psycopg connection pool.
+
+Other examples can depend on the local `micro-age` distribution and use
+`from micro_age import ApacheAgeExecutor`; `examples/application` does exactly
+that for its store process.
 
 Start AGE from the repository root:
 

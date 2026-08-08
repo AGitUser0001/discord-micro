@@ -12,7 +12,12 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from micro.store import GraphModule
-from micro.store.composer import MicroGraph, compose_graph
+from micro.store.composer import (
+  DirectiveMetadata,
+  MicroGraph,
+  TypeDirectiveMetadata,
+  compose_graph,
+)
 
 
 class DiscoveredInstance(BaseModel):
@@ -131,6 +136,8 @@ class Overseer:
     transport: httpx2.AsyncBaseTransport | None = None,
     timeout: float = 5.0,
     modules: Sequence[GraphModule] = (),
+    directives: Sequence[DirectiveMetadata] = (),
+    type_directives: Sequence[TypeDirectiveMetadata] = (),
   ) -> None:
     self.discovery = discovery
     self._revision = -1
@@ -139,6 +146,8 @@ class Overseer:
     if len(self._modules) != len(modules):
       raise ValueError("Store module IDs must be unique.")
     self._store_graphs: dict[str, MicroGraph] = {}
+    self._directives = tuple(directives)
+    self._type_directives = tuple(type_directives)
     self._http = httpx2.AsyncClient(transport=transport, timeout=timeout)
     self._app = Starlette(
       routes=[
@@ -209,7 +218,11 @@ class Overseer:
       assignment = tuple(module.id for module in modules)
       graph = composed_by_assignment.get(assignment)
       if graph is None:
-        graph = compose_graph(modules)
+        graph = compose_graph(
+          modules,
+          directives=self._directives,
+          type_directives=self._type_directives,
+        )
         composed_by_assignment[assignment] = graph
       store_graphs[instance_id] = graph
 

@@ -156,3 +156,16 @@ Micro compiles operations over the composed schema into canonical ISO GQL.
 Physical labels, properties, and reference types use deterministic hashes of
 their schema coordinates. Entities reset the storage path and can therefore be
 shared wherever the composed graph references them.
+
+`@entity` and `@from` are ordinary registered directive metadata. Composition
+attaches typed metadata to the annotated type or field; the universal compiler
+then uses that metadata while planning each request. Applications can install
+additional field and type directives through the `directives` and
+`type_directives` arguments accepted by both `Store` and `Overseer`.
+
+The universal compiler handles multiple root fields, aliases, variables,
+named and inline fragments, `@skip` and `@include`, `__typename`, nested field
+arguments backed by directives, object and scalar results, and query, mutation,
+or subscription operation roots. Storage behavior is never inferred: every
+root field and every argument-sensitive nested field must attach a registered
+runtime directive.

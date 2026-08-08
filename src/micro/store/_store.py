@@ -13,7 +13,6 @@ from graphql import (
   OperationDefinitionNode,
   build_schema,
   execute_sync,
-  extend_schema,
   get_operation_ast,
   parse,
   print_schema,
@@ -28,6 +27,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from micro._microservices import Microservice
 
 from ._module import GraphModule
+from .composer import DirectiveMetadata, TypeDirectiveMetadata
 
 type ResultShaper = Callable[[GraphResult], Mapping[str, JsonValue]]
 
@@ -83,7 +83,7 @@ class CompiledOperation:
   shape: ResultShaper
 
 
-class GraphCompiler(Protocol):
+class _Compiler(Protocol):
   def compile(self, request: GraphQLRequest) -> CompiledOperation: ...
 
 
@@ -100,20 +100,10 @@ class GraphExecutor(Protocol):
   async def close(self) -> None: ...
 
 
-class ModuleComposer(Protocol):
-  """Builds one compiler for an overseer-provided set of store modules."""
-
-  def compose(
-    self,
-    base: GraphCompiler,
-    modules: Sequence[GraphModule],
-  ) -> GraphCompiler: ...
-
-
 @dataclass(frozen=True, slots=True)
 class _StoreRuntime:
   schema: GraphQLSchema
-  compiler: GraphCompiler
+  compiler: _Compiler
   module_ids: tuple[str, ...]
 
 
@@ -122,19 +112,17 @@ class Store(Microservice):
 
   def __init__(
     self,
-    schema: GraphQLSchema | str | None = None,
     *,
-    compiler: GraphCompiler | None = None,
     executor: GraphExecutor,
-    module_composer: ModuleComposer | None = None,
+    directives: Sequence[DirectiveMetadata] = (),
+    type_directives: Sequence[TypeDirectiveMetadata] = (),
   ) -> None:
     super().__init__("store")
-    schema = schema or "type Query { _micro: Boolean }"
-    self._base_schema = build_schema(schema) if isinstance(schema, str) else schema
-    self._base_compiler = compiler or _UnavailableCompiler()
+    empty_schema = build_schema("type Query { _micro: Boolean }")
     self.executor = executor
-    self._module_composer = module_composer
-    self._runtime = _StoreRuntime(self._base_schema, self._base_compiler, ())
+    self._directives = tuple(directives)
+    self._type_directives = tuple(type_directives)
+    self._runtime = _StoreRuntime(empty_schema, _UnavailableCompiler(), ())
     self._topology_revision = -1
     self._desired_topology_revision = -1
     self._composition_error: str | None = None
@@ -277,22 +265,20 @@ class Store(Microservice):
     try:
       if len(set(module_ids)) != len(module_ids):
         raise ValueError("Store topology contains duplicate module IDs.")
-      if topology.modules and self._module_composer is None:
-        from ._compiler import MicroGraphCompiler
+      if topology.modules:
+        from ._compiler import GraphCompiler
         from .composer import compose_graph
 
-        graph = compose_graph(topology.modules)
+        graph = compose_graph(
+          topology.modules,
+          directives=self._directives,
+          type_directives=self._type_directives,
+        )
         schema = graph.schema
-        compiler: GraphCompiler = MicroGraphCompiler(graph)
-      elif topology.modules:
-        schema = self._base_schema
-        for module in topology.modules:
-          schema = extend_schema(schema, parse(module.graphql_schema))
-        assert self._module_composer is not None
-        compiler = self._module_composer.compose(self._base_compiler, topology.modules)
+        compiler: _Compiler = GraphCompiler(graph)
       else:
-        schema = self._base_schema
-        compiler = self._base_compiler
+        schema = build_schema("type Query { _micro: Boolean }")
+        compiler = _UnavailableCompiler()
     except Exception as exc:
       self._composition_error = str(exc)
       raise

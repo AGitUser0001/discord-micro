@@ -4,9 +4,10 @@ version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
     "micro[client,overseer,service,store]",
-    "psycopg[binary,pool]>=3.2.9,<4",
+    "micro-age",
     "uvicorn>=0.52.1",
 ]
 
 [tool.uv.sources]
 micro = { path = "../.." }
+micro-age = { path = "../apache_age" }

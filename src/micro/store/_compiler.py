@@ -3,24 +3,35 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 from graphql import (
   FieldNode,
+  FragmentDefinitionNode,
+  FragmentSpreadNode,
+  GraphQLCompositeType,
   GraphQLError,
   GraphQLField,
+  GraphQLIncludeDirective,
   GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
+  GraphQLSchema,
+  GraphQLSkipDirective,
   GraphQLType,
+  InlineFragmentNode,
+  SelectionSetNode,
+  do_types_overlap,
   get_argument_values,
+  get_directive_values,
   get_named_type,
+  is_composite_type,
   is_leaf_type,
 )
 from pydantic import JsonValue
 
 from ._store import CompiledOperation, GraphQLRequest, GraphResult, GraphStatement
-from .composer import MicroGraph
+from .composer import DirectiveCompileContext, MicroGraph
 
 _LAYOUT_VERSION = "micro:gql-layout:v1"
 _IDENTIFIER = re.compile(r"[^A-Za-z0-9_]")
@@ -34,79 +45,154 @@ class _Projection:
   object_fields: list[tuple[str, _Projection, bool]]
 
 
-class MicroGraphCompiler:
+@dataclass(frozen=True, slots=True)
+class _ScalarProjection:
+  response_name: str
+  column: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RootObjectProjection:
+  projection: _Projection
+  is_list: bool
+
+
+class GraphCompiler:
   """Compiles a composed Micro graph into canonical GQL."""
 
   def __init__(self, graph: MicroGraph) -> None:
     self.graph = graph
 
   def compile(self, request: GraphQLRequest) -> CompiledOperation:
-    selections = request.operation.selection_set.selections
-    if len(selections) != 1 or not isinstance(selections[0], FieldNode):
-      raise GraphQLError("A compiled store operation requires one root field.")
-    root_field = selections[0]
-    lookup = self.graph.lookups.get(
-      (request.operation.operation, root_field.name.value)
-    )
-    if lookup is None:
-      raise GraphQLError(
-        f"Root field {root_field.name.value!r} has no Micro runtime macro."
-      )
-
     root_type = request.schema.get_root_type(request.operation.operation)
     if root_type is None:
       raise GraphQLError("The GraphQL operation has no root type.")
-    field_definition = root_type.fields[root_field.name.value]
-    arguments = get_argument_values(
-      field_definition,
-      root_field,
-      dict(request.variables),
-    )
-    try:
-      key = lookup.expression.evaluate(arguments)
-    except (TypeError, ValueError, NameError) as exc:
-      raise GraphQLError(
-        f"The @from expression for {root_field.name.value!r} failed: {exc}"
-      ) from exc
-    parameters: dict[str, JsonValue] = {
-      "root_identity": entity_identity(lookup.entity.name, key)
+    fragments = {
+      definition.name.value: definition
+      for definition in request.document.definitions
+      if isinstance(definition, FragmentDefinitionNode)
     }
-    matches = [
-      f"MATCH (n0:{physical_type(lookup.entity.name)})",
-      "WHERE n0._micro_id = $root_identity",
-    ]
-    returns: list[str] = []
-    counters = {"node": 1, "column": 0}
-    root_projection = self._project_object(
-      cast(GraphQLObjectType, get_named_type(field_definition.type)),
-      root_field,
-      "n0",
-      lookup.entity.name,
-      matches,
-      returns,
-      counters,
+    root_fields = _collect_fields(
+      request.schema,
+      root_type,
+      request.operation.selection_set,
+      fragments,
+      request.variables,
     )
+    parameters: dict[str, JsonValue] = {}
+    clauses: list[str] = []
+    returns: list[str] = []
+    counters = {"node": 0, "column": 0, "parameter": 0}
+    projections: list[_RootObjectProjection | _ScalarProjection] = []
+    for root_field in root_fields:
+      field_definition = root_type.fields[root_field.name.value]
+      binding = self.graph.bindings.get((root_type.name, root_field.name.value))
+      if binding is None:
+        raise GraphQLError(
+          f"Root field {root_field.name.value!r} has no runtime directive."
+        )
+      arguments = get_argument_values(
+        field_definition,
+        root_field,
+        dict(request.variables),
+      )
+      variable = _node(counters)
+      parameter_prefix = f"p{counters['parameter']}"
+      counters["parameter"] += 1
+      try:
+        source = binding.directive.compile(
+          DirectiveCompileContext(
+            request.operation.operation,
+            root_field.name.value,
+            binding.return_type,
+            arguments,
+            variable,
+            None,
+            parameter_prefix,
+            binding.value,
+          )
+        )
+      except (TypeError, ValueError, NameError) as exc:
+        raise GraphQLError(
+          f"@{binding.directive.name} failed for {root_field.name.value!r}: {exc}"
+        ) from exc
+      overlap = set(parameters) & set(source.parameters)
+      if overlap:
+        raise GraphQLError(
+          f"Runtime directive produced duplicate parameters: {', '.join(overlap)}."
+        )
+      parameters.update(source.parameters)
+      clauses.extend(source.clauses)
+      named = get_named_type(field_definition.type)
+      if is_leaf_type(named):
+        if source.value is None:
+          raise GraphQLError(
+            f"@{binding.directive.name} did not provide a scalar value expression."
+          )
+        column = _column(counters)
+        returns.append(f"{source.value} AS {column}")
+        projections.append(
+          _ScalarProjection(
+            root_field.alias.value if root_field.alias else root_field.name.value,
+            column,
+          )
+        )
+        continue
+      if not isinstance(named, GraphQLObjectType):
+        raise GraphQLError(
+          f"Runtime field {root_field.name.value!r} must return an object."
+        )
+      projections.append(
+        _RootObjectProjection(
+          self._project_object(
+            request,
+            named,
+            root_field,
+            variable,
+            source.path,
+            fragments,
+            clauses,
+            parameters,
+            returns,
+            counters,
+          ),
+          _is_list(field_definition),
+        )
+      )
     if not returns:
-      raise GraphQLError("A compiled store query must select at least one field.")
+      returns.append("0 AS _micro_empty")
     statement = GraphStatement(
-      " ".join((*matches, f"RETURN {', '.join(returns)}")),
+      " ".join((*clauses, f"RETURN {', '.join(returns)}")),
       parameters,
       tuple(_return_columns(returns)),
     )
 
     def shape(result: GraphResult) -> Mapping[str, JsonValue]:
-      value = _shape_projection(root_projection, result.rows)
-      return {root_projection.response_name: value}
+      return {
+        (
+          projection.projection.response_name
+          if isinstance(projection, _RootObjectProjection)
+          else projection.response_name
+        ): (
+          _shape_root_projection(projection, result.rows)
+          if isinstance(projection, _RootObjectProjection)
+          else (result.rows[0].get(projection.column) if result.rows else None)
+        )
+        for projection in projections
+      }
 
     return CompiledOperation(statement, shape)
 
   def _project_object(
     self,
+    request: GraphQLRequest,
     object_type: GraphQLObjectType,
     selection: FieldNode,
     variable: str,
     path: str,
-    matches: list[str],
+    fragments: Mapping[str, FragmentDefinitionNode],
+    clauses: list[str],
+    parameters: dict[str, JsonValue],
     returns: list[str],
     counters: dict[str, int],
   ) -> _Projection:
@@ -117,11 +203,21 @@ class MicroGraphCompiler:
     if selection.selection_set is None:
       raise GraphQLError(f"Object field {response_name!r} requires a selection set.")
 
-    for child in selection.selection_set.selections:
-      if not isinstance(child, FieldNode):
-        raise GraphQLError("Fragments are not supported by the GQL compiler yet.")
-      if child.arguments:
-        raise GraphQLError("Nested field arguments are not supported yet.")
+    children = _collect_fields(
+      request.schema,
+      object_type,
+      selection.selection_set,
+      fragments,
+      request.variables,
+    )
+    for child in children:
+      if child.name.value == "__typename":
+        column = _column(counters)
+        returns.append(f"'{object_type.name}' AS {column}")
+        projection.scalar_fields.append(
+          (child.alias.value if child.alias else "__typename", column)
+        )
+        continue
       definition = object_type.fields.get(child.name.value)
       if definition is None:
         raise GraphQLError(
@@ -129,18 +225,52 @@ class MicroGraphCompiler:
         )
       child_name = child.alias.value if child.alias else child.name.value
       named = get_named_type(definition.type)
+      binding = self.graph.bindings.get((object_type.name, child.name.value))
       if is_leaf_type(named):
         column = _column(counters)
-        coordinate = f"{path}.{child.name.value}"
-        returns.append(f"{variable}.{physical_field(coordinate)} AS {column}")
+        if binding is None:
+          if child.arguments:
+            raise GraphQLError(
+              f"Scalar field {object_type.name}.{child.name.value} has arguments "
+              "but no runtime directive."
+            )
+          coordinate = f"{path}.{child.name.value}"
+          value = f"{variable}.{physical_field(coordinate)}"
+        else:
+          arguments = get_argument_values(
+            definition,
+            child,
+            dict(request.variables),
+          )
+          prefix = f"p{counters['parameter']}"
+          counters["parameter"] += 1
+          source = binding.directive.compile(
+            DirectiveCompileContext(
+              request.operation.operation,
+              child.name.value,
+              binding.return_type,
+              arguments,
+              _node(counters),
+              variable,
+              prefix,
+              binding.value,
+            )
+          )
+          parameters.update(source.parameters)
+          clauses.extend(source.clauses)
+          if source.value is None:
+            raise GraphQLError(
+              f"@{binding.directive.name} did not provide a scalar value expression."
+            )
+          value = source.value
+        returns.append(f"{value} AS {column}")
         projection.scalar_fields.append((child_name, column))
         continue
       if not isinstance(named, GraphQLObjectType):
         raise GraphQLError(
           f"Field {object_type.name}.{child.name.value} has an unsupported type."
         )
-      node_variable = f"n{counters['node']}"
-      counters["node"] += 1
+      node_variable = _node(counters)
       coordinate = f"{path}.{child.name.value}"
       child_path = named.name if named.name in self.graph.entities else coordinate
       child_label = (
@@ -148,16 +278,51 @@ class MicroGraphCompiler:
         if named.name in self.graph.entities
         else physical_path_type(named.name, child_path)
       )
-      matches.append(
-        f"OPTIONAL MATCH ({variable})-[:{physical_reference(coordinate)}]->"
-        f"({node_variable}:{child_label})"
-      )
+      if binding is None:
+        if child.arguments:
+          raise GraphQLError(
+            f"Nested field {object_type.name}.{child.name.value} has arguments "
+            "but no runtime directive."
+          )
+        clauses.append(
+          f"OPTIONAL MATCH ({variable})-[:{physical_reference(coordinate)}]->"
+          f"({node_variable}:{child_label})"
+        )
+      else:
+        arguments = get_argument_values(
+          definition,
+          child,
+          dict(request.variables),
+        )
+        prefix = f"p{counters['parameter']}"
+        counters["parameter"] += 1
+        source = binding.directive.compile(
+          DirectiveCompileContext(
+            request.operation.operation,
+            child.name.value,
+            binding.return_type,
+            arguments,
+            node_variable,
+            variable,
+            prefix,
+            binding.value,
+          )
+        )
+        overlap = set(parameters) & set(source.parameters)
+        if overlap:
+          raise GraphQLError("A runtime directive produced duplicate parameters.")
+        parameters.update(source.parameters)
+        clauses.extend(source.clauses)
+        child_path = source.path
       child_projection = self._project_object(
+        request,
         named,
         child,
         node_variable,
         child_path,
-        matches,
+        fragments,
+        clauses,
+        parameters,
         returns,
         counters,
       )
@@ -207,6 +372,101 @@ def _column(counters: dict[str, int]) -> str:
   return column
 
 
+def _node(counters: dict[str, int]) -> str:
+  node = f"n{counters['node']}"
+  counters["node"] += 1
+  return node
+
+
+def _collect_fields(
+  schema: GraphQLSchema,
+  object_type: GraphQLObjectType,
+  selection_set: SelectionSetNode,
+  fragments: Mapping[str, FragmentDefinitionNode],
+  variables: Mapping[str, Any],
+  visited: frozenset[str] = frozenset(),
+) -> tuple[FieldNode, ...]:
+  fields: dict[str, FieldNode] = {}
+
+  def add(field: FieldNode) -> None:
+    response_name = field.alias.value if field.alias else field.name.value
+    previous = fields.get(response_name)
+    if previous is None:
+      fields[response_name] = field
+      return
+    selections = (
+      *((previous.selection_set.selections) if previous.selection_set else ()),
+      *((field.selection_set.selections) if field.selection_set else ()),
+    )
+    fields[response_name] = FieldNode(
+      alias=previous.alias,
+      name=previous.name,
+      arguments=previous.arguments,
+      directives=previous.directives,
+      selection_set=SelectionSetNode(selections=selections) if selections else None,
+    )
+
+  for selection in selection_set.selections:
+    if not _included(selection, variables):
+      continue
+    if isinstance(selection, FieldNode):
+      add(selection)
+      continue
+    if isinstance(selection, FragmentSpreadNode):
+      name = selection.name.value
+      if name in visited:
+        continue
+      fragment = fragments[name]
+      condition = schema.get_type(fragment.type_condition.name.value)
+      if (
+        condition is None
+        or not is_composite_type(condition)
+        or not do_types_overlap(
+          schema, object_type, cast(GraphQLCompositeType, condition)
+        )
+      ):
+        continue
+      for field in _collect_fields(
+        schema,
+        object_type,
+        fragment.selection_set,
+        fragments,
+        variables,
+        visited | {name},
+      ):
+        add(field)
+      continue
+    if isinstance(selection, InlineFragmentNode):
+      if selection.type_condition is not None:
+        condition = schema.get_type(selection.type_condition.name.value)
+        if (
+          condition is None
+          or not is_composite_type(condition)
+          or not do_types_overlap(
+            schema, object_type, cast(GraphQLCompositeType, condition)
+          )
+        ):
+          continue
+      for field in _collect_fields(
+        schema,
+        object_type,
+        selection.selection_set,
+        fragments,
+        variables,
+        visited,
+      ):
+        add(field)
+  return tuple(fields.values())
+
+
+def _included(node: Any, variables: Mapping[str, Any]) -> bool:
+  skipped = get_directive_values(GraphQLSkipDirective, node, dict(variables))
+  if skipped is not None and skipped["if"]:
+    return False
+  included = get_directive_values(GraphQLIncludeDirective, node, dict(variables))
+  return included is None or bool(included["if"])
+
+
 def _return_columns(returns: Sequence[str]) -> Sequence[str]:
   return tuple(item.rsplit(" AS ", 1)[1] for item in returns)
 
@@ -243,3 +503,19 @@ def _shape_projection(
     else:
       result[response_name] = _shape_projection(child, present)
   return result
+
+
+def _shape_root_projection(
+  root: _RootObjectProjection,
+  rows: Sequence[Mapping[str, JsonValue]],
+) -> JsonValue:
+  if not root.is_list:
+    return _shape_projection(root.projection, rows)
+  groups: dict[str, list[Mapping[str, JsonValue]]] = {}
+  for row in rows:
+    identity = row.get(root.projection.identity_column)
+    if isinstance(identity, str):
+      groups.setdefault(identity, []).append(row)
+  return [
+    _shape_projection(root.projection, grouped_rows) for grouped_rows in groups.values()
+  ]

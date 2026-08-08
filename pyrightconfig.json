@@ -1,6 +1,20 @@
 {
   "venvPath": ".",
   "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": "examples/application",
+      "extraPaths": ["src", "examples/apache_age/src"]
+    },
+    {
+      "root": "examples/apache_age",
+      "extraPaths": ["src", "examples/apache_age/src"]
+    },
+    {
+      "root": ".",
+      "extraPaths": ["src"]
+    }
+  ],
   "exclude": [
     ".ruff_cache",
     "**/__pycache__",

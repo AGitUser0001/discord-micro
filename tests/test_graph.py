@@ -1,16 +1,29 @@
 from types import MappingProxyType
+from typing import cast
 
 import pytest
-from graphql import GraphQLObjectType, get_operation_ast, parse
+from graphql import (
+  GraphQLEnumType,
+  GraphQLInputObjectType,
+  GraphQLObjectType,
+  GraphQLUnionType,
+  get_operation_ast,
+  parse,
+)
+from pydantic import JsonValue
 from starlette.testclient import TestClient
 
 from micro.store import (
+  DirectiveBindContext,
+  DirectiveCompileContext,
+  DirectiveMetadata,
+  DirectiveResult,
+  GraphCompiler,
   GraphCompositionError,
   GraphModule,
   GraphQLRequest,
   GraphResult,
   GraphStatement,
-  MicroGraphCompiler,
   Store,
   compose_graph,
   entity_identity,
@@ -55,6 +68,7 @@ def test_graph_composes_shared_entity_and_query_fields() -> None:
   assert isinstance(guild, GraphQLObjectType)
   assert set(guild.fields) == {"id", "name", "channels"}
   assert graph.entities["Guild"].keys == (("id",),)
+  assert graph.type_bindings["Guild"]["entity"].value == graph.entities["Guild"]
 
 
 def test_graph_requires_explicit_entity_lookup() -> None:
@@ -108,12 +122,12 @@ def test_compiler_uses_hashed_paths_and_shapes_entity_lists() -> None:
     "Guild",
   )
 
-  compiled = MicroGraphCompiler(graph).compile(request)
+  compiled = GraphCompiler(graph).compile(request)
 
   assert f":{physical_type('Guild')}" in compiled.statement.text
   assert f":{physical_reference('Guild.channels')}" in compiled.statement.text
   assert compiled.statement.parameters == {
-    "root_identity": entity_identity("Guild", {"id": "123"})
+    "p0_identity": entity_identity("Guild", {"id": "123"})
   }
   columns = compiled.statement.columns
   assert compiled.shape(
@@ -182,3 +196,163 @@ def test_store_uses_graph_compiler_without_application_compiler() -> None:
 
   assert topology.status_code == 204
   assert response.json() == {"data": {"guild": {"id": "123", "name": "Micro"}}}
+
+
+def test_compiler_supports_multiple_roots_fragments_typename_and_conditionals() -> None:
+  graph = compose_graph((GUILDS,))
+  document = parse(
+    """
+      query Guilds($second: Boolean!) {
+        first: guild(id: "1") { ...GuildFields }
+        second: guild(id: "2") @include(if: $second) { ...GuildFields }
+      }
+
+      fragment GuildFields on Guild {
+        __typename
+        id
+        ... on Guild { name }
+      }
+    """
+  )
+  operation = get_operation_ast(document, "Guilds")
+  assert operation is not None
+  compiled = GraphCompiler(graph).compile(
+    GraphQLRequest(
+      graph.schema,
+      document,
+      operation,
+      MappingProxyType({"second": True}),
+      "Guilds",
+    )
+  )
+  columns = compiled.statement.columns
+
+  assert compiled.statement.parameters == {
+    "p0_identity": entity_identity("Guild", {"id": "1"}),
+    "p1_identity": entity_identity("Guild", {"id": "2"}),
+  }
+  assert compiled.shape(
+    GraphResult(
+      (
+        dict(
+          zip(
+            columns,
+            ("guild:1", "Guild", "1", "one", "guild:2", "Guild", "2", "two"),
+            strict=True,
+          )
+        ),
+      )
+    )
+  ) == {
+    "first": {"__typename": "Guild", "id": "1", "name": "one"},
+    "second": {"__typename": "Guild", "id": "2", "name": "two"},
+  }
+
+  skipped = GraphCompiler(graph).compile(
+    GraphQLRequest(
+      graph.schema,
+      document,
+      operation,
+      MappingProxyType({"second": False}),
+      "Guilds",
+    )
+  )
+  assert set(skipped.statement.parameters) == {"p0_identity"}
+  assert set(skipped.shape(GraphResult(()))) == {"first"}
+
+
+def test_registered_directive_attaches_metadata_and_compiles_mutation_scalar() -> None:
+  def attach(context: DirectiveBindContext) -> str:
+    return context.field.name.value
+
+  def compile(context: DirectiveCompileContext) -> DirectiveResult:
+    parameter = f"{context.parameter_prefix}_value"
+    return DirectiveResult(
+      (),
+      {parameter: cast(JsonValue, context.arguments["value"])},
+      "",
+      f"${parameter}",
+    )
+
+  constant = DirectiveMetadata(
+    "constant",
+    "directive @constant on FIELD_DEFINITION",
+    attach,
+    compile,
+  )
+  module = GraphModule(
+    id="mutation",
+    schema="""
+      type Query { noop: Boolean }
+      type Mutation { set(value: String!): String! @constant }
+    """,
+  )
+  graph = compose_graph((module,), directives=(constant,))
+  document = parse('mutation { set(value: "updated") }')
+  operation = get_operation_ast(document)
+  assert operation is not None
+  compiled = GraphCompiler(graph).compile(
+    GraphQLRequest(
+      graph.schema,
+      document,
+      operation,
+      MappingProxyType({}),
+      None,
+    )
+  )
+
+  assert graph.bindings[("Mutation", "set")].value == "set"
+  assert compiled.statement.parameters == {"p0_value": "updated"}
+  assert compiled.shape(GraphResult(({"c0": "updated"},))) == {"set": "updated"}
+
+
+def test_composer_merges_all_extensible_graphql_type_kinds() -> None:
+  core = GraphModule(
+    id="core",
+    schema="""
+      schema { query: Root }
+      interface Node { id: ID! }
+      input Filter { term: String }
+      enum Kind { A }
+      type A implements Node @entity(key: ["id"]) { id: ID! }
+      union Result = A
+      type Root {
+        a(id: ID!): A @from(key: "{'id': id}")
+      }
+    """,
+  )
+  extension = GraphModule(
+    id="extension",
+    schema="""
+      extend interface Node { name: String! }
+      extend input Filter { limit: Int }
+      extend enum Kind { B }
+      extend type A { name: String! }
+      type B implements Node @entity(key: ["id"]) {
+        id: ID!
+        name: String!
+      }
+      extend union Result = B
+      extend type Root {
+        b(id: ID!): B @from(key: "{'id': id}")
+      }
+    """,
+  )
+
+  graph = compose_graph((core, extension))
+
+  assert graph.schema.query_type is not None
+  assert graph.schema.query_type.name == "Root"
+  assert set(graph.schema.query_type.fields) == {"a", "b"}
+  filter_type = graph.schema.get_type("Filter")
+  kind_type = graph.schema.get_type("Kind")
+  result_type = graph.schema.get_type("Result")
+  assert isinstance(filter_type, GraphQLInputObjectType)
+  assert isinstance(kind_type, GraphQLEnumType)
+  assert isinstance(result_type, GraphQLUnionType)
+  assert set(filter_type.fields) == {"term", "limit"}
+  assert set(kind_type.values) == {"A", "B"}
+  assert set(result_type.types) == {
+    graph.schema.get_type("A"),
+    graph.schema.get_type("B"),
+  }

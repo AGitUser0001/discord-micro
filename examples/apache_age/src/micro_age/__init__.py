@@ -11,6 +11,8 @@ from micro.store import GraphResult, GraphStatement
 
 
 class ApacheAgeExecutor:
+  """Execute Micro's canonical GQL against an Apache AGE graph."""
+
   def __init__(self, connection_info: str, *, graph: str = "micro") -> None:
     self._graph = graph
     self._pool = AsyncConnectionPool(
@@ -91,3 +93,6 @@ def _decode_agtype(value: Any) -> JsonValue:
     return cast(JsonValue, json.loads(value))
   except json.JSONDecodeError:
     return value
+
+
+__all__ = ("ApacheAgeExecutor",)
