@@ -63,6 +63,11 @@ def test_overseer_pushes_discovered_topology() -> None:
         role="store",
         modules=("guilds", "members"),
       ),
+      DiscoveredInstance(
+        id="queue-1",
+        base_url="http://queue.internal",
+        role="queue",
+      ),
     ]
   )
 
@@ -91,6 +96,7 @@ def test_overseer_pushes_discovered_topology() -> None:
   assert service_request[:2] == ("service.internal", "/state")
   assert '"revision":0' in service_request[2].replace(" ", "")
   assert '"base_url":"http://store.internal"' in service_request[2].replace(" ", "")
+  assert '"base_url":"http://queue.internal"' in service_request[2].replace(" ", "")
   assert store_request[:2] == ("store.internal", "/topology")
   assert '"id":"guilds"' in store_request[2].replace(" ", "")
   assert '"id":"members"' in store_request[2].replace(" ", "")

@@ -138,11 +138,13 @@ class MicroserviceClient:
     instance: Instance,
     path: str,
     body: bytes,
+    *,
+    content_type: str = "application/json",
   ) -> bytes:
     response = await self._http.post(
       f"{instance.base_url}{path}",
       content=body,
-      headers={"content-type": "application/json"},
+      headers={"content-type": content_type},
     )
     if not response.is_success:
       raise RemoteMicroserviceError(instance.id, response.status_code, response.text)

@@ -1,0 +1,27 @@
+name: micro-jetstream-nats
+
+services:
+  nats:
+    image: nats:2.14.3-alpine
+    command:
+      - --jetstream
+      - --store_dir=/data
+      - --http_port=8222
+    ports:
+      - "${MICRO_NATS_PORT:-4222}:4222"
+      - "${MICRO_NATS_MONITOR_PORT:-8222}:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --spider
+        - --quiet
+        - http://127.0.0.1:8222/healthz?js-enabled-only=true
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+volumes:
+  nats-data:

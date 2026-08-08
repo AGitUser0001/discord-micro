@@ -11,6 +11,10 @@
       "extraPaths": ["src", "examples/apache_age/src"]
     },
     {
+      "root": "examples/jetstream_nats",
+      "extraPaths": ["src", "examples/jetstream_nats/src"]
+    },
+    {
       "root": ".",
       "extraPaths": ["src"]
     }

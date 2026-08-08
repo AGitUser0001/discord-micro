@@ -14,6 +14,7 @@ from micro._microservices import (
   StateReceiver,
   StoreClient,
 )
+from micro.queue import QueueClient
 
 from ._client import ServiceClient
 from ._event import EventSchema
@@ -38,11 +39,11 @@ class Service(Microservice):
 
   def __init__(
     self,
-    name: str | None = None,
+    name: str,
     *,
     state_receiver: StateReceiver | None = None,
   ) -> None:
-    if name is not None and fullmatch(_SERVICE_NAME_PATTERN, name) is None:
+    if fullmatch(_SERVICE_NAME_PATTERN, name) is None:
       raise ValueError(
         "Service names must contain only letters, numbers, dots, underscores, and "
         "hyphens, and must start and end with a letter or number."
@@ -50,10 +51,12 @@ class Service(Microservice):
     self.client = ServiceClient()
     self.store = StoreClient()
     self.gateway = GatewayClient()
+    self.queue = QueueClient()
     receivers: tuple[StateReceiver, ...] = (
       self.client,
       self.store,
       self.gateway,
+      self.queue,
       *((state_receiver,) if state_receiver is not None else ()),
     )
     super().__init__("service", state_receiver=_StateReceivers(receivers))
@@ -67,6 +70,7 @@ class Service(Microservice):
     await self.client.aclose()
     await self.store.aclose()
     await self.gateway.aclose()
+    await self.queue.aclose()
 
   def listen[T](
     self,
@@ -120,8 +124,7 @@ class Service(Microservice):
 
   def schema_document(self, root_path: str) -> dict[str, JsonValue]:
     document = super().schema_document(root_path)
-    if self.name is not None:
-      document["service"] = self.name
+    document["service"] = self.name
     events: list[JsonValue] = []
     for event, handler in self._events.values():
       operation = event.document()

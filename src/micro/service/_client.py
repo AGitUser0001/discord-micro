@@ -54,6 +54,10 @@ class ServiceClient(MicroserviceClient):
     document = super().validate_schema(schema)
     if document.get("kind") != "service":
       raise InvalidMicroserviceSchemaError("Schema does not describe a service.")
+    if not isinstance(document.get("service"), str) or not document["service"]:
+      raise InvalidMicroserviceSchemaError(
+        "Service schema must contain a non-empty service name."
+      )
     for collection in ("events", "requests"):
       operations = document.get(collection)
       if not isinstance(operations, list):

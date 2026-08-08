@@ -27,7 +27,7 @@ class DiscoveredInstance(BaseModel):
 
   id: str = Field(min_length=1)
   base_url: str
-  role: Literal["service", "store", "gateway"]
+  role: Literal["service", "store", "gateway", "queue"]
   service_schema: dict[str, Any] | None = Field(default=None, alias="schema")
   modules: tuple[str, ...] = ()
 
@@ -46,8 +46,11 @@ class DiscoveredInstance(BaseModel):
   def _service_schema(
     cls, value: dict[str, Any] | None, info: Any
   ) -> dict[str, Any] | None:
-    if info.data.get("role") == "service" and value is None:
-      raise ValueError("service instances must include their dynamic schema")
+    if info.data.get("role") == "service":
+      if value is None:
+        raise ValueError("service instances must include their dynamic schema")
+      if not isinstance(value.get("service"), str) or not value["service"]:
+        raise ValueError("service schemas must include a non-empty service name")
     return value
 
 
@@ -196,6 +199,14 @@ class Overseer:
         }
         for instance in instances
         if instance.role == "gateway"
+      ],
+      "queues": [
+        {
+          "id": instance.id,
+          "base_url": instance.base_url,
+        }
+        for instance in instances
+        if instance.role == "queue"
       ],
     }
     store_modules: dict[str, tuple[GraphModule, ...]] = {}

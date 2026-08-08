@@ -68,8 +68,8 @@ def test_event_endpoint_invokes_handler() -> None:
   assert received == [Message(guild_id="123", content="hello")]
 
 
-def test_service_name_is_optional_because_operations_identify_the_schema() -> None:
-  service = Service()
+def test_service_name_identifies_the_logical_consumer() -> None:
+  service = Service("messages")
 
   @service.listen(MESSAGE)
   async def message(event: Message) -> None:
@@ -79,7 +79,7 @@ def test_service_name_is_optional_because_operations_identify_the_schema() -> No
   events = cast(list[dict[str, Any]], schema["events"])
 
   assert schema["kind"] == "service"
-  assert "service" not in schema
+  assert schema["service"] == "messages"
   assert events[0]["id"] == MESSAGE.id
 
 
