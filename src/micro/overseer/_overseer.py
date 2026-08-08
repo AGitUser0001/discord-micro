@@ -171,6 +171,15 @@ class Overseer:
         for instance in instances
         if instance.role == "service"
       ],
+      "stores": [
+        {
+          "id": instance.id,
+          "base_url": instance.base_url,
+          "modules": list(instance.modules),
+        }
+        for instance in instances
+        if instance.role == "store"
+      ],
     }
     store_modules: dict[str, tuple[StoreModule, ...]] = {}
     for instance in instances:

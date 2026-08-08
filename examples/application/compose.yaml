@@ -1,0 +1,21 @@
+name: micro-application-example
+
+services:
+  age:
+    build:
+      context: ../apache_age
+    environment:
+      POSTGRES_PASSWORD: ${MICRO_AGE_PASSWORD:-micro}
+    ports:
+      - "${MICRO_AGE_PORT:-5455}:5432"
+    volumes:
+      - age-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U micro -d micro"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  age-data:

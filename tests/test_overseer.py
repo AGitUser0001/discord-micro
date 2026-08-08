@@ -85,6 +85,7 @@ def test_overseer_pushes_discovered_topology() -> None:
   store_request = requests[1]
   assert service_request[:2] == ("service.internal", "/state")
   assert '"revision":0' in service_request[2].replace(" ", "")
+  assert '"base_url":"http://store.internal"' in service_request[2].replace(" ", "")
   assert store_request[:2] == ("store.internal", "/topology")
   assert '"id":"guilds"' in store_request[2].replace(" ", "")
   assert '"id":"members"' in store_request[2].replace(" ", "")
