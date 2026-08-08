@@ -188,7 +188,7 @@ dev = [
 [[package]]
 name = "micro-age"
 version = "0.1.0"
-source = { directory = "../apache_age" }
+source = { editable = "../apache_age" }
 dependencies = [
     { name = "micro", extra = ["store"] },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -215,7 +215,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "micro", extras = ["client", "overseer", "service", "store"], directory = "../../" },
-    { name = "micro-age", directory = "../apache_age" },
+    { name = "micro-age", editable = "../apache_age" },
     { name = "uvicorn", specifier = ">=0.52.1" },
 ]
 

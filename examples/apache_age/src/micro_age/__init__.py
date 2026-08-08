@@ -1,5 +1,5 @@
 import json
-from typing import Any, cast
+from typing import Any, LiteralString, cast
 from uuid import uuid4
 
 from graphglot.dialect import Dialect
@@ -45,7 +45,7 @@ class ApacheAgeExecutor:
     ).format(
       sql.Identifier(prepared_name),
       sql.Literal(self._graph),
-      sql.Literal(cypher),
+      _dollar_quoted(cypher),
       columns,
     )
     execute = sql.SQL("EXECUTE {} ({})").format(
@@ -93,6 +93,15 @@ def _decode_agtype(value: Any) -> JsonValue:
     return cast(JsonValue, json.loads(value))
   except json.JSONDecodeError:
     return value
+
+
+def _dollar_quoted(value: str) -> sql.SQL:
+  tag = "micro"
+  while f"${tag}$" in value:
+    tag += "_"
+  delimiter = f"${tag}$"
+  quoted = cast(LiteralString, f"{delimiter}{value}{delimiter}")
+  return sql.SQL(quoted)
 
 
 __all__ = ("ApacheAgeExecutor",)
