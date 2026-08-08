@@ -142,22 +142,22 @@ LOAD 'age';
 SET search_path = ag_catalog, "$user", public;
 ```
 
-Store APIs are composed from Federation modules. Entity identity comes from
-Federation `@key`; root lookups explicitly map their arguments with Micro's
-trusted Python-expression `@resolve` directive:
+Store APIs are composed from Micro graph modules. Entity identity comes from
+`@entity`; root lookups explicitly map their arguments with the runtime Python
+macro `@from`:
 
 ```graphql
-type Guild @key(fields: "id") {
+type Guild @entity(key: ["id"]) {
   id: ID!
   name: String!
 }
 
 type Query {
-  guild(id: ID!): Guild @resolve(key: "{'id': id}")
+  guild(id: ID!): Guild @from(key: "{'id': id}")
 }
 ```
 
 Micro compiles operations over the composed schema into canonical ISO GQL.
 Physical labels, properties, and reference types use deterministic hashes of
-their schema coordinates. Federation entities reset the storage path and can
-therefore be shared wherever the supergraph references them.
+their schema coordinates. Entities reset the storage path and can therefore be
+shared wherever the composed graph references them.

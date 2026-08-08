@@ -28,8 +28,9 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
-from micro._store_module import StoreModule
 from micro.service import JsonValue
+
+from ._module import GraphModule
 
 type ResultShaper = Callable[[GraphResult], Mapping[str, JsonValue]]
 
@@ -40,7 +41,7 @@ class StoreTopology(BaseModel):
   model_config = ConfigDict(extra="forbid", frozen=True)
 
   revision: int = Field(ge=0)
-  modules: tuple[StoreModule, ...]
+  modules: tuple[GraphModule, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +109,7 @@ class ModuleComposer(Protocol):
   def compose(
     self,
     base: GraphCompiler,
-    modules: Sequence[StoreModule],
+    modules: Sequence[GraphModule],
   ) -> GraphCompiler: ...
 
 
@@ -137,7 +138,10 @@ class Store:
     self._module_composer = module_composer
     self._runtime = _StoreRuntime(self._base_schema, self._base_compiler, ())
     self._topology_revision = -1
-    self._ready = False
+    self._desired_topology_revision = -1
+    self._composition_error: str | None = None
+    self._running = False
+    self._graph_available = True
     self._app = Starlette(
       routes=[
         Route("/graphql", self._graphql, methods=["POST"]),
@@ -155,8 +159,8 @@ class Store:
     await self._lifespan(receive, send)
 
   async def _graphql(self, request: Request) -> Response:
-    if not self._ready:
-      return self._errors("Store is not ready.", status_code=503)
+    if not self._available:
+      return self._unavailable()
     content_type = request.headers.get("content-type", "").partition(";")[0].strip()
     if content_type != "application/json":
       return self._errors("GraphQL requests require application/json.", status_code=415)
@@ -233,6 +237,8 @@ class Store:
     return JSONResponse({"data": data})
 
   async def _schema(self, request: Request) -> Response:
+    if not self._available:
+      return self._unavailable()
     return PlainTextResponse(
       print_schema(self._runtime.schema), media_type="text/plain"
     )
@@ -246,7 +252,7 @@ class Store:
     try:
       topology = StoreTopology.model_validate_json(await request.body())
       self.apply_topology(topology)
-    except (TypeError, ValueError) as exc:
+    except (GraphQLError, TypeError, ValueError) as exc:
       return JSONResponse(
         {"errors": [{"message": "Store topology was rejected.", "detail": str(exc)}]},
         status_code=409,
@@ -254,34 +260,47 @@ class Store:
     return Response(status_code=204)
 
   def apply_topology(self, topology: StoreTopology) -> None:
-    if topology.revision < self._topology_revision:
+    if topology.revision < self._desired_topology_revision:
       raise ValueError(
-        f"Topology revision {topology.revision} is older than {self._topology_revision}."
+        f"Topology revision {topology.revision} is older than "
+        f"{self._desired_topology_revision}."
       )
-    if topology.revision == self._topology_revision:
+    if (
+      topology.revision == self._topology_revision
+      and topology.revision == self._desired_topology_revision
+      and self._graph_available
+    ):
       return
+    self._desired_topology_revision = topology.revision
+    self._graph_available = False
+    self._composition_error = None
     module_ids = tuple(module.id for module in topology.modules)
-    if len(set(module_ids)) != len(module_ids):
-      raise ValueError("Store topology contains duplicate module IDs.")
-    if topology.modules and self._module_composer is None:
-      from micro._federation import compose_federation
+    try:
+      if len(set(module_ids)) != len(module_ids):
+        raise ValueError("Store topology contains duplicate module IDs.")
+      if topology.modules and self._module_composer is None:
+        from ._compiler import MicroGraphCompiler
+        from .composer import compose_graph
 
-      from ._compiler import FederationCompiler
-
-      graph = compose_federation(topology.modules)
-      schema = graph.schema
-      compiler: GraphCompiler = FederationCompiler(graph)
-    elif topology.modules:
-      schema = self._base_schema
-      for module in topology.modules:
-        schema = extend_schema(schema, parse(module.graphql_schema))
-      assert self._module_composer is not None
-      compiler = self._module_composer.compose(self._base_compiler, topology.modules)
-    else:
-      schema = self._base_schema
-      compiler = self._base_compiler
+        graph = compose_graph(topology.modules)
+        schema = graph.schema
+        compiler: GraphCompiler = MicroGraphCompiler(graph)
+      elif topology.modules:
+        schema = self._base_schema
+        for module in topology.modules:
+          schema = extend_schema(schema, parse(module.graphql_schema))
+        assert self._module_composer is not None
+        compiler = self._module_composer.compose(self._base_compiler, topology.modules)
+      else:
+        schema = self._base_schema
+        compiler = self._base_compiler
+    except Exception as exc:
+      self._composition_error = str(exc)
+      raise
     self._runtime = _StoreRuntime(schema, compiler, module_ids)
     self._topology_revision = topology.revision
+    self._composition_error = None
+    self._graph_available = True
 
   @property
   def active_modules(self) -> tuple[str, ...]:
@@ -291,11 +310,25 @@ class Store:
   def topology_revision(self) -> int:
     return self._topology_revision
 
+  @property
+  def desired_topology_revision(self) -> int:
+    return self._desired_topology_revision
+
+  @property
+  def composition_error(self) -> str | None:
+    return self._composition_error
+
+  @property
+  def _available(self) -> bool:
+    return self._running and self._graph_available
+
   async def _live(self, request: Request) -> Response:
     return Response(status_code=204)
 
   async def _health_ready(self, request: Request) -> Response:
-    return Response(status_code=204 if self._ready else 503)
+    if self._available:
+      return Response(status_code=204)
+    return self._unavailable()
 
   async def _lifespan(self, receive: Receive, send: Send) -> None:
     while True:
@@ -306,10 +339,10 @@ class Store:
         except BaseException as exc:
           await send({"type": "lifespan.startup.failed", "message": str(exc)})
           return
-        self._ready = True
+        self._running = True
         await send({"type": "lifespan.startup.complete"})
       elif message["type"] == "lifespan.shutdown":
-        self._ready = False
+        self._running = False
         try:
           await self.executor.close()
         except BaseException as exc:
@@ -328,3 +361,12 @@ class Store:
   @staticmethod
   def _errors(message: str, *, status_code: int) -> JSONResponse:
     return JSONResponse({"errors": [{"message": message}]}, status_code=status_code)
+
+  def _unavailable(self) -> JSONResponse:
+    error: dict[str, Any] = {
+      "message": "Store graph is unavailable.",
+      "desiredRevision": self._desired_topology_revision,
+    }
+    if self._composition_error is not None:
+      error["detail"] = self._composition_error
+    return JSONResponse({"errors": [error]}, status_code=503)

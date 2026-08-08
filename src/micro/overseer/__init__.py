@@ -1,4 +1,4 @@
-from micro._store_module import GraphQLModule, StoreModule
+from micro.store import GraphModule, GraphQLModule, StoreModule
 
 from ._overseer import (
   DiscoveredInstance,
@@ -11,6 +11,7 @@ from ._overseer import (
 __all__ = (
   "DiscoveredInstance",
   "Discovery",
+  "GraphModule",
   "GraphQLModule",
   "NetworkDiscovery",
   "Overseer",

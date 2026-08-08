@@ -18,10 +18,10 @@ from graphql import (
   is_leaf_type,
 )
 
-from micro._federation import FederatedGraph
 from micro.service import JsonValue
 
 from ._store import CompiledOperation, GraphQLRequest, GraphResult, GraphStatement
+from .composer import MicroGraph
 
 _LAYOUT_VERSION = "micro:gql-layout:v1"
 _IDENTIFIER = re.compile(r"[^A-Za-z0-9_]")
@@ -35,10 +35,10 @@ class _Projection:
   object_fields: list[tuple[str, _Projection, bool]]
 
 
-class FederationCompiler:
-  """Compiles the supported Micro Federation graph model into canonical GQL."""
+class MicroGraphCompiler:
+  """Compiles a composed Micro graph into canonical GQL."""
 
-  def __init__(self, graph: FederatedGraph) -> None:
+  def __init__(self, graph: MicroGraph) -> None:
     self.graph = graph
 
   def compile(self, request: GraphQLRequest) -> CompiledOperation:
@@ -46,12 +46,12 @@ class FederationCompiler:
     if len(selections) != 1 or not isinstance(selections[0], FieldNode):
       raise GraphQLError("A compiled store operation requires one root field.")
     root_field = selections[0]
-    resolver = self.graph.resolvers.get(
+    lookup = self.graph.lookups.get(
       (request.operation.operation, root_field.name.value)
     )
-    if resolver is None:
+    if lookup is None:
       raise GraphQLError(
-        f"Root field {root_field.name.value!r} has no Micro @resolve mapping."
+        f"Root field {root_field.name.value!r} has no Micro runtime macro."
       )
 
     root_type = request.schema.get_root_type(request.operation.operation)
@@ -64,16 +64,16 @@ class FederationCompiler:
       dict(request.variables),
     )
     try:
-      key = resolver.expression.evaluate(arguments)
+      key = lookup.expression.evaluate(arguments)
     except (TypeError, ValueError, NameError) as exc:
       raise GraphQLError(
-        f"The @resolve expression for {root_field.name.value!r} failed: {exc}"
+        f"The @from expression for {root_field.name.value!r} failed: {exc}"
       ) from exc
     parameters: dict[str, JsonValue] = {
-      "root_identity": entity_identity(resolver.entity.name, key)
+      "root_identity": entity_identity(lookup.entity.name, key)
     }
     matches = [
-      f"MATCH (n0:{physical_type(resolver.entity.name)})",
+      f"MATCH (n0:{physical_type(lookup.entity.name)})",
       "WHERE n0._micro_id = $root_identity",
     ]
     returns: list[str] = []
@@ -82,7 +82,7 @@ class FederationCompiler:
       cast(GraphQLObjectType, get_named_type(field_definition.type)),
       root_field,
       "n0",
-      resolver.entity.name,
+      lookup.entity.name,
       matches,
       returns,
       counters,

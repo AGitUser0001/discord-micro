@@ -2,7 +2,6 @@ import asyncio
 from typing import Any
 
 import httpx2
-import pytest
 from starlette.testclient import TestClient
 
 from micro.overseer import (
@@ -12,7 +11,6 @@ from micro.overseer import (
   Overseer,
   StoreModule,
 )
-from micro.store import FederationCompositionError
 
 SERVICE_SCHEMA: dict[str, Any] = {
   "format": 1,
@@ -100,34 +98,70 @@ def test_overseer_pushes_discovered_topology() -> None:
   assert overseer.revision == 0
 
 
+def test_overseer_composes_each_store_assignment_independently() -> None:
+  discovery = NetworkDiscovery(
+    (
+      DiscoveredInstance(
+        id="guild-store",
+        base_url="http://guild-store.internal",
+        role="store",
+        modules=("guilds",),
+      ),
+      DiscoveredInstance(
+        id="audit-store",
+        base_url="http://audit-store.internal",
+        role="store",
+        modules=("audit",),
+      ),
+    )
+  )
+  modules = (
+    StoreModule(id="guilds", schema="type Query { item: String }"),
+    StoreModule(id="audit", schema="type Query { item: Int }"),
+  )
+
+  async def exercise() -> Overseer:
+    overseer = Overseer(
+      discovery,
+      modules=modules,
+      transport=httpx2.MockTransport(lambda request: httpx2.Response(204)),
+    )
+    await overseer.reconcile()
+    await overseer.aclose()
+    return overseer
+
+  overseer = asyncio.run(exercise())
+
+  assert set(overseer.store_graphs) == {"guild-store", "audit-store"}
+  assert overseer.store_graphs["guild-store"].modules == ("guilds",)
+  assert overseer.store_graphs["audit-store"].modules == ("audit",)
+
+
 def test_overseer_loads_replaces_and_unloads_graphql_modules() -> None:
   overseer = Overseer(NetworkDiscovery())
   valid = GraphQLModule(
     id="guilds",
     schema="""
-      type Guild @key(fields: "id") { id: ID! }
+      type Guild @entity(key: ["id"]) { id: ID! }
       type Query {
-        guild(id: ID!): Guild @resolve(key: "{'id': id}")
+        guild(id: ID!): Guild @from(key: "{'id': id}")
       }
     """,
   )
   invalid_replacement = GraphQLModule(
     id="guilds",
     schema="""
-      type Guild @key(fields: "id") { id: ID! }
+      type Guild @entity(key: ["id"]) { id: ID! }
       type Query { guild(id: ID!): Guild }
     """,
   )
 
   overseer.load_graphql_module(valid)
-  assert overseer.federated_graph is not None
-  assert overseer.federated_graph.modules == ("guilds",)
+  assert overseer.graph_modules == (valid,)
 
-  with pytest.raises(FederationCompositionError):
-    overseer.load_graphql_module(invalid_replacement)
-  assert overseer.federated_graph is not None
-  assert overseer.federated_graph.resolvers
+  overseer.load_graphql_module(invalid_replacement)
+  assert overseer.graph_modules == (invalid_replacement,)
 
   assert overseer.unload_graphql_module("guilds")
-  assert overseer.federated_graph is None
+  assert overseer.graph_modules == ()
   assert not overseer.unload_graphql_module("guilds")

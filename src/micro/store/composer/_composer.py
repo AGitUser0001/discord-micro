@@ -17,6 +17,7 @@ from graphql import (
 )
 from graphql.language import (
   ListTypeNode,
+  ListValueNode,
   NamedTypeNode,
   Node,
   NonNullTypeNode,
@@ -24,36 +25,32 @@ from graphql.language import (
   TypeNode,
 )
 
-from micro._store_module import StoreModule
+from .._module import GraphModule
 
-_FEDERATION_SDL = """
-  scalar federation__FieldSet
-
-  directive @key(
-    fields: federation__FieldSet!
-    resolvable: Boolean = true
-  ) repeatable on OBJECT | INTERFACE
-
-  directive @resolve(key: String!) on FIELD_DEFINITION
+_MICRO_GRAPH_SDL = """
+  directive @entity(key: [String!]!) repeatable on OBJECT
+  directive @from(key: String!) on FIELD_DEFINITION
 """
 
 
-class FederationCompositionError(ValueError):
+class GraphCompositionError(ValueError):
   pass
 
 
 @dataclass(frozen=True, slots=True)
-class ResolveExpression:
+class FromExpression:
+  """A validated Python key expression evaluated for each root-field request."""
+
   source: str
   code: CodeType
   key_fields: tuple[str, ...]
 
   def evaluate(self, arguments: Mapping[str, object]) -> dict[str, object]:
-    value = eval(self.code, {}, dict(arguments))
+    value = eval(self.code, {"__builtins__": {}}, dict(arguments))
     if not isinstance(value, dict):
-      raise TypeError("A @resolve key expression must produce a dict.")
+      raise TypeError("A @from key expression must produce a dict.")
     if set(value) != set(self.key_fields):
-      raise ValueError("A @resolve key expression produced unexpected key fields.")
+      raise ValueError("A @from key expression produced unexpected key fields.")
     return value
 
 
@@ -64,41 +61,41 @@ class Entity:
 
 
 @dataclass(frozen=True, slots=True)
-class RootResolver:
+class EntityLookup:
   operation: OperationType
   field: str
   entity: Entity
-  expression: ResolveExpression
+  expression: FromExpression
 
 
 @dataclass(frozen=True, slots=True)
-class FederatedGraph:
+class MicroGraph:
   schema: GraphQLSchema
   entities: Mapping[str, Entity]
-  resolvers: Mapping[tuple[OperationType, str], RootResolver]
+  lookups: Mapping[tuple[OperationType, str], EntityLookup]
   modules: tuple[str, ...]
 
 
-def compose_federation(modules: Sequence[StoreModule]) -> FederatedGraph:
+def compose_graph(modules: Sequence[GraphModule]) -> MicroGraph:
   if not modules:
-    raise FederationCompositionError("A federated graph needs at least one module.")
+    raise GraphCompositionError("A graph needs at least one module.")
   module_ids = tuple(module.id for module in modules)
   if len(set(module_ids)) != len(module_ids):
-    raise FederationCompositionError("Federation module IDs must be unique.")
+    raise GraphCompositionError("Graph module IDs must be unique.")
 
   documents = tuple(parse(module.graphql_schema) for module in modules)
   schema_document = _merge_documents(documents)
   try:
     schema = build_ast_schema(schema_document)
   except Exception as exc:
-    raise FederationCompositionError(str(exc)) from exc
+    raise GraphCompositionError(str(exc)) from exc
 
   entities = _collect_entities(schema_document)
-  resolvers = _collect_resolvers(schema_document, schema, entities)
-  return FederatedGraph(
+  lookups = _collect_lookups(schema_document, schema, entities)
+  return MicroGraph(
     schema,
     MappingProxyType(entities),
-    MappingProxyType(resolvers),
+    MappingProxyType(lookups),
     module_ids,
   )
 
@@ -116,17 +113,16 @@ def _merge_documents(documents: Sequence[DocumentNode]) -> DocumentNode:
         continue
       name_node = getattr(definition, "name", None)
       if name_node is None:
-        # Federation @link schema extensions do not affect the executable API schema.
         continue
       key = (definition.kind, name_node.value)
       previous = other_definitions.get(key)
       if previous is not None and print_ast(previous) != print_ast(definition):
-        raise FederationCompositionError(
-          f"Federation modules define incompatible {name_node.value!r} definitions."
+        raise GraphCompositionError(
+          f"Graph modules define incompatible {name_node.value!r} definitions."
         )
       other_definitions[key] = definition
 
-  merged: list[Node] = list(parse(_FEDERATION_SDL).definitions)
+  merged: list[Node] = list(parse(_MICRO_GRAPH_SDL).definitions)
   merged.extend(other_definitions.values())
   for name, definitions in object_definitions.items():
     fields: dict[str, FieldDefinitionNode] = {}
@@ -138,8 +134,8 @@ def _merge_documents(documents: Sequence[DocumentNode]) -> DocumentNode:
       for field in definition.fields or ():
         previous = fields.get(field.name.value)
         if previous is not None and print_ast(previous) != print_ast(field):
-          raise FederationCompositionError(
-            f"Federation modules define incompatible field {name}.{field.name.value}."
+          raise GraphCompositionError(
+            f"Graph modules define incompatible field {name}.{field.name.value}."
           )
         fields[field.name.value] = field
       for directive in definition.directives or ():
@@ -165,23 +161,35 @@ def _collect_entities(document: DocumentNode) -> dict[str, Entity]:
       continue
     keys: list[tuple[str, ...]] = []
     for directive in definition.directives or ():
-      if directive.name.value != "key":
+      if directive.name.value != "entity":
         continue
-      fields_argument = next(
+      key_argument = next(
         (
           argument
           for argument in directive.arguments or ()
-          if argument.name.value == "fields"
+          if argument.name.value == "key"
         ),
         None,
       )
-      if fields_argument is None or not isinstance(
-        fields_argument.value, StringValueNode
-      ):
-        raise FederationCompositionError(
-          f"Entity {definition.name.value} has an invalid @key directive."
+      if key_argument is None or not isinstance(key_argument.value, ListValueNode):
+        raise GraphCompositionError(
+          f"Entity {definition.name.value} has an invalid @entity directive."
         )
-      keys.append(_parse_flat_field_set(fields_argument.value.value))
+      key = tuple(
+        value.value
+        for value in key_argument.value.values
+        if isinstance(value, StringValueNode)
+      )
+      if len(key) != len(key_argument.value.values) or not key:
+        raise GraphCompositionError(
+          f"Entity {definition.name.value} must declare a non-empty string key."
+        )
+      if len(set(key)) != len(key):
+        raise GraphCompositionError(
+          f"Entity {definition.name.value} declares duplicate key fields."
+        )
+      if key not in keys:
+        keys.append(key)
     if keys:
       declared_fields = {field.name.value for field in definition.fields or ()}
       missing = {
@@ -191,19 +199,19 @@ def _collect_entities(document: DocumentNode) -> dict[str, Entity]:
         if field_name not in declared_fields
       }
       if missing:
-        raise FederationCompositionError(
-          f"Entity {definition.name.value} has @key fields which it does not "
-          f"define: {', '.join(sorted(missing))}."
+        raise GraphCompositionError(
+          f"Entity {definition.name.value} has key fields which it does not define: "
+          f"{', '.join(sorted(missing))}."
         )
       entities[definition.name.value] = Entity(definition.name.value, tuple(keys))
   return entities
 
 
-def _collect_resolvers(
+def _collect_lookups(
   document: DocumentNode,
   schema: GraphQLSchema,
   entities: Mapping[str, Entity],
-) -> dict[tuple[OperationType, str], RootResolver]:
+) -> dict[tuple[OperationType, str], EntityLookup]:
   root_names = {
     schema.query_type.name if schema.query_type else "": OperationType.QUERY,
     schema.mutation_type.name if schema.mutation_type else "": OperationType.MUTATION,
@@ -211,7 +219,7 @@ def _collect_resolvers(
     if schema.subscription_type
     else "": OperationType.SUBSCRIPTION,
   }
-  resolvers: dict[tuple[OperationType, str], RootResolver] = {}
+  lookups: dict[tuple[OperationType, str], EntityLookup] = {}
   for definition in document.definitions:
     if not isinstance(definition, ObjectTypeDefinitionNode):
       continue
@@ -219,28 +227,27 @@ def _collect_resolvers(
     if operation is None:
       continue
     for field in definition.fields or ():
-      named_return = _named_type(field.type)
-      entity = entities.get(named_return)
+      entity = entities.get(_named_type(field.type))
       directive = next(
-        (item for item in field.directives or () if item.name.value == "resolve"),
+        (item for item in field.directives or () if item.name.value == "from"),
         None,
       )
       if entity is not None and directive is None:
-        raise FederationCompositionError(
+        raise GraphCompositionError(
           f"{definition.name.value}.{field.name.value} returns entity {entity.name} "
-          "but does not declare @resolve."
+          "but does not declare @from."
         )
       if directive is None:
         continue
       if operation is not OperationType.QUERY:
-        raise FederationCompositionError(
-          "@resolve currently supports Query fields only; mutation semantics must "
-          "be declared separately."
+        raise GraphCompositionError(
+          "@from currently supports Query fields only; mutation semantics must "
+          "use a different runtime macro."
         )
       if entity is None:
-        raise FederationCompositionError(
-          f"{definition.name.value}.{field.name.value} declares @resolve but does "
-          "not return a Federation entity."
+        raise GraphCompositionError(
+          f"{definition.name.value}.{field.name.value} declares @from but does "
+          "not return an entity."
         )
       key_argument = next(
         (
@@ -251,77 +258,56 @@ def _collect_resolvers(
         None,
       )
       if key_argument is None or not isinstance(key_argument.value, StringValueNode):
-        raise FederationCompositionError("@resolve requires a key expression.")
-      argument_names = {argument.name.value for argument in field.arguments or ()}
+        raise GraphCompositionError("@from requires a key expression.")
       if _is_list_type(field.type):
-        raise FederationCompositionError(
-          f"{definition.name.value}.{field.name.value} uses @resolve but returns a list."
+        raise GraphCompositionError(
+          f"{definition.name.value}.{field.name.value} uses @from but returns a list."
         )
-      expression = _compile_resolve_expression(
+      expression = _compile_from_expression(
         key_argument.value.value,
-        argument_names,
+        {argument.name.value for argument in field.arguments or ()},
       )
       if expression.key_fields not in entity.keys:
-        raise FederationCompositionError(
-          f"The @resolve key on {definition.name.value}.{field.name.value} does "
-          f"not match a @key on {entity.name}."
+        raise GraphCompositionError(
+          f"The @from key on {definition.name.value}.{field.name.value} does "
+          f"not match an @entity key on {entity.name}."
         )
-      resolvers[(operation, field.name.value)] = RootResolver(
+      lookups[(operation, field.name.value)] = EntityLookup(
         operation,
         field.name.value,
         entity,
         expression,
       )
-  return resolvers
+  return lookups
 
 
-def _compile_resolve_expression(
-  source: str,
-  arguments: set[str],
-) -> ResolveExpression:
+def _compile_from_expression(source: str, arguments: set[str]) -> FromExpression:
   try:
     expression = ast.parse(source, mode="eval")
   except SyntaxError as exc:
-    raise FederationCompositionError(
-      f"Invalid @resolve Python expression: {exc}"
-    ) from exc
+    raise GraphCompositionError(f"Invalid @from Python expression: {exc}") from exc
   if not isinstance(expression.body, ast.Dict):
-    raise FederationCompositionError("A @resolve expression must be a dict literal.")
+    raise GraphCompositionError("A @from expression must be a dict literal.")
   key_fields: list[str] = []
   for key in expression.body.keys:
     if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-      raise FederationCompositionError("@resolve dict keys must be string literals.")
+      raise GraphCompositionError("@from dict keys must be string literals.")
     key_fields.append(key.value)
+  if len(set(key_fields)) != len(key_fields):
+    raise GraphCompositionError("@from cannot produce duplicate key fields.")
   referenced_names = {
     node.id for node in ast.walk(expression) if isinstance(node, ast.Name)
   }
   unknown = referenced_names - arguments
   if unknown:
-    raise FederationCompositionError(
-      f"@resolve references unknown arguments: {', '.join(sorted(unknown))}."
+    raise GraphCompositionError(
+      f"@from references unknown arguments: {', '.join(sorted(unknown))}."
     )
-  return ResolveExpression(
+  return FromExpression(
     source,
-    compile(expression, "<micro @resolve>", "eval"),
+    compile(expression, "<micro @from>", "eval"),
     tuple(key_fields),
   )
-
-
-def _parse_flat_field_set(source: str) -> tuple[str, ...]:
-  selection = parse(f"{{ {source} }}").definitions[0]
-  selection_set = getattr(selection, "selection_set", None)
-  if selection_set is None:
-    raise FederationCompositionError("Invalid Federation field set.")
-  fields: list[str] = []
-  for item in selection_set.selections:
-    if not hasattr(item, "name") or getattr(item, "selection_set", None) is not None:
-      raise FederationCompositionError(
-        "Nested Federation @key field sets are not supported yet."
-      )
-    fields.append(item.name.value)
-  if not fields:
-    raise FederationCompositionError("A Federation @key cannot be empty.")
-  return tuple(fields)
 
 
 def _named_type(type_node: TypeNode) -> str:

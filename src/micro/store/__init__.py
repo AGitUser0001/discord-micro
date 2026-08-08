@@ -1,21 +1,12 @@
-from micro._federation import (
-  Entity,
-  FederatedGraph,
-  FederationCompositionError,
-  ResolveExpression,
-  RootResolver,
-  compose_federation,
-)
-from micro._store_module import GraphQLModule
-
 from ._compiler import (
-  FederationCompiler,
+  MicroGraphCompiler,
   entity_identity,
   physical_field,
   physical_path_type,
   physical_reference,
   physical_type,
 )
+from ._module import GraphModule, GraphQLModule, StoreModule
 from ._store import (
   CompiledOperation,
   GraphCompiler,
@@ -26,30 +17,38 @@ from ._store import (
   ModuleComposer,
   ResultShaper,
   Store,
-  StoreModule,
   StoreTopology,
+)
+from .composer import (
+  Entity,
+  EntityLookup,
+  FromExpression,
+  GraphCompositionError,
+  MicroGraph,
+  compose_graph,
 )
 
 __all__ = (
   "CompiledOperation",
   "Entity",
-  "FederatedGraph",
-  "FederationCompiler",
-  "FederationCompositionError",
+  "EntityLookup",
+  "FromExpression",
   "GraphCompiler",
+  "GraphCompositionError",
   "GraphExecutor",
+  "GraphModule",
   "GraphQLModule",
   "GraphQLRequest",
   "GraphResult",
   "GraphStatement",
+  "MicroGraph",
+  "MicroGraphCompiler",
   "ModuleComposer",
-  "ResolveExpression",
   "ResultShaper",
-  "RootResolver",
   "Store",
   "StoreModule",
   "StoreTopology",
-  "compose_federation",
+  "compose_graph",
   "entity_identity",
   "physical_field",
   "physical_path_type",

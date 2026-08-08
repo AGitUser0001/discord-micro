@@ -1,8 +1,8 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class GraphQLModule(BaseModel):
-  """A serializable Federation subgraph loaded by the overseer."""
+class GraphModule(BaseModel):
+  """A serializable contribution to a Micro graph schema."""
 
   model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -13,9 +13,10 @@ class GraphQLModule(BaseModel):
   @classmethod
   def _id_has_no_whitespace(cls, value: str) -> str:
     if any(character.isspace() for character in value):
-      raise ValueError("store module IDs cannot contain whitespace")
+      raise ValueError("graph module IDs cannot contain whitespace")
     return value
 
 
-# Compatibility while the public store API moves to GraphQLModule.
-StoreModule = GraphQLModule
+# Transitional names for applications written against the initial store API.
+GraphQLModule = GraphModule
+StoreModule = GraphModule

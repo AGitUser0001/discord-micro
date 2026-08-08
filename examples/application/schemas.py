@@ -37,14 +37,14 @@ AUDIT = EventSchema[AuditEntry](
 GREETING_STORE = StoreModule(
   id="example.greetings",
   schema="""
-    type Greeting @key(fields: "name") {
+    type Greeting @entity(key: ["name"]) {
       name: String!
       message: String!
     }
 
     type Query {
       greeting(name: String!): Greeting
-        @resolve(key: "{'name': name}")
+        @from(key: "{'name': name}")
     }
   """,
 )

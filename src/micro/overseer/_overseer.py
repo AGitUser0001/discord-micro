@@ -11,8 +11,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
-from micro._federation import FederatedGraph, compose_federation
-from micro._store_module import GraphQLModule, StoreModule
+from micro.store import GraphModule
+from micro.store.composer import MicroGraph, compose_graph
 
 
 class DiscoveredInstance(BaseModel):
@@ -130,7 +130,7 @@ class Overseer:
     *,
     transport: httpx2.AsyncBaseTransport | None = None,
     timeout: float = 5.0,
-    modules: Sequence[StoreModule] = (),
+    modules: Sequence[GraphModule] = (),
   ) -> None:
     self.discovery = discovery
     self._revision = -1
@@ -138,9 +138,7 @@ class Overseer:
     self._modules = {module.id: module for module in modules}
     if len(self._modules) != len(modules):
       raise ValueError("Store module IDs must be unique.")
-    self._federated_graph = (
-      compose_federation(tuple(self._modules.values())) if self._modules else None
-    )
+    self._store_graphs: dict[str, MicroGraph] = {}
     self._http = httpx2.AsyncClient(transport=transport, timeout=timeout)
     self._app = Starlette(
       routes=[
@@ -183,7 +181,7 @@ class Overseer:
         if instance.role == "store"
       ],
     }
-    store_modules: dict[str, tuple[StoreModule, ...]] = {}
+    store_modules: dict[str, tuple[GraphModule, ...]] = {}
     for instance in instances:
       if instance.role != "store":
         continue
@@ -195,6 +193,17 @@ class Overseer:
         raise ValueError(
           f"Store {instance.id!r} requests unknown module {exc.args[0]!r}."
         ) from exc
+    composed_by_assignment: dict[tuple[str, ...], MicroGraph] = {}
+    store_graphs: dict[str, MicroGraph] = {}
+    for instance_id, modules in store_modules.items():
+      if not modules:
+        continue
+      assignment = tuple(module.id for module in modules)
+      graph = composed_by_assignment.get(assignment)
+      if graph is None:
+        graph = compose_graph(modules)
+        composed_by_assignment[assignment] = graph
+      store_graphs[instance_id] = graph
 
     async def push(instance: DiscoveredInstance) -> tuple[str, int, str] | None:
       if instance.role == "service":
@@ -221,6 +230,7 @@ class Overseer:
     if failures:
       raise TopologyPushError(failures)
     self._instances = instances
+    self._store_graphs = store_graphs
     self._revision = revision
     return revision
 
@@ -232,24 +242,20 @@ class Overseer:
     return self._revision
 
   @property
-  def federated_graph(self) -> FederatedGraph | None:
-    return self._federated_graph
+  def graph_modules(self) -> tuple[GraphModule, ...]:
+    return tuple(self._modules.values())
 
-  def load_graphql_module(self, module: GraphQLModule) -> None:
-    candidate = dict(self._modules)
-    candidate[module.id] = module
-    graph = compose_federation(tuple(candidate.values()))
-    self._modules = candidate
-    self._federated_graph = graph
+  @property
+  def store_graphs(self) -> dict[str, MicroGraph]:
+    return dict(self._store_graphs)
+
+  def load_graphql_module(self, module: GraphModule) -> None:
+    self._modules[module.id] = module
 
   def unload_graphql_module(self, module_id: str) -> bool:
     if module_id not in self._modules:
       return False
-    candidate = dict(self._modules)
-    del candidate[module_id]
-    graph = compose_federation(tuple(candidate.values())) if candidate else None
-    self._modules = candidate
-    self._federated_graph = graph
+    del self._modules[module_id]
     return True
 
   async def __aenter__(self) -> Self:

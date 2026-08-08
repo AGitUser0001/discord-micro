@@ -5,42 +5,42 @@ from graphql import GraphQLObjectType, get_operation_ast, parse
 from starlette.testclient import TestClient
 
 from micro.store import (
-  FederationCompiler,
-  FederationCompositionError,
-  GraphQLModule,
+  GraphCompositionError,
+  GraphModule,
   GraphQLRequest,
   GraphResult,
   GraphStatement,
+  MicroGraphCompiler,
   Store,
-  compose_federation,
+  compose_graph,
   entity_identity,
   physical_reference,
   physical_type,
 )
 
-GUILDS = GraphQLModule(
+GUILDS = GraphModule(
   id="guilds",
   schema="""
-    type Guild @key(fields: "id") {
+    type Guild @entity(key: ["id"]) {
       id: ID!
       name: String!
     }
 
     type Query {
-      guild(id: ID!): Guild @resolve(key: "{'id': id}")
+      guild(id: ID!): Guild @from(key: "{'id': id}")
     }
   """,
 )
 
-CHANNELS = GraphQLModule(
+CHANNELS = GraphModule(
   id="channels",
   schema="""
-    type Guild @key(fields: "id") {
+    type Guild @entity(key: ["id"]) {
       id: ID!
       channels: [Channel!]!
     }
 
-    type Channel @key(fields: "id") {
+    type Channel @entity(key: ["id"]) {
       id: ID!
       name: String!
     }
@@ -48,8 +48,8 @@ CHANNELS = GraphQLModule(
 )
 
 
-def test_federation_composes_shared_entity_fields() -> None:
-  graph = compose_federation((GUILDS, CHANNELS))
+def test_graph_composes_shared_entity_and_query_fields() -> None:
+  graph = compose_graph((GUILDS, CHANNELS))
 
   guild = graph.schema.get_type("Guild")
   assert isinstance(guild, GraphQLObjectType)
@@ -57,36 +57,36 @@ def test_federation_composes_shared_entity_fields() -> None:
   assert graph.entities["Guild"].keys == (("id",),)
 
 
-def test_federation_requires_explicit_entity_resolution() -> None:
-  module = GraphQLModule(
+def test_graph_requires_explicit_entity_lookup() -> None:
+  module = GraphModule(
     id="guilds",
     schema="""
-      type Guild @key(fields: "id") { id: ID! }
+      type Guild @entity(key: ["id"]) { id: ID! }
       type Query { guild(id: ID!): Guild }
     """,
   )
 
-  with pytest.raises(FederationCompositionError, match="does not declare @resolve"):
-    compose_federation((module,))
+  with pytest.raises(GraphCompositionError, match="does not declare @from"):
+    compose_graph((module,))
 
 
-def test_resolve_expression_must_match_an_entity_key() -> None:
-  module = GraphQLModule(
+def test_from_expression_must_match_an_entity_key() -> None:
+  module = GraphModule(
     id="guilds",
     schema="""
-      type Guild @key(fields: "id") { id: ID! }
+      type Guild @entity(key: ["id"]) { id: ID! }
       type Query {
-        guild(name: String!): Guild @resolve(key: "{'name': name}")
+        guild(name: String!): Guild @from(key: "{'name': name}")
       }
     """,
   )
 
-  with pytest.raises(FederationCompositionError, match="does not match a @key"):
-    compose_federation((module,))
+  with pytest.raises(GraphCompositionError, match="does not match an @entity key"):
+    compose_graph((module,))
 
 
 def test_compiler_uses_hashed_paths_and_shapes_entity_lists() -> None:
-  graph = compose_federation((GUILDS, CHANNELS))
+  graph = compose_graph((GUILDS, CHANNELS))
   document = parse(
     """
       query Guild($id: ID!) {
@@ -108,7 +108,7 @@ def test_compiler_uses_hashed_paths_and_shapes_entity_lists() -> None:
     "Guild",
   )
 
-  compiled = FederationCompiler(graph).compile(request)
+  compiled = MicroGraphCompiler(graph).compile(request)
 
   assert f":{physical_type('Guild')}" in compiled.statement.text
   assert f":{physical_reference('Guild.channels')}" in compiled.statement.text
@@ -148,7 +148,7 @@ def test_physical_names_are_stable_and_coordinate_specific() -> None:
   assert physical_reference("Guild.channels") != physical_reference("Category.channels")
 
 
-def test_store_uses_federation_compiler_without_application_compiler() -> None:
+def test_store_uses_graph_compiler_without_application_compiler() -> None:
   class Executor:
     async def start(self) -> None:
       pass

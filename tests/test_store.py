@@ -175,7 +175,7 @@ def test_overseer_topology_activates_distributed_store_module() -> None:
   assert store.topology_revision == 0
 
 
-def test_store_rejects_invalid_federation_topology() -> None:
+def test_store_becomes_unavailable_for_an_uncomposable_topology() -> None:
   store = Store(SCHEMA, compiler=Compiler(), executor=Executor())
 
   with TestClient(store) as client:
@@ -187,14 +187,57 @@ def test_store_rejects_invalid_federation_topology() -> None:
           {
             "id": "example.status",
             "schema": """
-              type Status @key(fields: \"id\") { id: ID! }
+              type Status @entity(key: [\"id\"]) { id: ID! }
               type Query { status(id: ID!): Status }
             """,
           }
         ],
       },
     )
+    ready = client.get("/health/ready")
+    graphql = client.post(
+      "/graphql", json={"query": "{ person(name: \"Ada\") { name } }"}
+    )
 
   assert response.status_code == 409
+  assert ready.status_code == 503
+  assert graphql.status_code == 503
   assert store.active_modules == ()
   assert store.topology_revision == -1
+  assert store.desired_topology_revision == 0
+  assert store.composition_error is not None
+
+
+def test_store_can_retry_a_failed_desired_revision() -> None:
+  store = Store(SCHEMA, compiler=Compiler(), executor=Executor())
+  invalid = StoreModule(
+    id="people",
+    schema="""
+      type Person @entity(key: ["name"]) { name: String! }
+      type Query { person(name: String!): Person }
+    """,
+  )
+  valid = StoreModule(
+    id="people",
+    schema="""
+      type Person @entity(key: ["name"]) { name: String! }
+      type Query {
+        person(name: String!): Person @from(key: "{'name': name}")
+      }
+    """,
+  )
+
+  with TestClient(store) as client:
+    rejected = client.post(
+      "/topology",
+      json={"revision": 0, "modules": [invalid.model_dump(by_alias=True)]},
+    )
+    recovered = client.post(
+      "/topology",
+      json={"revision": 0, "modules": [valid.model_dump(by_alias=True)]},
+    )
+
+  assert rejected.status_code == 409
+  assert recovered.status_code == 204
+  assert store.topology_revision == 0
+  assert store.composition_error is None
