@@ -1,7 +1,5 @@
 """Normalize generated Gateway JSON Schema before producing Python models."""
 
-from __future__ import annotations
-
 import argparse
 import json
 from copy import deepcopy
