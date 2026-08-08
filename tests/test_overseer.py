@@ -2,9 +2,17 @@ import asyncio
 from typing import Any
 
 import httpx2
+import pytest
 from starlette.testclient import TestClient
 
-from micro.overseer import DiscoveredInstance, NetworkDiscovery, Overseer, StoreModule
+from micro.overseer import (
+  DiscoveredInstance,
+  GraphQLModule,
+  NetworkDiscovery,
+  Overseer,
+  StoreModule,
+)
+from micro.store import FederationCompositionError
 
 SERVICE_SCHEMA: dict[str, Any] = {
   "format": 1,
@@ -90,3 +98,36 @@ def test_overseer_pushes_discovered_topology() -> None:
   assert '"id":"guilds"' in store_request[2].replace(" ", "")
   assert '"id":"members"' in store_request[2].replace(" ", "")
   assert overseer.revision == 0
+
+
+def test_overseer_loads_replaces_and_unloads_graphql_modules() -> None:
+  overseer = Overseer(NetworkDiscovery())
+  valid = GraphQLModule(
+    id="guilds",
+    schema="""
+      type Guild @key(fields: "id") { id: ID! }
+      type Query {
+        guild(id: ID!): Guild @resolve(key: "{'id': id}")
+      }
+    """,
+  )
+  invalid_replacement = GraphQLModule(
+    id="guilds",
+    schema="""
+      type Guild @key(fields: "id") { id: ID! }
+      type Query { guild(id: ID!): Guild }
+    """,
+  )
+
+  overseer.load_graphql_module(valid)
+  assert overseer.federated_graph is not None
+  assert overseer.federated_graph.modules == ("guilds",)
+
+  with pytest.raises(FederationCompositionError):
+    overseer.load_graphql_module(invalid_replacement)
+  assert overseer.federated_graph is not None
+  assert overseer.federated_graph.resolvers
+
+  assert overseer.unload_graphql_module("guilds")
+  assert overseer.federated_graph is None
+  assert not overseer.unload_graphql_module("guilds")

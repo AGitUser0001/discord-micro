@@ -3,11 +3,8 @@ from dataclasses import dataclass, field
 from re import fullmatch
 from typing import Any, cast
 
-from pydantic import TypeAdapter
+from pydantic import JsonValue, TypeAdapter
 
-type JsonValue = (
-  None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
-)
 type JsonSchema = bool | dict[str, JsonValue]
 
 _EVENT_ID_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"

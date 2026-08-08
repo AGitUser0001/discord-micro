@@ -141,3 +141,23 @@ AGE clients must load the extension and select its catalog on every connection:
 LOAD 'age';
 SET search_path = ag_catalog, "$user", public;
 ```
+
+Store APIs are composed from Federation modules. Entity identity comes from
+Federation `@key`; root lookups explicitly map their arguments with Micro's
+trusted Python-expression `@resolve` directive:
+
+```graphql
+type Guild @key(fields: "id") {
+  id: ID!
+  name: String!
+}
+
+type Query {
+  guild(id: ID!): Guild @resolve(key: "{'id': id}")
+}
+```
+
+Micro compiles operations over the composed schema into canonical ISO GQL.
+Physical labels, properties, and reference types use deterministic hashes of
+their schema coordinates. Federation entities reset the storage path and can
+therefore be shared wherever the supergraph references them.

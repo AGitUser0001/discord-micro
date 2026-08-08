@@ -175,7 +175,7 @@ def test_overseer_topology_activates_distributed_store_module() -> None:
   assert store.topology_revision == 0
 
 
-def test_store_rejects_modules_without_a_composer() -> None:
+def test_store_rejects_invalid_federation_topology() -> None:
   store = Store(SCHEMA, compiler=Compiler(), executor=Executor())
 
   with TestClient(store) as client:
@@ -186,7 +186,10 @@ def test_store_rejects_modules_without_a_composer() -> None:
         "modules": [
           {
             "id": "example.status",
-            "schema": "extend type Query { moduleStatus: String! }",
+            "schema": """
+              type Status @key(fields: \"id\") { id: ID! }
+              type Query { status(id: ID!): Status }
+            """,
           }
         ],
       },

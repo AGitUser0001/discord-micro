@@ -13,7 +13,6 @@ service = Service("example.api", state_receiver=topology)
 
 @service.handle(GREET)
 async def greet(request: GreetingInput) -> GreetingOutput:
-  message = f"Hello, {request.name}!"
   if topology.store_url is None:
     raise RuntimeError("The overseer has not supplied a graph-store route.")
 
@@ -21,17 +20,24 @@ async def greet(request: GreetingInput) -> GreetingOutput:
     f"{topology.store_url}/graphql",
     json={
       "query": """
-        mutation SaveGreeting($name: String!, $message: String!) {
-          saveGreeting(name: $name, message: $message) { name message }
+        query Greeting($name: String!) {
+          greeting(name: $name) { message }
         }
       """,
-      "variables": {"name": request.name, "message": message},
+      "variables": {"name": request.name},
     },
   )
   response.raise_for_status()
   body = response.json()
   if body.get("errors"):
-    raise RuntimeError(f"Store rejected greeting: {body['errors']}")
+    raise RuntimeError(f"Store query failed: {body['errors']}")
+
+  stored = body.get("data", {}).get("greeting")
+  message = (
+    stored["message"]
+    if isinstance(stored, dict) and isinstance(stored.get("message"), str)
+    else f"Hello, {request.name}!"
+  )
 
   await services.emit(AUDIT, AuditEntry(action="greeted", subject=request.name))
   return GreetingOutput(message=message)

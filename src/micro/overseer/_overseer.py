@@ -11,7 +11,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
-from micro._store_module import StoreModule
+from micro._federation import FederatedGraph, compose_federation
+from micro._store_module import GraphQLModule, StoreModule
 
 
 class DiscoveredInstance(BaseModel):
@@ -137,6 +138,9 @@ class Overseer:
     self._modules = {module.id: module for module in modules}
     if len(self._modules) != len(modules):
       raise ValueError("Store module IDs must be unique.")
+    self._federated_graph = (
+      compose_federation(tuple(self._modules.values())) if self._modules else None
+    )
     self._http = httpx2.AsyncClient(transport=transport, timeout=timeout)
     self._app = Starlette(
       routes=[
@@ -226,6 +230,27 @@ class Overseer:
   @property
   def revision(self) -> int:
     return self._revision
+
+  @property
+  def federated_graph(self) -> FederatedGraph | None:
+    return self._federated_graph
+
+  def load_graphql_module(self, module: GraphQLModule) -> None:
+    candidate = dict(self._modules)
+    candidate[module.id] = module
+    graph = compose_federation(tuple(candidate.values()))
+    self._modules = candidate
+    self._federated_graph = graph
+
+  def unload_graphql_module(self, module_id: str) -> bool:
+    if module_id not in self._modules:
+      return False
+    candidate = dict(self._modules)
+    del candidate[module_id]
+    graph = compose_federation(tuple(candidate.values())) if candidate else None
+    self._modules = candidate
+    self._federated_graph = graph
+    return True
 
   async def __aenter__(self) -> Self:
     return self

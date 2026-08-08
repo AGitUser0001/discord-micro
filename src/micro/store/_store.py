@@ -89,6 +89,11 @@ class GraphCompiler(Protocol):
   def compile(self, request: GraphQLRequest) -> CompiledOperation: ...
 
 
+class _UnavailableCompiler:
+  def compile(self, request: GraphQLRequest) -> CompiledOperation:
+    raise GraphQLError("The selected field has no active GraphQL module.")
+
+
 class GraphExecutor(Protocol):
   async def start(self) -> None: ...
 
@@ -119,17 +124,18 @@ class Store:
 
   def __init__(
     self,
-    schema: GraphQLSchema | str,
+    schema: GraphQLSchema | str | None = None,
     *,
-    compiler: GraphCompiler,
+    compiler: GraphCompiler | None = None,
     executor: GraphExecutor,
     module_composer: ModuleComposer | None = None,
   ) -> None:
+    schema = schema or "type Query { _micro: Boolean }"
     self._base_schema = build_schema(schema) if isinstance(schema, str) else schema
-    self._base_compiler = compiler
+    self._base_compiler = compiler or _UnavailableCompiler()
     self.executor = executor
     self._module_composer = module_composer
-    self._runtime = _StoreRuntime(self._base_schema, compiler, ())
+    self._runtime = _StoreRuntime(self._base_schema, self._base_compiler, ())
     self._topology_revision = -1
     self._ready = False
     self._app = Starlette(
@@ -258,15 +264,21 @@ class Store:
     if len(set(module_ids)) != len(module_ids):
       raise ValueError("Store topology contains duplicate module IDs.")
     if topology.modules and self._module_composer is None:
-      raise ValueError("This store has no module composer configured.")
+      from micro._federation import compose_federation
 
-    schema = self._base_schema
-    for module in topology.modules:
-      schema = extend_schema(schema, parse(module.graphql_schema))
-    if topology.modules:
+      from ._compiler import FederationCompiler
+
+      graph = compose_federation(topology.modules)
+      schema = graph.schema
+      compiler: GraphCompiler = FederationCompiler(graph)
+    elif topology.modules:
+      schema = self._base_schema
+      for module in topology.modules:
+        schema = extend_schema(schema, parse(module.graphql_schema))
       assert self._module_composer is not None
       compiler = self._module_composer.compose(self._base_compiler, topology.modules)
     else:
+      schema = self._base_schema
       compiler = self._base_compiler
     self._runtime = _StoreRuntime(schema, compiler, module_ids)
     self._topology_revision = topology.revision

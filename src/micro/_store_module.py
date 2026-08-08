@@ -1,16 +1,13 @@
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class StoreModule(BaseModel):
-  """A serializable extension distributed from the overseer to graph stores."""
+class GraphQLModule(BaseModel):
+  """A serializable Federation subgraph loaded by the overseer."""
 
   model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
   id: str = Field(min_length=1)
   graphql_schema: str = Field(alias="schema", min_length=1)
-  configuration: dict[str, Any] = Field(default_factory=dict)
 
   @field_validator("id")
   @classmethod
@@ -18,3 +15,7 @@ class StoreModule(BaseModel):
     if any(character.isspace() for character in value):
       raise ValueError("store module IDs cannot contain whitespace")
     return value
+
+
+# Compatibility while the public store API moves to GraphQLModule.
+StoreModule = GraphQLModule

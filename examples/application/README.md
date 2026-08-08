@@ -53,7 +53,7 @@ curl -sS http://127.0.0.1:8102/requests/example.greet \
   -d '{"name":"World"}'
 ```
 
-The API service stores the greeting through GraphQL, emits
+The API service looks up a greeting through GraphQL, emits
 `example.audit` through `ServiceClient`, and returns the response. The audit
 worker prints the event.
 

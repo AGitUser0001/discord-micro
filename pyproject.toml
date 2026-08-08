@@ -54,6 +54,7 @@ store = [
     "starlette>=1.4.1",
 ]
 overseer = [
+    "graphql-core>=3.2.11,<3.3",
     "httpx2>=2.9.1",
     "pydantic>=2.13.4",
     "starlette>=1.4.1",

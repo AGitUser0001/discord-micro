@@ -37,18 +37,14 @@ AUDIT = EventSchema[AuditEntry](
 GREETING_STORE = StoreModule(
   id="example.greetings",
   schema="""
-    type Greeting {
+    type Greeting @key(fields: "name") {
       name: String!
       message: String!
     }
 
-    extend type Query {
+    type Query {
       greeting(name: String!): Greeting
-    }
-
-    extend type Mutation {
-      saveGreeting(name: String!, message: String!): Greeting!
+        @resolve(key: "{'name': name}")
     }
   """,
-  configuration={"operations": ["greeting", "saveGreeting"]},
 )
