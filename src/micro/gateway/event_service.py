@@ -5,7 +5,7 @@ from pydantic import JsonValue
 from pydantic_core import from_json, to_json
 
 from micro._microservices import Microservice
-from micro.queue import QueueSource
+from micro.queue import QueueClient
 from micro.service._client import ServiceClient
 
 
@@ -15,26 +15,32 @@ class GatewayEventService(Microservice):
   def __init__(
     self,
     *,
-    source: QueueSource,
     transport: httpx2.AsyncBaseTransport | None = None,
     timeout: float = 5.0,
   ) -> None:
     self.client = ServiceClient(transport=transport, timeout=timeout)
-    self.source = source
+    self.queue = QueueClient(transport=transport, timeout=timeout)
     self._topology_ready = asyncio.Event()
     self._consumer: asyncio.Task[None] | None = None
     super().__init__("gateway.event_service", state_receiver=self)
 
   @property
   def component_ready(self) -> bool:
-    return self.client.state_revision >= 0
+    return self.client.state_revision >= 0 and self.queue.state_revision >= 0
 
   def apply_state(self, state: JsonValue) -> None:
-    self.client.apply_state(state)
+    service_snapshot = self.client._state_snapshot()
+    queue_snapshot = self.queue._state_snapshot()
+    try:
+      self.client.apply_state(state)
+      self.queue.apply_state(state)
+    except Exception:
+      self.client._restore_state(service_snapshot)
+      self.queue._restore_state(queue_snapshot)
+      raise
     self._topology_ready.set()
 
   async def start(self) -> None:
-    await self.source.start()
     self._consumer = asyncio.create_task(
       self._consume(), name="micro.gateway.event_service"
     )
@@ -44,8 +50,8 @@ class GatewayEventService(Microservice):
       self._consumer.cancel()
       await asyncio.gather(self._consumer, return_exceptions=True)
       self._consumer = None
-    await self.source.close()
     await self.client.aclose()
+    await self.queue.aclose()
 
   async def route(self, item: bytes) -> int:
     decoded = from_json(item)
@@ -61,7 +67,9 @@ class GatewayEventService(Microservice):
     await self._topology_ready.wait()
     while True:
       try:
-        delivery = await self.source.receive()
+        delivery = await self.queue.consume(
+          "gateway.events", "micro-gateway-event-service"
+        )
       except asyncio.CancelledError:
         raise
       except Exception:

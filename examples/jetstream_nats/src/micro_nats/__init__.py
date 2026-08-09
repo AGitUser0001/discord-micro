@@ -1,14 +1,16 @@
+import asyncio
 from collections.abc import Sequence
 from typing import Any
 
 import nats
 from nats.aio.client import Client
-from nats.aio.msg import Msg
 from nats.errors import TimeoutError
 from nats.js.client import JetStreamContext
 from nats.js.errors import BadRequestError, NotFoundError
 
-from micro.queue import QueueDelivery
+from micro.queue import QueueBackendDelivery
+
+_REPLY_HEADER = "Micro-Reply"
 
 
 class JetStreamBackend:
@@ -26,6 +28,8 @@ class JetStreamBackend:
     self._subject_prefix = subject_prefix
     self._connection: Client | None = None
     self._jetstream: JetStreamContext | None = None
+    self._subscriptions: dict[tuple[str, str], Any] = {}
+    self._subscription_lock = asyncio.Lock()
 
   async def start(self) -> None:
     connection = await nats.connect(servers=list(self._servers))
@@ -58,77 +62,89 @@ class JetStreamBackend:
       raise RuntimeError("The JetStream backend has not started.")
     await self._jetstream.publish(f"{self._subject_prefix}.{channel}", payload)
 
+  async def request(
+    self,
+    channel: str,
+    payload: bytes,
+    *,
+    timeout: float,
+  ) -> bytes:
+    if self._connection is None or self._jetstream is None:
+      raise RuntimeError("The JetStream backend has not started.")
+    inbox = self._connection.new_inbox()
+    subscription = await self._connection.subscribe(inbox, max_msgs=1)
+    try:
+      await self._jetstream.publish(
+        f"{self._subject_prefix}.{channel}",
+        payload,
+        headers={_REPLY_HEADER: inbox},
+      )
+      try:
+        response = await subscription.next_msg(timeout=timeout)
+      except TimeoutError as exc:
+        raise TimeoutError from exc
+      return response.data
+    finally:
+      await subscription.unsubscribe()
+
+  async def consume(
+    self,
+    channel: str,
+    consumer: str,
+    *,
+    timeout: float,
+  ) -> QueueBackendDelivery | None:
+    if self._connection is None or self._jetstream is None:
+      raise RuntimeError("The JetStream backend has not started.")
+    key = (channel, consumer)
+    subscription = self._subscriptions.get(key)
+    if subscription is None:
+      async with self._subscription_lock:
+        subscription = self._subscriptions.get(key)
+        if subscription is None:
+          subscription = await self._jetstream.pull_subscribe(
+            f"{self._subject_prefix}.{channel}",
+            durable=consumer,
+            stream=self._stream,
+          )
+          self._subscriptions[key] = subscription
+    try:
+      messages = await subscription.fetch(batch=1, timeout=timeout)
+    except TimeoutError:
+      return None
+    message = messages[0]
+    return QueueBackendDelivery(
+      message.data,
+      message.reply,
+      message.headers.get(_REPLY_HEADER) if message.headers else None,
+    )
+
+  async def acknowledge(self, receipt: str) -> None:
+    await self._settle(receipt)
+
+  async def retry(self, receipt: str) -> None:
+    await self._settle(receipt, b"-NAK")
+
+  async def respond(self, receipt: str, reply: str, payload: bytes) -> None:
+    if self._connection is None:
+      raise RuntimeError("The JetStream backend has not started.")
+    await self._connection.publish(reply, payload)
+    await self._connection.flush()
+    await self._settle(receipt)
+
+  async def _settle(self, receipt: str, payload: bytes = b"") -> None:
+    if self._connection is None:
+      raise RuntimeError("The JetStream backend has not started.")
+    await self._connection.publish(receipt, payload)
+    await self._connection.flush()
+
   async def close(self) -> None:
     if self._connection is None:
       return
     await self._connection.drain()
     self._connection = None
     self._jetstream = None
+    self._subscriptions.clear()
 
 
-class _JetStreamDelivery(QueueDelivery):
-  def __init__(self, message: Msg) -> None:
-    self._message = message
-
-  @property
-  def payload(self) -> bytes:
-    return self._message.data
-
-  async def acknowledge(self) -> None:
-    await self._message.ack()
-
-  async def retry(self) -> None:
-    await self._message.nak()
-
-
-class JetStreamSource:
-  """JetStream competing consumer bound to one Micro queue channel."""
-
-  def __init__(
-    self,
-    servers: Sequence[str] = ("nats://127.0.0.1:4222",),
-    *,
-    channel: str,
-    consumer: str,
-    stream: str = "MICRO_QUEUE",
-    subject_prefix: str = "micro.queue",
-  ) -> None:
-    self._servers = tuple(servers)
-    self._stream = stream
-    self._consumer = consumer
-    self._subject = f"{subject_prefix}.{channel}"
-    self._connection: Client | None = None
-    self._subscription: Any = None
-
-  async def start(self) -> None:
-    connection = await nats.connect(servers=list(self._servers))
-    try:
-      self._subscription = await connection.jetstream().pull_subscribe(
-        self._subject,
-        durable=self._consumer,
-        stream=self._stream,
-      )
-    except BaseException:
-      await connection.close()
-      raise
-    self._connection = connection
-
-  async def receive(self) -> QueueDelivery:
-    if self._subscription is None:
-      raise RuntimeError("The JetStream source has not started.")
-    while True:
-      try:
-        messages = await self._subscription.fetch(batch=1, timeout=1)
-      except TimeoutError:
-        continue
-      return _JetStreamDelivery(messages[0])
-
-  async def close(self) -> None:
-    if self._connection is None:
-      return
-    await self._connection.drain()
-    self._connection = None
-    self._subscription = None
-
-
-__all__ = ("JetStreamBackend", "JetStreamSource")
+__all__ = ("JetStreamBackend",)

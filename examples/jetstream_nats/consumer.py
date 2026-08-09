@@ -1,31 +1,34 @@
 import asyncio
 import os
 
-import nats
-from nats.errors import TimeoutError
+from micro.queue import QueueClient
 
 
 async def main() -> None:
-  connection = await nats.connect(
-    os.environ.get("MICRO_NATS_URL", "nats://127.0.0.1:4222")
-  )
-  jetstream = connection.jetstream()
-  subscription = await jetstream.pull_subscribe(
-    "micro.queue.example.jobs",
-    durable="example-worker",
-    stream="MICRO_QUEUE",
+  client = QueueClient()
+  client.apply_state(
+    {
+      "revision": 0,
+      "queues": [
+        {
+          "id": "local-queue",
+          "base_url": os.environ.get("MICRO_QUEUE_URL", "http://127.0.0.1:8200"),
+        }
+      ],
+    }
   )
   try:
     while True:
+      delivery = await client.consume("example.jobs", "example-worker")
       try:
-        messages = await subscription.fetch(batch=32, timeout=1)
-      except TimeoutError:
-        continue
-      for message in messages:
-        print(message.data.decode(errors="replace"))
-        await message.ack()
+        print(delivery.payload.decode(errors="replace"))
+      except Exception:
+        await delivery.retry()
+        raise
+      else:
+        await delivery.acknowledge()
   finally:
-    await connection.drain()
+    await client.aclose()
 
 
 if __name__ == "__main__":

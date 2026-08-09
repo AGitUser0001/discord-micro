@@ -1,8 +1,8 @@
 # NATS JetStream queue example
 
-This example backs Micro's minimal queue ingress with durable NATS JetStream.
-Micro transports only a channel and raw payload; JetStream privately manages
-storage acknowledgements, sequence numbers, redelivery, and durable consumers.
+This example backs Micro's queue server with durable NATS JetStream. Queue
+clients never connect to NATS: the server owns publishing, request/reply,
+consumers, acknowledgements, sequence numbers, and redelivery.
 
 Start NATS and install the example:
 
@@ -17,15 +17,15 @@ Run the queue ingress:
 uv run uvicorn app:queue --port 8200
 ```
 
-Run a separate competing consumer:
+Run a separate competing consumer through the queue server:
 
 ```console
 uv run consumer.py
 ```
 
 The actual gateway event router is another ASGI process. It waits for overseer
-topology, then consumes `gateway.events` and forwards each dispatch once per
-listening service name:
+topology, then uses its `QueueClient` to consume `gateway.events` and forwards
+each dispatch once per listening service name:
 
 ```console
 uv run uvicorn event_service:event_service --port 8201
@@ -46,4 +46,17 @@ The client-facing API is similarly small:
 
 ```python
 await service.queue.publish("example.jobs", b"hello from Micro")
+
+delivery = await service.queue.consume("example.jobs", "worker-name")
+try:
+  await process(delivery.payload)
+except Exception:
+  await delivery.retry()
+else:
+  await delivery.acknowledge()
+
+response = await service.queue.request("example.requests", b"question")
 ```
+
+Request handlers consume normally and finish with `delivery.respond(payload)`.
+Run `uv run responder.py` for a minimal responder.

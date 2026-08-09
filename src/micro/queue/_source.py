@@ -1,22 +1,10 @@
-from typing import Protocol
+from dataclasses import dataclass
 
 
-class QueueDelivery(Protocol):
-  """One item received from a queue backend."""
+@dataclass(frozen=True, slots=True)
+class QueueBackendDelivery:
+  """Queue-backend metadata that never enters an application's payload."""
 
-  @property
-  def payload(self) -> bytes: ...
-
-  async def acknowledge(self) -> None: ...
-
-  async def retry(self) -> None: ...
-
-
-class QueueSource(Protocol):
-  """A competing consumer bound to one queue channel."""
-
-  async def start(self) -> None: ...
-
-  async def receive(self) -> QueueDelivery: ...
-
-  async def close(self) -> None: ...
+  payload: bytes
+  receipt: str
+  reply: str | None = None

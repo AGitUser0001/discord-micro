@@ -164,11 +164,15 @@ class MicroserviceClient:
     body: bytes,
     *,
     content_type: str = "application/json",
+    headers: Mapping[str, str] | None = None,
   ) -> bytes:
+    request_headers = {"content-type": content_type}
+    if headers is not None:
+      request_headers.update(headers)
     response = await self._http.post(
       f"{instance.base_url}{path}",
       content=body,
-      headers={"content-type": content_type},
+      headers=request_headers,
     )
     if not response.is_success:
       raise RemoteMicroserviceError(instance.id, response.status_code, response.text)

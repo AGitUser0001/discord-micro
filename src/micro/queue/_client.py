@@ -3,14 +3,14 @@ from collections.abc import Buffer
 import httpx2
 from pydantic import JsonValue
 
-from micro._microservices import MicroserviceClient
+from micro._microservices import MicroserviceClient, RemoteMicroserviceError
 from micro._microservices._client import Instance
 
 from ._queue import validate_channel
 
 
 class QueueClient(MicroserviceClient):
-  """Routes publications across queue ingress instances."""
+  """Publishes, requests, and consumes exclusively through queue servers."""
 
   def __init__(
     self,
@@ -43,3 +43,118 @@ class QueueClient(MicroserviceClient):
       bytes(payload),
       content_type="application/octet-stream",
     )
+
+  async def request(
+    self,
+    channel: str,
+    payload: Buffer,
+    *,
+    timeout: float = 30.0,
+  ) -> bytes:
+    validate_channel(channel)
+    if not 0 < timeout <= 300:
+      raise ValueError("Request timeout must be between 0 and 300 seconds.")
+    instance = self.select(f"queue:{channel}", list(self._instances.values()))
+    response = await self._http.post(
+      f"{instance.base_url}/channels/{channel}/request",
+      params={"timeout": timeout},
+      content=bytes(payload),
+      headers={"content-type": "application/octet-stream"},
+      timeout=timeout + 1,
+    )
+    if not response.is_success:
+      raise RemoteMicroserviceError(instance.id, response.status_code, response.text)
+    return response.content
+
+  async def consume(self, channel: str, consumer: str) -> QueueDelivery:
+    validate_channel(channel)
+    validate_channel(consumer)
+    while True:
+      instance = self.select(
+        f"queue-consumer:{channel}:{consumer}", list(self._instances.values())
+      )
+      response = await self._http.post(
+        f"{instance.base_url}/channels/{channel}/consumers/{consumer}",
+        content=b"",
+        timeout=None,
+      )
+      if not response.is_success:
+        raise RemoteMicroserviceError(instance.id, response.status_code, response.text)
+      if response.status_code == 204:
+        continue
+      receipt = response.headers.get("micro-receipt")
+      if receipt is None:
+        raise ValueError("Queue delivery omitted its receipt capability.")
+      return QueueDelivery(
+        self,
+        instance,
+        response.content,
+        receipt,
+        response.headers.get("micro-reply"),
+      )
+
+  async def _settle(
+    self,
+    instance: Instance,
+    action: str,
+    receipt: str,
+    reply: str | None = None,
+    payload: bytes = b"",
+  ) -> None:
+    headers = {"micro-receipt": receipt}
+    if reply is not None:
+      headers["micro-reply"] = reply
+    await self.post(
+      instance,
+      f"/deliveries/{action}",
+      payload,
+      content_type="application/octet-stream",
+      headers=headers,
+    )
+
+
+class QueueDelivery:
+  """One remotely consumed queue item with mutually exclusive settlement."""
+
+  def __init__(
+    self,
+    client: QueueClient,
+    instance: Instance,
+    payload: bytes,
+    receipt: str,
+    reply: str | None,
+  ) -> None:
+    self.payload = payload
+    self._client = client
+    self._instance = instance
+    self._receipt = receipt
+    self._reply = reply
+    self._settled = False
+
+  async def acknowledge(self) -> None:
+    await self._finish("acknowledge")
+
+  async def retry(self) -> None:
+    await self._finish("retry")
+
+  async def respond(self, payload: Buffer) -> None:
+    if self._reply is None:
+      raise RuntimeError("This queue delivery did not originate from request().")
+    await self._finish("respond", self._reply, bytes(payload))
+
+  async def _finish(
+    self,
+    action: str,
+    reply: str | None = None,
+    payload: bytes = b"",
+  ) -> None:
+    if self._settled:
+      raise RuntimeError("Queue delivery has already been settled.")
+    await self._client._settle(
+      self._instance,
+      action,
+      self._receipt,
+      reply,
+      payload,
+    )
+    self._settled = True

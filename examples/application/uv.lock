@@ -305,6 +305,7 @@ gateway = [
     { name = "hikari" },
 ]
 overseer = [
+    { name = "graphglot" },
     { name = "graphql-core" },
 ]
 store = [
@@ -315,6 +316,7 @@ store = [
 [package.metadata]
 requires-dist = [
     { name = "graphglot", marker = "extra == 'all'", specifier = ">=0.14.1,<0.15" },
+    { name = "graphglot", marker = "extra == 'overseer'", specifier = ">=0.14.1,<0.15" },
     { name = "graphglot", marker = "extra == 'store'", specifier = ">=0.14.1,<0.15" },
     { name = "graphql-core", marker = "extra == 'all'", specifier = ">=3.2.11,<3.3" },
     { name = "graphql-core", marker = "extra == 'overseer'", specifier = ">=3.2.11,<3.3" },

@@ -6,44 +6,6 @@ import httpx2
 from micro.gateway import GatewayEventService
 
 
-class Source:
-  async def start(self) -> None:
-    pass
-
-  async def receive(self) -> Any:
-    raise AssertionError("The unit test calls route directly.")
-
-  async def close(self) -> None:
-    pass
-
-
-class Delivery:
-  def __init__(self, payload: bytes) -> None:
-    self.payload = payload
-    self.acknowledged = asyncio.Event()
-    self.retried = asyncio.Event()
-
-  async def acknowledge(self) -> None:
-    self.acknowledged.set()
-
-  async def retry(self) -> None:
-    self.retried.set()
-
-
-class LiveSource:
-  def __init__(self) -> None:
-    self.items: asyncio.Queue[Delivery] = asyncio.Queue()
-
-  async def start(self) -> None:
-    pass
-
-  async def receive(self) -> Delivery:
-    return await self.items.get()
-
-  async def close(self) -> None:
-    pass
-
-
 def event_schema(service: str, handler: str) -> dict[str, Any]:
   return {
     "format": 1,
@@ -70,10 +32,7 @@ def test_gateway_event_service_delivers_once_per_service_name() -> None:
     calls.append((request.url.host, request.read()))
     return httpx2.Response(204)
 
-  event_service = GatewayEventService(
-    source=Source(),
-    transport=httpx2.MockTransport(respond),
-  )
+  event_service = GatewayEventService(transport=httpx2.MockTransport(respond))
   event_service.apply_state(
     {
       "revision": 0,
@@ -109,6 +68,7 @@ def test_gateway_event_service_delivers_once_per_service_name() -> None:
       )
     finally:
       await event_service.client.aclose()
+      await event_service.queue.aclose()
 
   assert asyncio.run(exercise()) == 2
   assert calls == [
@@ -124,9 +84,7 @@ def test_gateway_event_service_round_robins_replicas_without_hash_grouping() -> 
     calls.append(request.url.host)
     return httpx2.Response(204)
 
-  event_service = GatewayEventService(
-    source=Source(), transport=httpx2.MockTransport(respond)
-  )
+  event_service = GatewayEventService(transport=httpx2.MockTransport(respond))
   event_service.apply_state(
     {
       "revision": 0,
@@ -155,21 +113,35 @@ def test_gateway_event_service_round_robins_replicas_without_hash_grouping() -> 
       await event_service.route(b'["MESSAGE_CREATE",{}]')
     finally:
       await event_service.client.aclose()
+      await event_service.queue.aclose()
 
   asyncio.run(exercise())
   assert calls == ["one.internal", "two.internal"]
 
 
 def test_gateway_event_consumer_drops_poison_and_retries_delivery_failures() -> None:
-  source = LiveSource()
+  deliveries = [b"not a gateway event", b'["MESSAGE_CREATE",{}]']
+  settlements: list[str] = []
+  finished = asyncio.Event()
 
   def respond(request: httpx2.Request) -> httpx2.Response:
+    if "/consumers/" in request.url.path:
+      if deliveries:
+        return httpx2.Response(
+          200,
+          content=deliveries.pop(0),
+          headers={"micro-receipt": f"receipt-{len(deliveries)}"},
+        )
+      return httpx2.Response(503)
+    if request.url.path.startswith("/deliveries/"):
+      action = request.url.path.rsplit("/", 1)[-1]
+      settlements.append(action)
+      if len(settlements) == 2:
+        finished.set()
+      return httpx2.Response(204)
     return httpx2.Response(503)
 
-  event_service = GatewayEventService(
-    source=source,
-    transport=httpx2.MockTransport(respond),
-  )
+  event_service = GatewayEventService(transport=httpx2.MockTransport(respond))
   event_service.apply_state(
     {
       "revision": 0,
@@ -181,19 +153,14 @@ def test_gateway_event_consumer_drops_poison_and_retries_delivery_failures() -> 
           "schema": "audit",
         }
       ],
+      "queues": [{"id": "queue-1", "base_url": "http://queue.internal"}],
     }
   )
-  poison = Delivery(b"not a gateway event")
-  transient = Delivery(b'["MESSAGE_CREATE",{}]')
 
   async def exercise() -> None:
     await event_service.start()
-    await source.items.put(poison)
-    await asyncio.wait_for(poison.acknowledged.wait(), 1)
-    await source.items.put(transient)
-    await asyncio.wait_for(transient.retried.wait(), 1)
+    await asyncio.wait_for(finished.wait(), 1)
     await event_service.close()
 
   asyncio.run(exercise())
-  assert not poison.retried.is_set()
-  assert not transient.acknowledged.is_set()
+  assert settlements == ["acknowledge", "retry"]
