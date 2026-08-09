@@ -23,6 +23,14 @@ Run a separate competing consumer:
 uv run consumer.py
 ```
 
+The actual gateway event router is another ASGI process. It waits for overseer
+topology, then consumes `gateway.events` and forwards each dispatch once per
+listening service name:
+
+```console
+uv run uvicorn event_service:event_service --port 8201
+```
+
 Publish an item through Micro:
 
 ```console

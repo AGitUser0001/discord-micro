@@ -1,9 +1,14 @@
 from collections.abc import Sequence
+from typing import Any
 
 import nats
 from nats.aio.client import Client
+from nats.aio.msg import Msg
+from nats.errors import TimeoutError
 from nats.js.client import JetStreamContext
 from nats.js.errors import BadRequestError, NotFoundError
+
+from micro.gateway.event_service import GatewayEventDelivery
 
 
 class JetStreamBackend:
@@ -61,4 +66,68 @@ class JetStreamBackend:
     self._jetstream = None
 
 
-__all__ = ("JetStreamBackend",)
+class _JetStreamDelivery(GatewayEventDelivery):
+  def __init__(self, message: Msg) -> None:
+    self._message = message
+
+  @property
+  def payload(self) -> bytes:
+    return self._message.data
+
+  async def acknowledge(self) -> None:
+    await self._message.ack()
+
+  async def retry(self) -> None:
+    await self._message.nak()
+
+
+class JetStreamGatewayEventSource:
+  """Competing durable consumer for Micro's single gateway event channel."""
+
+  def __init__(
+    self,
+    servers: Sequence[str] = ("nats://127.0.0.1:4222",),
+    *,
+    stream: str = "MICRO_QUEUE",
+    durable: str = "micro-gateway-event-service",
+    subject: str = "micro.queue.gateway.events",
+  ) -> None:
+    self._servers = tuple(servers)
+    self._stream = stream
+    self._durable = durable
+    self._subject = subject
+    self._connection: Client | None = None
+    self._subscription: Any = None
+
+  async def start(self) -> None:
+    connection = await nats.connect(servers=list(self._servers))
+    try:
+      self._subscription = await connection.jetstream().pull_subscribe(
+        self._subject,
+        durable=self._durable,
+        stream=self._stream,
+      )
+    except BaseException:
+      await connection.close()
+      raise
+    self._connection = connection
+
+  async def receive(self) -> GatewayEventDelivery:
+    if self._subscription is None:
+      raise RuntimeError("The JetStream event source has not started.")
+    while True:
+      try:
+        messages = await self._subscription.fetch(batch=1, timeout=1)
+      except TimeoutError:
+        continue
+      return _JetStreamDelivery(messages[0])
+
+  async def close(self) -> None:
+    if self._connection is None:
+      return
+    await self._connection.drain()
+    self._connection = None
+    self._subscription = None
+
+
+__all__ = ("JetStreamBackend", "JetStreamGatewayEventSource")

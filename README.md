@@ -96,18 +96,34 @@ guild/member ingestion separately.
 gateway = Gateway(
   token,
   intents=hikari.Intents.GUILDS | hikari.Intents.GUILD_MESSAGES,
-  dispatch=forward_dispatch,
   connection=update_connection_graph,
   shard_ids=[0, 2],
   shard_count=4,
 )
 ```
 
-The dispatch callback receives the event name, shard ID, connection ID, a local
-per-connection sequence, and Hikari's raw payload. Connection callbacks report
-connect, disconnect, ready, resume, invalidation, and clean-close transitions.
-The gateway starts and closes with ASGI lifespan, so it can run directly under
-Uvicorn.
+The overseer pushes queue topology to the gateway before it opens its Discord
+connections. Dispatches are published on `gateway.events` as compact
+`[event_name, payload]` records. Connection callbacks separately report connect,
+disconnect, ready, resume, invalidation, and clean-close transitions. The gateway
+starts and closes with ASGI lifespan, so it can run directly under Uvicorn.
+
+`GatewayEventService` instances share one durable queue consumer. The active
+instance routes each dispatch once per listening service name and chooses one
+replica of that service; implementation hashes do not create duplicate consumer
+groups during rolling updates.
+
+Application services listen with the generated builtin schemas and receive the
+typed Discord dispatch data (`d`) directly:
+
+```python
+from micro.discord.models.gateway import GatewayMessageCreateDispatchData
+from micro.schemas import events
+
+
+@service.listen(events.MESSAGE_CREATE)
+async def message_create(event: GatewayMessageCreateDispatchData) -> None: ...
+```
 
 ## Local graph store
 

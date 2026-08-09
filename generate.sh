@@ -24,6 +24,7 @@ gateway_schema="$temporary/gateway.schema.json"
 http_schema="$temporary/openapi.json"
 gateway_models="$temporary/gateway.py"
 http_models="$temporary/http.py"
+event_schemas="$repository/src/micro/schemas/events.py"
 
 node -e '
 const fs = require("node:fs");
@@ -113,7 +114,10 @@ models="$repository/src/micro/discord/models"
 mkdir -p "$models"
 install -m 0644 "$gateway_models" "$models/gateway.py"
 install -m 0644 "$http_models" "$models/http.py"
+uv run --project "$repository" python "$repository/scripts/generate_events.py" \
+  "$gateway_models" "$event_schemas"
 
-printf 'Generated %s and %s\n' \
+printf 'Generated %s, %s, and %s\n' \
   "$models/gateway.py" \
-  "$models/http.py"
+  "$models/http.py" \
+  "$event_schemas"

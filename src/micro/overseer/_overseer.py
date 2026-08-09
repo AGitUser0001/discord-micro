@@ -27,7 +27,7 @@ class DiscoveredInstance(BaseModel):
 
   id: str = Field(min_length=1)
   base_url: str
-  role: Literal["service", "store", "gateway", "queue"]
+  role: Literal["service", "store", "gateway", "gateway.event_service", "queue"]
   service_schema: dict[str, Any] | None = Field(default=None, alias="schema")
   modules: tuple[str, ...] = ()
 
@@ -238,7 +238,7 @@ class Overseer:
       store_graphs[instance_id] = graph
 
     async def push(instance: DiscoveredInstance) -> tuple[str, int, str] | None:
-      if instance.role == "service":
+      if instance.role in {"service", "gateway", "gateway.event_service"}:
         endpoint = "/state"
         body: Any = service_state
       elif instance.role == "store":

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -49,6 +50,27 @@ class ServiceClient(MicroserviceClient):
     instance, endpoint = self._select("requests", request.id, request.document())
     content = await self.post(instance, endpoint, request.encode_input_json(payload))
     return request.decode_output_json(content)
+
+  async def route_event(self, event_id: str, payload: bytes) -> int:
+    """Deliver raw event JSON once to each logical service that listens for it."""
+    candidates: dict[str, list[tuple[Instance, str]]] = {}
+    for instance in self._instances.values():
+      for operation in instance.schema["events"]:
+        if operation["id"] == event_id:
+          service = instance.schema["service"]
+          candidates.setdefault(service, []).append((instance, operation["path"]))
+          break
+    selected = [
+      group[self._positions.get(f"event-route:{event_id}:{service}", 0) % len(group)]
+      for service, group in candidates.items()
+    ]
+    for service in candidates:
+      key = f"event-route:{event_id}:{service}"
+      self._positions[key] = self._positions.get(key, 0) + 1
+    await asyncio.gather(
+      *(self.post(instance, path, payload) for instance, path in selected)
+    )
+    return len(selected)
 
   def validate_schema(self, schema: MicroserviceSchema) -> dict[str, Any]:
     document = super().validate_schema(schema)

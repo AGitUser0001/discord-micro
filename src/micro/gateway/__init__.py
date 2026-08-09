@@ -8,6 +8,11 @@ from ._gateway import (
   DispatchSink,
   Gateway,
 )
+from .event_service import (
+  GatewayEventDelivery,
+  GatewayEventService,
+  GatewayEventSource,
+)
 
 __all__ = (
   "ConnectionEvent",
@@ -17,4 +22,7 @@ __all__ = (
   "DispatchSink",
   "Gateway",
   "GatewayClient",
+  "GatewayEventDelivery",
+  "GatewayEventService",
+  "GatewayEventSource",
 )

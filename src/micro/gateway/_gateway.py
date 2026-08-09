@@ -7,8 +7,10 @@ from uuid import uuid7
 
 import hikari
 from pydantic import JsonValue
+from pydantic_core import to_json
 
 from micro._microservices import Microservice
+from micro.queue import QueueClient
 
 from ._runner import event_loop_factory
 
@@ -16,9 +18,6 @@ from ._runner import event_loop_factory
 @dataclass(frozen=True, slots=True)
 class Dispatch:
   name: str
-  shard_id: int
-  sequence: int
-  connection_id: str | None
   payload: Mapping[str, Any]
 
 
@@ -72,7 +71,7 @@ class Gateway(Microservice):
     token: str,
     *,
     intents: hikari.Intents,
-    dispatch: DispatchSink,
+    dispatch: DispatchSink | None = None,
     connection: ConnectionSink = _ignore_connection_event,
     shard_ids: Sequence[int] | None = None,
     shard_count: int | None = None,
@@ -80,13 +79,16 @@ class Gateway(Microservice):
   ) -> None:
     if not token:
       raise ValueError("token cannot be empty.")
-    super().__init__("gateway")
+    self.queue = QueueClient()
+    super().__init__("gateway", state_receiver=self)
     self._shard_ids, self._shard_count = _validate_shards(shard_ids, shard_count)
-    self._dispatch_sink = dispatch
+    self._uses_queue_dispatch = dispatch is None
+    self._dispatch_sink = dispatch or self._publish_dispatch
     self._connection_sink = connection
-    self._sequences: dict[int, int] = {}
     self._connections: dict[int, str] = {}
     self._started = False
+    self._topology_ready = asyncio.Event()
+    self._activation: asyncio.Task[None] | None = None
     self._bot = bot or hikari.GatewayBot(
       token,
       intents=intents,
@@ -110,6 +112,14 @@ class Gateway(Microservice):
   def shard_count(self) -> int | None:
     return self._shard_count
 
+  @property
+  def component_ready(self) -> bool:
+    return self._started
+
+  def apply_state(self, state: JsonValue) -> None:
+    self.queue.apply_state(state)
+    self._topology_ready.set()
+
   def schema_document(self, root_path: str) -> dict[str, JsonValue]:
     document = super().schema_document(root_path)
     document["service"] = "micro.gateway"
@@ -126,8 +136,20 @@ class Gateway(Microservice):
       pass
 
   async def start(self) -> None:
-    if self._started:
+    if self._started or self._activation is not None:
       raise RuntimeError("Gateway is already running.")
+    if self._uses_queue_dispatch:
+      self._activation = asyncio.create_task(
+        self._activate(), name="micro.gateway.activate"
+      )
+      return
+    await self._start_bot()
+
+  async def _activate(self) -> None:
+    await self._topology_ready.wait()
+    await self._start_bot()
+
+  async def _start_bot(self) -> None:
     self._started = True
     try:
       await self._bot.start(
@@ -140,10 +162,14 @@ class Gateway(Microservice):
       raise
 
   async def close(self) -> None:
-    if not self._started:
-      return
+    if self._activation is not None:
+      if not self._activation.done():
+        self._activation.cancel()
+      await asyncio.gather(self._activation, return_exceptions=True)
+      self._activation = None
     try:
-      await self._bot.close()
+      if self._started:
+        await self._bot.close()
     finally:
       connections, self._connections = self._connections, {}
       for shard_id, connection_id in connections.items():
@@ -151,10 +177,13 @@ class Gateway(Microservice):
           ConnectionEvent(ConnectionEventKind.CLOSED, shard_id, connection_id)
         )
       self._started = False
+      await self.queue.aclose()
 
   async def _run_until_closed(self) -> None:
     try:
       await self.start()
+      if self._activation is not None:
+        await self._activation
       await self._bot.join()
     finally:
       await self.close()
@@ -171,16 +200,17 @@ class Gateway(Microservice):
     elif event.name == "RESUMED":
       await self._on_resumed(shard_id)
 
-    sequence = self._sequences.get(shard_id, 0) + 1
-    self._sequences[shard_id] = sequence
     await self._dispatch_sink(
       Dispatch(
         name=event.name,
-        shard_id=shard_id,
-        sequence=sequence,
-        connection_id=self._connections.get(shard_id),
         payload=event.payload,
       )
+    )
+
+  async def _publish_dispatch(self, dispatch: Dispatch) -> None:
+    await self.queue.publish(
+      "gateway.events",
+      to_json((dispatch.name, dispatch.payload)),
     )
 
   async def _on_connected(self, event: hikari.ShardConnectedEvent) -> None:
@@ -208,7 +238,6 @@ class Gateway(Microservice):
       )
     connection_id = str(uuid7())
     self._connections[shard_id] = connection_id
-    self._sequences[shard_id] = 0
     await self._connection_sink(
       ConnectionEvent(ConnectionEventKind.READY, shard_id, connection_id)
     )

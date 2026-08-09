@@ -68,6 +68,11 @@ def test_overseer_pushes_discovered_topology() -> None:
         base_url="http://queue.internal",
         role="queue",
       ),
+      DiscoveredInstance(
+        id="gateway-events-1",
+        base_url="http://gateway-events.internal",
+        role="gateway.event_service",
+      ),
     ]
   )
 
@@ -93,6 +98,7 @@ def test_overseer_pushes_discovered_topology() -> None:
   overseer = asyncio.run(exercise())
   service_request = requests[0]
   store_request = requests[1]
+  gateway_event_request = requests[2]
   assert service_request[:2] == ("service.internal", "/state")
   assert '"revision":0' in service_request[2].replace(" ", "")
   assert '"base_url":"http://store.internal"' in service_request[2].replace(" ", "")
@@ -100,6 +106,7 @@ def test_overseer_pushes_discovered_topology() -> None:
   assert store_request[:2] == ("store.internal", "/topology")
   assert '"id":"guilds"' in store_request[2].replace(" ", "")
   assert '"id":"members"' in store_request[2].replace(" ", "")
+  assert gateway_event_request[:2] == ("gateway-events.internal", "/state")
   assert overseer.revision == 0
 
 

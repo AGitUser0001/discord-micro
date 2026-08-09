@@ -1,0 +1,86 @@
+import asyncio
+from typing import Protocol
+
+import httpx2
+from pydantic import JsonValue
+from pydantic_core import from_json, to_json
+
+from micro._microservices import Microservice
+from micro.service._client import ServiceClient
+
+
+class GatewayEventDelivery(Protocol):
+  @property
+  def payload(self) -> bytes: ...
+
+  async def acknowledge(self) -> None: ...
+
+  async def retry(self) -> None: ...
+
+
+class GatewayEventSource(Protocol):
+  async def start(self) -> None: ...
+
+  async def receive(self) -> GatewayEventDelivery: ...
+
+  async def close(self) -> None: ...
+
+
+class GatewayEventService(Microservice):
+  """Routes queued Discord dispatches to one replica of each listening service."""
+
+  def __init__(
+    self,
+    *,
+    source: GatewayEventSource,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    timeout: float = 5.0,
+  ) -> None:
+    self.client = ServiceClient(transport=transport, timeout=timeout)
+    self.source = source
+    self._topology_ready = asyncio.Event()
+    self._consumer: asyncio.Task[None] | None = None
+    super().__init__("gateway.event_service", state_receiver=self)
+
+  @property
+  def component_ready(self) -> bool:
+    return self.client.state_revision >= 0
+
+  def apply_state(self, state: JsonValue) -> None:
+    self.client.apply_state(state)
+    self._topology_ready.set()
+
+  async def start(self) -> None:
+    await self.source.start()
+    self._consumer = asyncio.create_task(
+      self._consume(), name="micro.gateway.event_service"
+    )
+
+  async def close(self) -> None:
+    await self.source.close()
+    if self._consumer is not None:
+      self._consumer.cancel()
+      await asyncio.gather(self._consumer, return_exceptions=True)
+      self._consumer = None
+    await self.client.aclose()
+
+  async def route(self, item: bytes) -> int:
+    decoded = from_json(item)
+    if (
+      not isinstance(decoded, list)
+      or len(decoded) != 2
+      or not isinstance(decoded[0], str)
+    ):
+      raise ValueError("Gateway event items must be [event_name, payload].")
+    return await self.client.route_event(decoded[0], to_json(decoded[1]))
+
+  async def _consume(self) -> None:
+    await self._topology_ready.wait()
+    while True:
+      delivery = await self.source.receive()
+      try:
+        await self.route(delivery.payload)
+      except Exception:
+        await delivery.retry()
+      else:
+        await delivery.acknowledge()

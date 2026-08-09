@@ -91,7 +91,7 @@ def test_gateway_run_owns_the_event_loop_and_lifecycle() -> None:
   assert bot.close_calls == 1
 
 
-def test_gateway_forwards_raw_dispatches_with_local_sequence() -> None:
+def test_gateway_forwards_raw_dispatches() -> None:
   bot = FakeGatewayBot()
   dispatches: list[Dispatch] = []
   gateway = make_gateway(bot, dispatches=dispatches)
@@ -113,13 +113,70 @@ def test_gateway_forwards_raw_dispatches_with_local_sequence() -> None:
 
   asyncio.run(exercise())
 
-  assert [(event.name, event.shard_id, event.sequence) for event in dispatches] == [
-    ("MESSAGE_CREATE", 3, 1),
-    ("MESSAGE_UPDATE", 3, 2),
+  assert [event.name for event in dispatches] == [
+    "MESSAGE_CREATE",
+    "MESSAGE_UPDATE",
   ]
-  assert dispatches[0].connection_id is None
   assert dispatches[0].payload == {"id": "1", "content": "first"}
   assert gateway.shard_ids == (1, 3)
+
+
+def test_gateway_publishes_compact_dispatches_to_one_queue_channel() -> None:
+  bot = FakeGatewayBot()
+  gateway = Gateway(
+    "test-token",
+    intents=hikari.Intents.GUILDS,
+    bot=cast(Any, bot),
+  )
+  publications: list[tuple[str, bytes]] = []
+
+  async def publish(channel: str, payload: bytes) -> None:
+    publications.append((channel, payload))
+
+  gateway.queue.publish = publish  # type: ignore[method-assign]
+
+  asyncio.run(
+    bot.emit(
+      hikari.ShardPayloadEvent,
+      name="MESSAGE_CREATE",
+      payload={"id": "1", "content": "hello"},
+      shard=SimpleNamespace(id=0),
+    )
+  )
+
+  assert publications == [
+    (
+      "gateway.events",
+      b'["MESSAGE_CREATE",{"id":"1","content":"hello"}]',
+    )
+  ]
+
+
+def test_queue_backed_gateway_waits_for_queue_topology_before_connecting() -> None:
+  bot = FakeGatewayBot()
+  gateway = Gateway(
+    "test-token",
+    intents=hikari.Intents.GUILDS,
+    bot=cast(Any, bot),
+  )
+
+  async def exercise() -> None:
+    await gateway.start()
+    assert bot.start_calls == []
+    gateway.apply_state(
+      {
+        "revision": 0,
+        "queues": [{"id": "queue-1", "base_url": "http://queue.internal"}],
+      }
+    )
+    activation = cast(Any, gateway)._activation
+    assert activation is not None
+    await activation
+    await gateway.close()
+
+  asyncio.run(exercise())
+  assert len(bot.start_calls) == 1
+  assert bot.close_calls == 1
 
 
 def test_gateway_reports_connection_lifecycle() -> None:
