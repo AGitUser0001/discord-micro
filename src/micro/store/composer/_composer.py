@@ -60,9 +60,11 @@ class FromExpression:
   source: str
   code: CodeType
   key_fields: tuple[str, ...]
+  argument_names: tuple[str, ...]
 
   def evaluate(self, arguments: Mapping[str, object]) -> dict[str, object]:
-    value = eval(self.code, {"__builtins__": {}}, dict(arguments))
+    values = {name: arguments.get(name) for name in self.argument_names}
+    value = eval(self.code, {"__builtins__": {}}, values)
     if not isinstance(value, dict):
       raise TypeError("A @from key expression must produce a dict.")
     if set(value) != set(self.key_fields):
@@ -80,6 +82,7 @@ class FromDirective:
 class Entity:
   name: str
   keys: tuple[tuple[str, ...], ...]
+  fields: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +107,17 @@ def compose_graph(
   if len(set(module_ids)) != len(module_ids):
     raise GraphCompositionError("Graph module IDs must be unique.")
 
-  registered = (FROM_DIRECTIVE, *directives)
+  from ._mutation import MUTATION_DIRECTIVES
+  from ._ownership import FROM_ACTIVE_DIRECTIVE
+  from ._pagination import SCAN_DIRECTIVE
+
+  registered = (
+    FROM_DIRECTIVE,
+    FROM_ACTIVE_DIRECTIVE,
+    SCAN_DIRECTIVE,
+    *MUTATION_DIRECTIVES,
+    *directives,
+  )
   directive_map = {directive.name: directive for directive in registered}
   if len(directive_map) != len(registered):
     raise GraphCompositionError("Graph directive names must be unique.")
@@ -394,6 +407,10 @@ def _attach_entity(context: TypeDirectiveBindContext) -> Entity:
     if key not in keys:
       keys.append(key)
   declared_fields = {field.name.value for field in definition.fields or ()}
+  if len(keys) != 1:
+    raise GraphCompositionError(
+      f"Entity {definition.name.value} must declare exactly one canonical key."
+    )
   missing = {
     field_name
     for key in keys
@@ -405,7 +422,7 @@ def _attach_entity(context: TypeDirectiveBindContext) -> Entity:
       f"Entity {definition.name.value} has key fields which it does not define: "
       f"{', '.join(sorted(missing))}."
     )
-  return Entity(definition.name.value, tuple(keys))
+  return Entity(definition.name.value, tuple(keys), frozenset(declared_fields))
 
 
 ENTITY_DIRECTIVE = TypeDirectiveMetadata(
@@ -464,6 +481,7 @@ def _collect_bindings(
           field,
           return_type,
           entity,
+          entities,
         )
       )
       bindings[(definition.name.value, field.name.value)] = DirectiveBinding(
@@ -500,6 +518,7 @@ def _compile_from_expression(source: str, arguments: set[str]) -> FromExpression
     source,
     compile(expression, "<micro @from>", "eval"),
     tuple(key_fields),
+    tuple(sorted(referenced_names)),
   )
 
 

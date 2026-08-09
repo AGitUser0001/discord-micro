@@ -1,6 +1,6 @@
 # Complete application example
 
-This example runs a small Micro deployment across six independent ASGI
+This example runs a small Micro deployment across seven independent ASGI
 processes and the reusable AGE and JetStream adapters:
 
 | Port | Process |
@@ -11,6 +11,7 @@ processes and the reusable AGE and JetStream adapters:
 | `8103` | Audit event service |
 | `8104` | NATS-backed queue ingress |
 | `8105` | Gateway-event queue consumer and router |
+| `8106` | Connection-scoped Gateway state projector |
 | `5455` | Apache AGE |
 | `4222` | NATS JetStream |
 
@@ -35,7 +36,7 @@ comes from `../apache_age`, so the application does not duplicate the executor:
 uv sync
 ```
 
-Run these in six terminals:
+Run these in seven terminals:
 
 ```console
 uv run uvicorn overseer:app --port 8100
@@ -44,6 +45,7 @@ uv run uvicorn api_service:service --port 8102
 uv run uvicorn audit_service:service --port 8103
 uv run uvicorn queue_service:queue --port 8104
 uv run uvicorn gateway_event_service:event_service --port 8105
+uv run uvicorn gateway_projection:projection --port 8106
 ```
 
 Once every process is ready, register the routes and push topology revision `0`:

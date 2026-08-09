@@ -26,6 +26,8 @@ from ._runner import event_loop_factory
 class Dispatch:
   name: str
   payload: Mapping[str, Any]
+  shard_id: int = 0
+  connection_id: str | None = None
 
 
 class ConnectionEventKind(StrEnum):
@@ -76,10 +78,6 @@ class _GatewayBot(Protocol):
   ) -> None: ...
 
 
-async def _ignore_connection_event(event: ConnectionEvent) -> None:
-  pass
-
-
 class Gateway(Microservice):
   def __init__(
     self,
@@ -87,7 +85,7 @@ class Gateway(Microservice):
     *,
     intents: hikari.Intents,
     dispatch: DispatchSink | None = None,
-    connection: ConnectionSink = _ignore_connection_event,
+    connection: ConnectionSink | None = None,
     shard_ids: Sequence[int] | None = None,
     shard_count: int | None = None,
     bot: _GatewayBot | None = None,
@@ -96,10 +94,12 @@ class Gateway(Microservice):
       raise ValueError("token cannot be empty.")
     self.queue = QueueClient()
     super().__init__("gateway", state_receiver=self)
+    self._intents = intents
     self._shard_ids, self._shard_count = _validate_shards(shard_ids, shard_count)
     self._uses_queue_dispatch = dispatch is None
     self._dispatch_sink = dispatch or self._publish_dispatch
-    self._connection_sink = connection
+    self._external_connection_sink = connection
+    self._connection_sink = self._report_connection
     self._connections: dict[int, str] = {}
     self._started = False
     self._topology_ready = asyncio.Event()
@@ -282,7 +282,7 @@ class Gateway(Microservice):
   async def _on_dispatch(self, event: hikari.ShardPayloadEvent) -> None:
     shard_id = event.shard.id
     if event.name == "READY":
-      await self._on_ready(shard_id)
+      await self._on_ready(shard_id, event.payload)
     elif event.name == "RESUMED":
       await self._on_resumed(shard_id)
 
@@ -290,6 +290,8 @@ class Gateway(Microservice):
       Dispatch(
         name=event.name,
         payload=event.payload,
+        shard_id=shard_id,
+        connection_id=self._connections.get(shard_id),
       )
     )
 
@@ -298,6 +300,30 @@ class Gateway(Microservice):
       "gateway.events",
       to_json((dispatch.name, dispatch.payload)),
     )
+    await self.queue.publish(
+      "gateway.projection",
+      to_json(
+        (
+          "event",
+          dispatch.connection_id,
+          dispatch.shard_id,
+          dispatch.name,
+          dispatch.payload,
+        )
+      ),
+    )
+
+  async def _publish_connection(self, event: ConnectionEvent) -> None:
+    await self.queue.publish(
+      "gateway.projection",
+      to_json(("connection", event.kind, event.shard_id, event.connection_id)),
+    )
+
+  async def _report_connection(self, event: ConnectionEvent) -> None:
+    if self._uses_queue_dispatch:
+      await self._publish_connection(event)
+    if self._external_connection_sink is not None:
+      await self._external_connection_sink(event)
 
   async def _on_connected(self, event: hikari.ShardConnectedEvent) -> None:
     await self._connection_sink(
@@ -317,7 +343,7 @@ class Gateway(Microservice):
       )
     )
 
-  async def _on_ready(self, shard_id: int) -> None:
+  async def _on_ready(self, shard_id: int, payload: Mapping[str, Any]) -> None:
     if previous := self._connections.get(shard_id):
       await self._connection_sink(
         ConnectionEvent(ConnectionEventKind.INVALIDATED, shard_id, previous)
@@ -327,6 +353,21 @@ class Gateway(Microservice):
     await self._connection_sink(
       ConnectionEvent(ConnectionEventKind.READY, shard_id, connection_id)
     )
+    if self._intents & hikari.Intents.GUILD_MEMBERS:
+      guilds = payload.get("guilds")
+      if isinstance(guilds, list):
+        for guild in guilds:
+          if not isinstance(guild, Mapping):
+            continue
+          guild_id = guild.get("id")
+          if isinstance(guild_id, str) and guild_id.isdecimal():
+            self._bot.request_guild_members(
+              int(guild_id),
+              include_presences=bool(self._intents & hikari.Intents.GUILD_PRESENCES),
+              query="",
+              limit=0,
+              nonce=f"micro:{connection_id}:{guild_id}",
+            )
 
   async def _on_resumed(self, shard_id: int) -> None:
     await self._connection_sink(

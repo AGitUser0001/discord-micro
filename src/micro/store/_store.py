@@ -2,7 +2,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from json import JSONDecodeError
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from graphglot.dialect import Dialect
 from graphql import (
@@ -29,7 +29,7 @@ from micro._microservices import Microservice
 from ._module import GraphModule
 from .composer import DirectiveMetadata, TypeDirectiveMetadata
 
-type ResultShaper = Callable[[GraphResult], Mapping[str, JsonValue]]
+type ResultShaper = Callable[[GraphBatchResult], Mapping[str, JsonValue]]
 
 
 class StoreTopology(BaseModel):
@@ -69,6 +69,60 @@ class GraphResult:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphBatch:
+  """Graph statements executed atomically and in order."""
+
+  statements: tuple[GraphStatement, ...]
+
+  def __post_init__(self) -> None:
+    if not self.statements:
+      raise ValueError("A graph batch needs at least one statement.")
+
+
+@dataclass(frozen=True, slots=True)
+class GraphBatchResult:
+  results: tuple[GraphResult, ...]
+
+  def __post_init__(self) -> None:
+    if not self.results:
+      raise ValueError("A graph batch result needs at least one result.")
+
+
+@dataclass(frozen=True, slots=True)
+class GraphEntityLayout:
+  """Stable physical storage allocated for one composed GraphQL entity."""
+
+  name: str
+  label: str
+  identity_property: str
+  keys: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GraphLayout:
+  """Additive physical layout required by a composed graph revision."""
+
+  revision: int
+  entities: tuple[GraphEntityLayout, ...]
+
+
+class GraphBackendError(GraphQLError):
+  """A stable, backend-neutral failure returned by a graph executor."""
+
+  def __init__(
+    self,
+    message: str,
+    *,
+    code: Literal["CONFLICT", "UNAVAILABLE", "INVALID", "INTERNAL"],
+    retryable: bool = False,
+  ) -> None:
+    super().__init__(
+      message,
+      extensions={"code": code, "retryable": retryable},
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class GraphQLRequest:
   schema: GraphQLSchema
   document: DocumentNode
@@ -79,7 +133,7 @@ class GraphQLRequest:
 
 @dataclass(frozen=True, slots=True)
 class CompiledOperation:
-  statement: GraphStatement
+  batch: GraphBatch
   shape: ResultShaper
 
 
@@ -95,7 +149,9 @@ class _UnavailableCompiler:
 class GraphExecutor(Protocol):
   async def start(self) -> None: ...
 
-  async def execute(self, statement: GraphStatement) -> GraphResult: ...
+  async def execute(self, batch: GraphBatch) -> GraphBatchResult: ...
+
+  async def apply_layout(self, layout: GraphLayout) -> None: ...
 
   async def close(self) -> None: ...
 
@@ -217,7 +273,7 @@ class Store(Microservice):
     )
     try:
       compiled = runtime.compiler.compile(graphql_request)
-      result = await self.executor.execute(compiled.statement)
+      result = await self.executor.execute(compiled.batch)
       data = dict(compiled.shape(result))
     except GraphQLError as exc:
       return JSONResponse({"data": None, "errors": [exc.formatted]})
@@ -238,7 +294,7 @@ class Store(Microservice):
       return self._errors("Store topology requires application/json.", status_code=415)
     try:
       topology = StoreTopology.model_validate_json(await request.body())
-      self.apply_topology(topology)
+      await self.apply_topology(topology)
     except (GraphQLError, TypeError, ValueError) as exc:
       return JSONResponse(
         {"errors": [{"message": "Store topology was rejected.", "detail": str(exc)}]},
@@ -246,7 +302,7 @@ class Store(Microservice):
       )
     return Response(status_code=204)
 
-  def apply_topology(self, topology: StoreTopology) -> None:
+  async def apply_topology(self, topology: StoreTopology) -> None:
     if topology.revision < self._desired_topology_revision:
       raise ValueError(
         f"Topology revision {topology.revision} is older than "
@@ -266,7 +322,7 @@ class Store(Microservice):
       if len(set(module_ids)) != len(module_ids):
         raise ValueError("Store topology contains duplicate module IDs.")
       if topology.modules:
-        from ._compiler import GraphCompiler
+        from ._compiler import GraphCompiler, physical_type
         from .composer import compose_graph
 
         graph = compose_graph(
@@ -276,6 +332,20 @@ class Store(Microservice):
         )
         schema = graph.schema
         compiler: _Compiler = GraphCompiler(graph)
+        await self.executor.apply_layout(
+          GraphLayout(
+            topology.revision,
+            tuple(
+              GraphEntityLayout(
+                entity.name,
+                physical_type(entity.name),
+                "_micro_id",
+                entity.keys,
+              )
+              for entity in sorted(graph.entities.values(), key=lambda item: item.name)
+            ),
+          )
+        )
       else:
         schema = build_schema("type Query { _micro: Boolean }")
         compiler = _UnavailableCompiler()

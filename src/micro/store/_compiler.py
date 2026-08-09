@@ -30,7 +30,13 @@ from graphql import (
 )
 from pydantic import JsonValue
 
-from ._store import CompiledOperation, GraphQLRequest, GraphResult, GraphStatement
+from ._store import (
+  CompiledOperation,
+  GraphBatch,
+  GraphBatchResult,
+  GraphQLRequest,
+  GraphStatement,
+)
 from .composer import DirectiveCompileContext, MicroGraph
 
 _LAYOUT_VERSION = "micro:gql-layout:v1"
@@ -82,9 +88,10 @@ class GraphCompiler:
     parameters: dict[str, JsonValue] = {}
     clauses: list[str] = []
     returns: list[str] = []
+    tail: tuple[str, ...] = ()
     counters = {"node": 0, "column": 0, "parameter": 0}
     projections: list[_RootObjectProjection | _ScalarProjection] = []
-    for root_field in root_fields:
+    for root_index, root_field in enumerate(root_fields):
       field_definition = root_type.fields[root_field.name.value]
       binding = self.graph.bindings.get((root_type.name, root_field.name.value))
       if binding is None:
@@ -122,7 +129,15 @@ class GraphCompiler:
           f"Runtime directive produced duplicate parameters: {', '.join(overlap)}."
         )
       parameters.update(source.parameters)
+      if root_index and request.operation.operation.value == "mutation":
+        clauses.append("NEXT")
       clauses.extend(source.clauses)
+      if source.tail:
+        if tail:
+          raise GraphQLError(
+            "Only one paginated root field is supported per operation."
+          )
+        tail = source.tail
       named = get_named_type(field_definition.type)
       if is_leaf_type(named):
         if source.value is None:
@@ -162,12 +177,15 @@ class GraphCompiler:
     if not returns:
       returns.append("0 AS _micro_empty")
     statement = GraphStatement(
-      " ".join((*clauses, f"RETURN {', '.join(returns)}")),
+      " ".join((*clauses, f"RETURN {', '.join(returns)}", *tail)),
       parameters,
       tuple(_return_columns(returns)),
     )
 
-    def shape(result: GraphResult) -> Mapping[str, JsonValue]:
+    def shape(batch_result: GraphBatchResult) -> Mapping[str, JsonValue]:
+      if len(batch_result.results) != 1:
+        raise GraphQLError("Query compiler expected exactly one graph result.")
+      result = batch_result.results[0]
       return {
         (
           projection.projection.response_name
@@ -181,7 +199,7 @@ class GraphCompiler:
         for projection in projections
       }
 
-    return CompiledOperation(statement, shape)
+    return CompiledOperation(GraphBatch((statement,)), shape)
 
   def _project_object(
     self,

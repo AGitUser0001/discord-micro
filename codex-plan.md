@@ -118,60 +118,75 @@ that should be supplied by the application host or deployment environment.
 
 ### 1. Connection-scoped Gateway projection
 
-- [ ] Define the graph module for Gateway routing information, connection IDs,
+- [x] Define the graph module for Gateway routing information, connection IDs,
   active state, and connection-owned Discord data.
-- [ ] Add a projection consumer for every raw Gateway dispatch.
-- [ ] Store every guild, channel, role, member, emoji, thread, voice state, and
+- [x] Add a projection consumer for every raw Gateway dispatch.
+- [x] Store every guild, channel, role, member, emoji, thread, voice state, and
   other enabled-intent object received from Discord.
-- [ ] Fuse partial create/update/delete dispatches into existing graph objects.
-- [ ] Begin complete guild/member ingestion after `READY`, including member
+- [x] Fuse partial create/update/delete dispatches into existing graph objects.
+- [x] Begin complete guild/member ingestion after `READY`, including member
   chunk requests where required.
-- [ ] Mark a connection's projection inactive during a temporary disconnect so
+- [x] Mark a connection's projection inactive during a temporary disconnect so
   stale data cannot satisfy cache reads.
-- [ ] Mark the same projection active again after a successful `RESUMED` event.
-- [ ] Delete connection-owned projection data after invalidation, clean worker
+- [x] Mark the same projection active again after a successful `RESUMED` event.
+- [x] Delete connection-owned projection data after invalidation, clean worker
   shutdown, or overseer-confirmed worker death.
-- [ ] Ensure replacing one connection cannot delete another connection's data.
-- [ ] Batch projection writes without delaying application event delivery
+- [x] Ensure replacing one connection cannot delete another connection's data.
+- [x] Batch projection writes without delaying application event delivery
   indefinitely.
-- [ ] Add replay tests proving that dispatch sequences produce deterministic
+- [x] Add replay tests proving that dispatch sequences produce deterministic
   graph state.
 
 ### 2. Store mutation and execution
 
-- [ ] Define directive metadata and compiler behavior for creating entities.
-- [ ] Define directive metadata and compiler behavior for updating properties
+- [x] Define directive metadata and compiler behavior for creating entities.
+- [x] Define directive metadata and compiler behavior for updating properties
   and relationships.
-- [ ] Define directive metadata and compiler behavior for deleting entities and
+- [x] Define directive metadata and compiler behavior for deleting entities and
   connection-owned subgraphs.
-- [ ] Support multi-statement or transactional compiled operations where a
+- [x] Support multi-statement or transactional compiled operations where a
   projection update must be atomic.
-- [ ] Add batch execution to `GraphExecutor` and the AGE adapter.
-- [ ] Define indexes and constraints derived from `@entity` keys.
-- [ ] Define how physical graph layouts evolve when modules change.
-- [ ] Add pagination and bounded-list compilation.
-- [ ] Normalize database failures into stable GraphQL errors.
-- [ ] Test compiler output and execution against real AGE for reads, writes,
+- [x] Add batch execution to `GraphExecutor` and the AGE adapter.
+- [x] Define indexes and constraints derived from `@entity` keys.
+- [x] Define how physical graph layouts evolve when modules change.
+- [x] Add pagination and bounded-list compilation.
+- [x] Normalize database failures into stable GraphQL errors.
+- [x] Test compiler output and execution against real AGE for reads, writes,
   relationships, transactions, and deletion.
 
 ### 3. Gateway ownership and recovery
 
-- [ ] Represent observed Gateway connections separately from desired shard
+- [x] Represent observed Gateway connections separately from desired shard
   assignments in overseer state.
-- [ ] Let a Gateway worker report `CONNECTED`, `READY`, `DISCONNECTED`,
+- [x] Let a Gateway worker report `CONNECTED`, `READY`, `DISCONNECTED`,
   `RESUMED`, `INVALIDATED`, and `CLOSED` transitions to the application-owned
   discovery/control implementation.
-- [ ] Define assignment state transitions for starting, active, draining, and
+- [x] Define assignment state transitions for starting, active, draining, and
   abandoned shards.
-- [ ] Prevent immediate reassignment after a transient disconnect.
-- [ ] Allow reassignment after the application host declares a worker dead.
-- [ ] Ensure only the active connection is used for guild-scoped control calls.
-- [ ] Define rolling replacement semantics for compatible Gateway workers.
-- [ ] Define shard-count-change semantics without assuming a particular process
+- [x] Prevent immediate reassignment after a transient disconnect.
+- [x] Allow reassignment after the application host declares a worker dead.
+- [x] Ensure only the active connection is used for guild-scoped control calls.
+- [x] Define rolling replacement semantics for compatible Gateway workers.
+- [x] Define shard-count-change semantics without assuming a particular process
   orchestrator.
-- [ ] Decide and document global presence semantics across multiple workers.
-- [ ] Add failure tests for disconnects, invalid sessions, resume failures,
+- [x] Decide and document global presence semantics across multiple workers.
+- [x] Add failure tests for disconnects, invalid sessions, resume failures,
   worker loss, delayed topology, and competing assignments.
+
+Implemented semantics: desired assignments and observed Discord connections are
+independent. A disconnect makes the connection and its cache reads inactive but
+does not release its assignment; `RESUMED` reactivates the same connection.
+Invalidation purges that connection's projection before a fresh `READY` session
+is used. Rolling replacement first moves the old assignment to `draining`, then
+allows the replacement to become `active`. Presence is one global desired value
+broadcast to every worker which currently owns at least one active shard.
+
+Projection lifecycle and data records share one ordered queue channel, while the
+raw application-event channel remains metadata-free. Adjacent data records are
+coalesced by connection/object identity into one read and one atomic mutation.
+AGE layouts evolve additively: stable hashed labels/properties are retained,
+new entity labels receive a unique `_micro_id` index, and a topology revision
+cannot silently acquire a different physical definition.
 
 ### 4. Discord HTTP service template
 

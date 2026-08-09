@@ -10,7 +10,7 @@ async def main() -> None:
         "id": "store-1",
         "base_url": "http://127.0.0.1:8101",
         "role": "store",
-        "modules": ["example.greetings"],
+        "modules": ["example.greetings", "micro.gateway.projection"],
       },
       {
         "id": "queue-1",
@@ -21,6 +21,11 @@ async def main() -> None:
         "id": "gateway-events-1",
         "base_url": "http://127.0.0.1:8105",
         "role": "gateway.event_service",
+      },
+      {
+        "id": "gateway-projection-1",
+        "base_url": "http://127.0.0.1:8106",
+        "role": "gateway.projection",
       },
       await service_registration(
         client,

@@ -1,3 +1,3 @@
-from . import events
+from . import events, gateway
 
-__all__ = ("events",)
+__all__ = ("events", "gateway")

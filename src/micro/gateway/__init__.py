@@ -8,12 +8,15 @@ from ._gateway import (
   DispatchSink,
   Gateway,
 )
+from ._state import AssignmentState, GatewayState, ObservedConnection, ShardAssignment
 from .event_service import (
   GatewayEventService,
 )
+from .projection import GatewayProjection, ProjectedObject
 
 __all__ = (
   "ActivityUpdate",
+  "AssignmentState",
   "ConnectionEvent",
   "ConnectionEventKind",
   "ConnectionSink",
@@ -22,4 +25,9 @@ __all__ = (
   "Gateway",
   "GatewayClient",
   "GatewayEventService",
+  "GatewayProjection",
+  "GatewayState",
+  "ObservedConnection",
+  "ProjectedObject",
+  "ShardAssignment",
 )

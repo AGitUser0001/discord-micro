@@ -6,6 +6,7 @@ import httpx2
 import pytest
 from starlette.testclient import TestClient
 
+from micro.gateway import ConnectionEvent, ConnectionEventKind
 from micro.overseer import (
   DiscoveredInstance,
   GraphModule,
@@ -219,3 +220,48 @@ def test_failed_push_does_not_reuse_its_revision() -> None:
   overseer = asyncio.run(exercise())
   assert pushed_revisions == [0, 1]
   assert overseer.revision == 1
+
+
+def test_overseer_separates_desired_assignments_from_observed_connections() -> None:
+  paths: list[str] = []
+
+  def respond(request: httpx2.Request) -> httpx2.Response:
+    paths.append(request.url.path)
+    return httpx2.Response(204)
+
+  discovery = NetworkDiscovery(
+    (
+      DiscoveredInstance(
+        id="gateway-a",
+        base_url="http://gateway.internal",
+        role="gateway",
+        shard_ids=(0,),
+        shard_count=1,
+      ),
+      DiscoveredInstance(
+        id="projection-a",
+        base_url="http://projection.internal",
+        role="gateway.projection",
+      ),
+    )
+  )
+
+  async def exercise() -> Overseer:
+    overseer = Overseer(
+      discovery,
+      transport=httpx2.MockTransport(respond),
+    )
+    await overseer.reconcile()
+    assert overseer.gateway_state.active_shards("gateway-a") == ()
+    overseer.observe_gateway_connection(
+      "gateway-a",
+      ConnectionEvent(ConnectionEventKind.READY, 0, "connection-a"),
+    )
+    assert overseer.gateway_state.active_shards("gateway-a") == (0,)
+    assert await overseer.declare_gateway_dead("gateway-a") == ("connection-a",)
+    await overseer.aclose()
+    return overseer
+
+  overseer = asyncio.run(exercise())
+  assert overseer.gateway_state.active_shards("gateway-a") == ()
+  assert "/projection/connections/connection-a" in paths

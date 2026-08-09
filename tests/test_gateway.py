@@ -7,7 +7,15 @@ import hikari
 import pytest
 from starlette.testclient import TestClient
 
-from micro.gateway import ConnectionEvent, ConnectionEventKind, Dispatch, Gateway
+from micro.gateway import (
+  AssignmentState,
+  ConnectionEvent,
+  ConnectionEventKind,
+  Dispatch,
+  Gateway,
+  GatewayState,
+  ShardAssignment,
+)
 
 
 class FakeGatewayBot:
@@ -160,7 +168,11 @@ def test_gateway_publishes_compact_dispatches_to_one_queue_channel() -> None:
     (
       "gateway.events",
       b'["MESSAGE_CREATE",{"id":"1","content":"hello"}]',
-    )
+    ),
+    (
+      "gateway.projection",
+      b'["event",null,0,"MESSAGE_CREATE",{"id":"1","content":"hello"}]',
+    ),
   ]
 
 
@@ -223,6 +235,103 @@ def test_gateway_reports_connection_lifecycle() -> None:
     ConnectionEvent(ConnectionEventKind.DISCONNECTED, 1, connection_id),
     ConnectionEvent(ConnectionEventKind.RESUMED, 1, connection_id),
   ]
+
+
+def test_gateway_requests_complete_members_after_ready() -> None:
+  bot = FakeGatewayBot()
+  gateway = Gateway(
+    "test-token",
+    intents=hikari.Intents.GUILDS | hikari.Intents.GUILD_MEMBERS,
+    dispatch=lambda event: asyncio.sleep(0),
+    shard_ids=[0],
+    shard_count=1,
+    bot=cast(Any, bot),
+  )
+
+  asyncio.run(
+    bot.emit(
+      hikari.ShardPayloadEvent,
+      shard=SimpleNamespace(id=0),
+      name="READY",
+      payload={"guilds": [{"id": "123"}]},
+    )
+  )
+
+  assert gateway.shard_ids == (0,)
+  assert bot.member_requests[0][0] == 123
+  assert bot.member_requests[0][1]["query"] == ""
+  assert bot.member_requests[0][1]["limit"] == 0
+  assert str(bot.member_requests[0][1]["nonce"]).endswith(":123")
+
+
+def test_gateway_state_retains_assignment_during_disconnect_and_abandons_death() -> (
+  None
+):
+  state = GatewayState()
+  state.set_desired((ShardAssignment("gateway-a", 1, 4),))
+  state.observe(
+    "gateway-a", ConnectionEvent(ConnectionEventKind.READY, 1, "connection-a")
+  )
+  assert state.active_shards("gateway-a") == (1,)
+  assert state.assignments[0].state is AssignmentState.ACTIVE
+
+  state.observe(
+    "gateway-a",
+    ConnectionEvent(ConnectionEventKind.DISCONNECTED, 1, "connection-a"),
+  )
+  assert state.active_shards("gateway-a") == ()
+  assert state.assignments[0].state is AssignmentState.ACTIVE
+
+  assert state.declare_dead("gateway-a") == ("connection-a",)
+  assert state.assignments[0].state is AssignmentState.ABANDONED
+
+
+def test_gateway_state_rolls_ownership_only_after_old_assignment_drains() -> None:
+  state = GatewayState()
+  old = ShardAssignment("gateway-old", 0, 1)
+  new = ShardAssignment("gateway-new", 0, 1)
+  state.set_desired((old,))
+  state.observe(
+    "gateway-old", ConnectionEvent(ConnectionEventKind.READY, 0, "connection-old")
+  )
+
+  state.set_desired((old, new))
+  with pytest.raises(ValueError, match="already has an active"):
+    state.observe(
+      "gateway-new", ConnectionEvent(ConnectionEventKind.READY, 0, "connection-new")
+    )
+
+  state.set_desired((new,))
+  state.observe(
+    "gateway-new", ConnectionEvent(ConnectionEventKind.READY, 0, "connection-new")
+  )
+  assert state.active_shards("gateway-old") == ()
+  assert state.active_shards("gateway-new") == (0,)
+  assert state.active_owner(0, 1) == "gateway-new"
+
+
+def test_gateway_state_allows_explicit_shard_count_replacement() -> None:
+  state = GatewayState()
+  state.set_desired((ShardAssignment("old", 0, 1),))
+  state.observe("old", ConnectionEvent(ConnectionEventKind.READY, 0, "old-c"))
+  state.set_desired((ShardAssignment("new-a", 0, 2), ShardAssignment("new-b", 1, 2)))
+  state.observe("new-a", ConnectionEvent(ConnectionEventKind.READY, 0, "new-a-c"))
+  state.observe("new-b", ConnectionEvent(ConnectionEventKind.READY, 1, "new-b-c"))
+
+  assert state.active_shards("old") == ()
+  assert state.active_owner(0, 2) == "new-a"
+  assert state.active_owner(1, 2) == "new-b"
+
+
+def test_invalid_session_allows_a_fresh_connection_on_the_same_worker() -> None:
+  state = GatewayState()
+  state.set_desired((ShardAssignment("gateway", 0, 1),))
+  state.observe("gateway", ConnectionEvent(ConnectionEventKind.READY, 0, "old"))
+  state.observe("gateway", ConnectionEvent(ConnectionEventKind.INVALIDATED, 0, "old"))
+  state.observe("gateway", ConnectionEvent(ConnectionEventKind.READY, 0, "new"))
+
+  assert state.active_shards("gateway") == (0,)
+  assert state.connections[0].connection_id == "new"
 
 
 def test_gateway_executes_typed_control_requests() -> None:

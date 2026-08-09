@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal, Protocol, Self
 from urllib.parse import urlsplit
 
@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
+from micro.gateway import ConnectionEvent, GatewayState, ShardAssignment
 from micro.store import GraphModule
 from micro.store.composer import (
   DirectiveMetadata,
@@ -37,7 +38,14 @@ class DiscoveredInstance(BaseModel):
 
   id: str = Field(min_length=1)
   base_url: str
-  role: Literal["service", "store", "gateway", "gateway.event_service", "queue"]
+  role: Literal[
+    "service",
+    "store",
+    "gateway",
+    "gateway.event_service",
+    "gateway.projection",
+    "queue",
+  ]
   service_schema: dict[str, Any] | None = Field(default=None, alias="schema")
   modules: tuple[str, ...] = ()
   shard_ids: tuple[int, ...] = ()
@@ -179,6 +187,7 @@ class Overseer:
     if len(self._modules) != len(modules):
       raise ValueError("Store module IDs must be unique.")
     self._store_graphs: dict[str, MicroGraph] = {}
+    self._gateway_state = GatewayState()
     self._directives = tuple(directives)
     self._type_directives = tuple(type_directives)
     self._http = httpx2.AsyncClient(transport=transport, timeout=timeout)
@@ -208,6 +217,14 @@ class Overseer:
     revision = self._next_revision
     self._next_revision += 1
     schemas: dict[str, dict[str, Any]] = {}
+    self._gateway_state.set_desired(
+      tuple(
+        ShardAssignment(instance.id, shard_id, instance.shard_count)
+        for instance in instances
+        if instance.role == "gateway" and instance.shard_count is not None
+        for shard_id in instance.shard_ids
+      )
+    )
     service_instances: list[dict[str, str]] = []
     for instance in instances:
       if instance.role != "service":
@@ -247,6 +264,7 @@ class Overseer:
           "id": instance.id,
           "base_url": instance.base_url,
           "shard_ids": list(instance.shard_ids),
+          "active_shard_ids": list(self._gateway_state.active_shards(instance.id)),
           "shard_count": instance.shard_count,
         }
         for instance in instances
@@ -305,7 +323,12 @@ class Overseer:
       )
 
     async def push(instance: DiscoveredInstance) -> tuple[str, int, str] | None:
-      if instance.role in {"service", "gateway", "gateway.event_service"}:
+      if instance.role in {
+        "service",
+        "gateway",
+        "gateway.event_service",
+        "gateway.projection",
+      }:
         endpoint = "/state"
         body = service_state_body
       elif instance.role == "store":
@@ -355,6 +378,41 @@ class Overseer:
       return False
     del self._modules[module_id]
     return True
+
+  def observe_gateway_connection(
+    self, instance_id: str, event: ConnectionEvent
+  ) -> None:
+    """Record a worker report without changing its desired assignment."""
+    self._gateway_state.observe(instance_id, event)
+
+  def gateway_connection_sink(
+    self, instance_id: str
+  ) -> Callable[[ConnectionEvent], Awaitable[None]]:
+    async def observe(event: ConnectionEvent) -> None:
+      self.observe_gateway_connection(instance_id, event)
+
+    return observe
+
+  async def declare_gateway_dead(self, instance_id: str) -> tuple[str, ...]:
+    """Abandon a dead worker and purge every connection-owned projection."""
+    connection_ids = self._gateway_state.declare_dead(instance_id)
+    failures: list[tuple[str, int, str]] = []
+    for projection in self._instances:
+      if projection.role != "gateway.projection":
+        continue
+      for connection_id in connection_ids:
+        response = await self._http.delete(
+          f"{projection.base_url}/projection/connections/{connection_id}"
+        )
+        if not response.is_success:
+          failures.append((projection.id, response.status_code, response.text))
+    if failures:
+      raise TopologyPushError(failures)
+    return connection_ids
+
+  @property
+  def gateway_state(self) -> GatewayState:
+    return self._gateway_state
 
   async def __aenter__(self) -> Self:
     return self

@@ -3,6 +3,9 @@ from graphql import GraphQLError
 from starlette.testclient import TestClient
 
 from micro.store import (
+  GraphBatch,
+  GraphBatchResult,
+  GraphLayout,
   GraphModule,
   GraphResult,
   GraphStatement,
@@ -19,10 +22,16 @@ class Executor:
   async def start(self) -> None:
     self.started = True
 
-  async def execute(self, statement: GraphStatement) -> GraphResult:
-    self.statements.append(statement)
+  async def execute(self, batch: GraphBatch) -> GraphBatchResult:
+    self.statements.extend(batch.statements)
+    statement = batch.statements[-1]
     values = ("person:Ada", "Ada")
-    return GraphResult((dict(zip(statement.columns, values, strict=True)),))
+    return GraphBatchResult(
+      (GraphResult((dict(zip(statement.columns, values, strict=True)),)),)
+    )
+
+  async def apply_layout(self, layout: GraphLayout) -> None:
+    pass
 
   async def close(self) -> None:
     self.closed = True
@@ -105,7 +114,7 @@ def test_graph_statement_requires_valid_gql() -> None:
 
 def test_store_returns_explicit_graphql_errors() -> None:
   class FailingExecutor(Executor):
-    async def execute(self, statement: GraphStatement) -> GraphResult:
+    async def execute(self, batch: GraphBatch) -> GraphBatchResult:
       raise GraphQLError("Operation is unavailable.")
 
   store = Store(executor=FailingExecutor())

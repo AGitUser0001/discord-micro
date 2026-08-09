@@ -13,6 +13,7 @@ class DirectiveBindContext:
   field: FieldDefinitionNode
   return_type: str
   entity: Any | None
+  entities: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class DirectiveResult:
   parameters: Mapping[str, JsonValue]
   path: str
   value: str | None = None
+  tail: tuple[str, ...] = ()
 
 
 type DirectiveBinder = Callable[[DirectiveBindContext], Any]

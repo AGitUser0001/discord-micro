@@ -31,6 +31,7 @@ class GatewayClient(MicroserviceClient):
     instance_id = gateway.get("id")
     base_url = gateway.get("base_url")
     shard_ids = gateway.get("shard_ids", [])
+    active_shard_ids = gateway.get("active_shard_ids", [])
     shard_count = gateway.get("shard_count")
     if not isinstance(instance_id, str) or not isinstance(base_url, str):
       raise TypeError("Every gateway needs string id and base_url fields.")
@@ -39,6 +40,11 @@ class GatewayClient(MicroserviceClient):
       for shard_id in shard_ids
     ):
       raise TypeError("Every gateway needs an integer shard_ids list.")
+    if not isinstance(active_shard_ids, list) or any(
+      isinstance(shard_id, bool) or not isinstance(shard_id, int)
+      for shard_id in active_shard_ids
+    ):
+      raise TypeError("Every gateway needs an integer active_shard_ids list.")
     if shard_count is not None and (
       isinstance(shard_count, bool) or not isinstance(shard_count, int)
     ):
@@ -50,6 +56,7 @@ class GatewayClient(MicroserviceClient):
         "format": 1,
         "kind": "gateway",
         "shard_ids": shard_ids,
+        "active_shard_ids": active_shard_ids,
         "shard_count": shard_count,
       },
     )
@@ -70,7 +77,13 @@ class GatewayClient(MicroserviceClient):
         "afk": afk,
       }
     )
-    instances = list(self._instances.values())
+    # Presence is global: every worker with at least one active shard receives
+    # the same desired presence, while disconnected/draining workers are skipped.
+    instances = [
+      instance
+      for instance in self._instances.values()
+      if instance.schema["active_shard_ids"]
+    ]
     if not instances:
       raise NoCompatibleInstanceError("No gateway instances are available.")
     body = update.model_dump_json().encode()
@@ -131,8 +144,10 @@ class GatewayClient(MicroserviceClient):
 def _owns_guild(instance: Instance, guild_id: int) -> bool:
   shard_count = instance.schema["shard_count"]
   shard_ids = instance.schema["shard_ids"]
+  active_shard_ids = instance.schema["active_shard_ids"]
   return (
     isinstance(shard_count, int)
     and shard_count > 0
     and (guild_id >> 22) % shard_count in shard_ids
+    and (guild_id >> 22) % shard_count in active_shard_ids
   )

@@ -4,6 +4,7 @@ from typing import cast
 import pytest
 from graphql import (
   GraphQLEnumType,
+  GraphQLError,
   GraphQLInputObjectType,
   GraphQLObjectType,
   GraphQLUnionType,
@@ -18,15 +19,18 @@ from micro.store import (
   DirectiveCompileContext,
   DirectiveMetadata,
   DirectiveResult,
+  GraphBatch,
+  GraphBatchResult,
   GraphCompiler,
   GraphCompositionError,
+  GraphLayout,
   GraphModule,
   GraphQLRequest,
   GraphResult,
-  GraphStatement,
   Store,
   compose_graph,
   entity_identity,
+  physical_field,
   physical_reference,
   physical_type,
 )
@@ -124,23 +128,32 @@ def test_compiler_uses_hashed_paths_and_shapes_entity_lists() -> None:
 
   compiled = GraphCompiler(graph).compile(request)
 
-  assert f":{physical_type('Guild')}" in compiled.statement.text
-  assert f":{physical_reference('Guild.channels')}" in compiled.statement.text
-  assert compiled.statement.parameters == {
+  statement = compiled.batch.statements[0]
+  assert f":{physical_type('Guild')}" in statement.text
+  assert f":{physical_reference('Guild.channels')}" in statement.text
+  assert statement.parameters == {
     "p0_identity": entity_identity("Guild", {"id": "123"})
   }
-  columns = compiled.statement.columns
+  columns = statement.columns
   assert compiled.shape(
-    GraphResult(
+    GraphBatchResult(
       (
-        dict(
-          zip(
-            columns, ("guild:123", "123", "Micro", "channel:1", "1", "one"), strict=True
-          )
-        ),
-        dict(
-          zip(
-            columns, ("guild:123", "123", "Micro", "channel:2", "2", "two"), strict=True
+        GraphResult(
+          (
+            dict(
+              zip(
+                columns,
+                ("guild:123", "123", "Micro", "channel:1", "1", "one"),
+                strict=True,
+              )
+            ),
+            dict(
+              zip(
+                columns,
+                ("guild:123", "123", "Micro", "channel:2", "2", "two"),
+                strict=True,
+              )
+            ),
           )
         ),
       )
@@ -162,23 +175,74 @@ def test_physical_names_are_stable_and_coordinate_specific() -> None:
   assert physical_reference("Guild.channels") != physical_reference("Category.channels")
 
 
+def test_scan_compiles_bounded_pagination() -> None:
+  module = GraphModule(
+    id="guild-scan",
+    schema="""
+      type Guild @entity(key: ["id"]) { id: ID! }
+      type Query {
+        guilds(first: Int!, offset: Int!): [Guild!]! @scan
+      }
+    """,
+  )
+  graph = compose_graph((module,))
+  document = parse("{ guilds(first: 25, offset: 50) { id } }")
+  operation = get_operation_ast(document)
+  assert operation is not None
+
+  compiled = GraphCompiler(graph).compile(
+    GraphQLRequest(graph.schema, document, operation, MappingProxyType({}), None)
+  )
+  statement = compiled.batch.statements[0]
+
+  assert "ORDER BY n0._micro_id SKIP $p0_offset LIMIT $p0_first" in statement.text
+  assert statement.parameters == {"p0_first": 25, "p0_offset": 50}
+
+
+def test_scan_rejects_unbounded_pages() -> None:
+  module = GraphModule(
+    id="guild-scan",
+    schema="""
+      type Guild @entity(key: ["id"]) { id: ID! }
+      type Query { guilds(first: Int!, offset: Int!): [Guild!]! @scan }
+    """,
+  )
+  graph = compose_graph((module,))
+  document = parse("{ guilds(first: 1001, offset: 0) { id } }")
+  operation = get_operation_ast(document)
+  assert operation is not None
+
+  with pytest.raises(GraphQLError, match="first must be between"):
+    GraphCompiler(graph).compile(
+      GraphQLRequest(graph.schema, document, operation, MappingProxyType({}), None)
+    )
+
+
 def test_store_uses_graph_compiler_without_application_compiler() -> None:
   class Executor:
     async def start(self) -> None:
       pass
 
-    async def execute(self, statement: GraphStatement) -> GraphResult:
-      return GraphResult(
+    async def execute(self, batch: GraphBatch) -> GraphBatchResult:
+      statement = batch.statements[-1]
+      return GraphBatchResult(
         (
-          dict(
-            zip(
-              statement.columns,
-              ("guild:123", "123", "Micro"),
-              strict=True,
+          GraphResult(
+            (
+              dict(
+                zip(
+                  statement.columns,
+                  ("guild:123", "123", "Micro"),
+                  strict=True,
+                )
+              ),
             )
           ),
         )
       )
+
+    async def apply_layout(self, layout: GraphLayout) -> None:
+      pass
 
     async def close(self) -> None:
       pass
@@ -225,20 +289,25 @@ def test_compiler_supports_multiple_roots_fragments_typename_and_conditionals() 
       "Guilds",
     )
   )
-  columns = compiled.statement.columns
+  statement = compiled.batch.statements[0]
+  columns = statement.columns
 
-  assert compiled.statement.parameters == {
+  assert statement.parameters == {
     "p0_identity": entity_identity("Guild", {"id": "1"}),
     "p1_identity": entity_identity("Guild", {"id": "2"}),
   }
   assert compiled.shape(
-    GraphResult(
+    GraphBatchResult(
       (
-        dict(
-          zip(
-            columns,
-            ("guild:1", "Guild", "1", "one", "guild:2", "Guild", "2", "two"),
-            strict=True,
+        GraphResult(
+          (
+            dict(
+              zip(
+                columns,
+                ("guild:1", "Guild", "1", "one", "guild:2", "Guild", "2", "two"),
+                strict=True,
+              )
+            ),
           )
         ),
       )
@@ -257,8 +326,8 @@ def test_compiler_supports_multiple_roots_fragments_typename_and_conditionals() 
       "Guilds",
     )
   )
-  assert set(skipped.statement.parameters) == {"p0_identity"}
-  assert set(skipped.shape(GraphResult(()))) == {"first"}
+  assert set(skipped.batch.statements[0].parameters) == {"p0_identity"}
+  assert set(skipped.shape(GraphBatchResult((GraphResult(()),)))) == {"first"}
 
 
 def test_registered_directive_attaches_metadata_and_compiles_mutation_scalar() -> None:
@@ -302,8 +371,74 @@ def test_registered_directive_attaches_metadata_and_compiles_mutation_scalar() -
   )
 
   assert graph.bindings[("Mutation", "set")].value == "set"
-  assert compiled.statement.parameters == {"p0_value": "updated"}
-  assert compiled.shape(GraphResult(({"c0": "updated"},))) == {"set": "updated"}
+  assert compiled.batch.statements[0].parameters == {"p0_value": "updated"}
+  assert compiled.shape(GraphBatchResult((GraphResult(({"c0": "updated"},)),))) == {
+    "set": "updated"
+  }
+
+
+def test_builtin_mutation_directives_compile_entity_and_relationship_writes() -> None:
+  module = GraphModule(
+    id="mutations",
+    schema="""
+      type Guild @entity(key: ["id"]) {
+        id: ID!
+        name: String!
+        channels: [Channel!]!
+      }
+      type Channel @entity(key: ["id"]) { id: ID!, name: String! }
+      type Query { guild(id: ID!): Guild @from(key: "{'id': id}") }
+      type Mutation {
+        insertGuild(id: ID!, name: String!): Guild!
+          @insert(key: "{'id': id}", fields: "{'id': id, 'name': name}")
+        updateGuild(id: ID!, name: String!): Guild
+          @update(key: "{'id': id}", fields: "{'name': name}")
+        deleteGuild(id: ID!): Boolean!
+          @delete(type: "Guild", key: "{'id': id}")
+        connectChannel(guild: ID!, channel: ID!): Boolean!
+          @connect(
+            fromType: "Guild", fromKey: "{'id': guild}",
+            toType: "Channel", toKey: "{'id': channel}", field: "channels"
+          )
+        disconnectChannel(guild: ID!, channel: ID!): Boolean!
+          @disconnect(
+            fromType: "Guild", fromKey: "{'id': guild}",
+            toType: "Channel", toKey: "{'id': channel}", field: "channels"
+          )
+      }
+    """,
+  )
+  graph = compose_graph((module,))
+
+  def compile(query: str):
+    document = parse(query)
+    operation = get_operation_ast(document)
+    assert operation is not None
+    return GraphCompiler(graph).compile(
+      GraphQLRequest(graph.schema, document, operation, MappingProxyType({}), None)
+    )
+
+  inserted = compile(
+    'mutation { insertGuild(id: "1", name: "Micro") { id name } }'
+  ).batch.statements[0]
+  updated = compile(
+    'mutation { updateGuild(id: "1", name: "Updated") { name } }'
+  ).batch.statements[0]
+  deleted = compile('mutation { deleteGuild(id: "1") }').batch.statements[0]
+  connected = compile(
+    'mutation { connectChannel(guild: "1", channel: "2") }'
+  ).batch.statements[0]
+  disconnected = compile(
+    'mutation { disconnectChannel(guild: "1", channel: "2") }'
+  ).batch.statements[0]
+
+  assert "INSERT" in inserted.text
+  assert physical_type("Guild") in inserted.text
+  assert physical_field("Guild.name") in inserted.text
+  assert "SET" in updated.text
+  assert "DETACH DELETE" in deleted.text
+  assert f"[:{physical_reference('Guild.channels')}]" in connected.text
+  assert "DELETE" in disconnected.text
 
 
 def test_composer_merges_all_extensible_graphql_type_kinds() -> None:
