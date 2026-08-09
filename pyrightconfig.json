@@ -4,7 +4,11 @@
   "executionEnvironments": [
     {
       "root": "examples/application",
-      "extraPaths": ["src", "examples/apache_age/src"]
+      "extraPaths": [
+        "src",
+        "examples/apache_age/src",
+        "examples/jetstream_nats/src"
+      ]
     },
     {
       "root": "examples/apache_age",

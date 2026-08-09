@@ -15,6 +15,9 @@ class FakeGatewayBot:
     self.listeners: dict[type[Any], Callable[[Any], Awaitable[None]]] = {}
     self.start_calls: list[dict[str, Any]] = []
     self.close_calls = 0
+    self.presence_updates: list[dict[str, Any]] = []
+    self.member_requests: list[tuple[int, dict[str, Any]]] = []
+    self.voice_updates: list[tuple[int, int | None, dict[str, Any]]] = []
 
   def listen(self, *event_types: type[Any]) -> Any:
     def register(callback: Callable[[Any], Awaitable[None]]) -> Any:
@@ -32,6 +35,15 @@ class FakeGatewayBot:
 
   async def join(self) -> None:
     pass
+
+  def update_presence(self, **kwargs: Any) -> None:
+    self.presence_updates.append(kwargs)
+
+  def request_guild_members(self, guild: int, **kwargs: Any) -> None:
+    self.member_requests.append((guild, kwargs))
+
+  def update_voice_state(self, guild: int, channel: int | None, **kwargs: Any) -> None:
+    self.voice_updates.append((guild, channel, kwargs))
 
   async def emit(self, event_type: type[Any], **values: Any) -> None:
     await self.listeners[event_type](SimpleNamespace(**values))
@@ -211,6 +223,41 @@ def test_gateway_reports_connection_lifecycle() -> None:
     ConnectionEvent(ConnectionEventKind.DISCONNECTED, 1, connection_id),
     ConnectionEvent(ConnectionEventKind.RESUMED, 1, connection_id),
   ]
+
+
+def test_gateway_executes_typed_control_requests() -> None:
+  bot = FakeGatewayBot()
+  gateway = make_gateway(bot)
+
+  with TestClient(gateway) as client:
+    presence = client.post(
+      "/gateway/presence",
+      json={"status": "idle", "activity": {"name": "Micro", "type": 3}},
+    )
+    members = client.post(
+      "/gateway/guild-members",
+      json={"guild_id": 42, "query": "A", "limit": 10, "nonce": "request-1"},
+    )
+    voice = client.post(
+      "/gateway/voice-state",
+      json={"guild_id": 42, "channel_id": 99, "self_deaf": True},
+    )
+
+  assert presence.status_code == members.status_code == voice.status_code == 204
+  assert bot.presence_updates[0]["status"] is hikari.Status.IDLE
+  assert bot.presence_updates[0]["activity"].name == "Micro"
+  assert bot.member_requests == [
+    (
+      42,
+      {
+        "include_presences": False,
+        "limit": 10,
+        "query": "A",
+        "nonce": "request-1",
+      },
+    )
+  ]
+  assert bot.voice_updates == [(42, 99, {"self_mute": False, "self_deaf": True})]
 
 
 def test_new_ready_invalidates_the_previous_connection() -> None:

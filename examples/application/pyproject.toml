@@ -5,9 +5,11 @@ requires-python = ">=3.14"
 dependencies = [
     "micro[client,overseer,service,store]",
     "micro-age",
+    "micro-nats",
     "uvicorn>=0.52.1",
 ]
 
 [tool.uv.sources]
 micro = { path = "../.." }
 micro-age = { path = "../apache_age", editable = true }
+micro-nats = { path = "../jetstream_nats", editable = true }

@@ -1,29 +1,12 @@
 import asyncio
-from typing import Protocol
 
 import httpx2
 from pydantic import JsonValue
 from pydantic_core import from_json, to_json
 
 from micro._microservices import Microservice
+from micro.queue import QueueSource
 from micro.service._client import ServiceClient
-
-
-class GatewayEventDelivery(Protocol):
-  @property
-  def payload(self) -> bytes: ...
-
-  async def acknowledge(self) -> None: ...
-
-  async def retry(self) -> None: ...
-
-
-class GatewayEventSource(Protocol):
-  async def start(self) -> None: ...
-
-  async def receive(self) -> GatewayEventDelivery: ...
-
-  async def close(self) -> None: ...
 
 
 class GatewayEventService(Microservice):
@@ -32,7 +15,7 @@ class GatewayEventService(Microservice):
   def __init__(
     self,
     *,
-    source: GatewayEventSource,
+    source: QueueSource,
     transport: httpx2.AsyncBaseTransport | None = None,
     timeout: float = 5.0,
   ) -> None:
@@ -57,11 +40,11 @@ class GatewayEventService(Microservice):
     )
 
   async def close(self) -> None:
-    await self.source.close()
     if self._consumer is not None:
       self._consumer.cancel()
       await asyncio.gather(self._consumer, return_exceptions=True)
       self._consumer = None
+    await self.source.close()
     await self.client.aclose()
 
   async def route(self, item: bytes) -> int:
@@ -77,9 +60,18 @@ class GatewayEventService(Microservice):
   async def _consume(self) -> None:
     await self._topology_ready.wait()
     while True:
-      delivery = await self.source.receive()
+      try:
+        delivery = await self.source.receive()
+      except asyncio.CancelledError:
+        raise
+      except Exception:
+        await asyncio.sleep(0.1)
+        continue
       try:
         await self.route(delivery.payload)
+      except ValueError:
+        # Redelivery cannot repair an invalid queue item.
+        await delivery.acknowledge()
       except Exception:
         await delivery.retry()
       else:

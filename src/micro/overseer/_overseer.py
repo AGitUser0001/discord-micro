@@ -1,10 +1,20 @@
 import asyncio
+import hashlib
+import json
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol, Self
 from urllib.parse import urlsplit
 
 import httpx2
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import (
+  BaseModel,
+  ConfigDict,
+  Field,
+  TypeAdapter,
+  field_validator,
+  model_validator,
+)
+from pydantic_core import to_json
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -30,6 +40,8 @@ class DiscoveredInstance(BaseModel):
   role: Literal["service", "store", "gateway", "gateway.event_service", "queue"]
   service_schema: dict[str, Any] | None = Field(default=None, alias="schema")
   modules: tuple[str, ...] = ()
+  shard_ids: tuple[int, ...] = ()
+  shard_count: int | None = Field(default=None, ge=1, le=4096)
 
   @field_validator("base_url")
   @classmethod
@@ -52,6 +64,22 @@ class DiscoveredInstance(BaseModel):
       if not isinstance(value.get("service"), str) or not value["service"]:
         raise ValueError("service schemas must include a non-empty service name")
     return value
+
+  @model_validator(mode="after")
+  def _gateway_shards(self) -> DiscoveredInstance:
+    if self.role != "gateway":
+      if self.shard_ids or self.shard_count is not None:
+        raise ValueError("only gateway instances may declare shard ownership")
+      return self
+    if self.shard_ids and self.shard_count is None:
+      raise ValueError("gateway shard_count is required with shard_ids")
+    if self.shard_count is not None and any(
+      shard_id < 0 or shard_id >= self.shard_count for shard_id in self.shard_ids
+    ):
+      raise ValueError("gateway shard IDs must be within shard_count")
+    if len(set(self.shard_ids)) != len(self.shard_ids):
+      raise ValueError("gateway shard IDs must be unique")
+    return self
 
 
 class Discovery(Protocol):
@@ -144,6 +172,8 @@ class Overseer:
   ) -> None:
     self.discovery = discovery
     self._revision = -1
+    self._next_revision = 0
+    self._reconcile_lock = asyncio.Lock()
     self._instances: tuple[DiscoveredInstance, ...] = ()
     self._modules = {module.id: module for module in modules}
     if len(self._modules) != len(modules):
@@ -167,22 +197,42 @@ class Overseer:
     await self._lifespan(receive, send)
 
   async def reconcile(self) -> int:
+    async with self._reconcile_lock:
+      return await self._reconcile()
+
+  async def _reconcile(self) -> int:
     instances = tuple(await self.discovery.snapshot())
     ids = [instance.id for instance in instances]
     if len(ids) != len(set(ids)):
       raise ValueError("Discovery returned duplicate instance IDs.")
-    revision = self._revision + 1
-    service_state = {
-      "revision": revision,
-      "instances": [
+    revision = self._next_revision
+    self._next_revision += 1
+    schemas: dict[str, dict[str, Any]] = {}
+    service_instances: list[dict[str, str]] = []
+    for instance in instances:
+      if instance.role != "service":
+        continue
+      assert instance.service_schema is not None
+      encoded_schema = json.dumps(
+        instance.service_schema,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+      ).encode()
+      schema_hash = f"sha256:{hashlib.sha256(encoded_schema).hexdigest()}"
+      schemas.setdefault(schema_hash, instance.service_schema)
+      service_instances.append(
         {
           "id": instance.id,
           "base_url": instance.base_url,
-          "schema": instance.service_schema,
+          "schema": schema_hash,
         }
-        for instance in instances
-        if instance.role == "service"
-      ],
+      )
+
+    service_state = {
+      "revision": revision,
+      "schemas": schemas,
+      "instances": service_instances,
       "stores": [
         {
           "id": instance.id,
@@ -196,6 +246,8 @@ class Overseer:
         {
           "id": instance.id,
           "base_url": instance.base_url,
+          "shard_ids": list(instance.shard_ids),
+          "shard_count": instance.shard_count,
         }
         for instance in instances
         if instance.role == "gateway"
@@ -209,6 +261,7 @@ class Overseer:
         if instance.role == "queue"
       ],
     }
+    service_state_body = to_json(service_state)
     store_modules: dict[str, tuple[GraphModule, ...]] = {}
     for instance in instances:
       if instance.role != "store":
@@ -222,6 +275,7 @@ class Overseer:
           f"Store {instance.id!r} requests unknown module {exc.args[0]!r}."
         ) from exc
     composed_by_assignment: dict[tuple[str, ...], MicroGraph] = {}
+    store_topology_bodies: dict[tuple[str, ...], bytes] = {}
     store_graphs: dict[str, MicroGraph] = {}
     for instance_id, modules in store_modules.items():
       if not modules:
@@ -236,23 +290,35 @@ class Overseer:
         )
         composed_by_assignment[assignment] = graph
       store_graphs[instance_id] = graph
+    for instance_id, modules in store_modules.items():
+      assignment = tuple(module.id for module in modules)
+      store_topology_bodies.setdefault(
+        assignment,
+        to_json(
+          {
+            "revision": revision,
+            "modules": [
+              module.model_dump(mode="json", by_alias=True) for module in modules
+            ],
+          }
+        ),
+      )
 
     async def push(instance: DiscoveredInstance) -> tuple[str, int, str] | None:
       if instance.role in {"service", "gateway", "gateway.event_service"}:
         endpoint = "/state"
-        body: Any = service_state
+        body = service_state_body
       elif instance.role == "store":
         endpoint = "/topology"
-        body = {
-          "revision": revision,
-          "modules": [
-            module.model_dump(mode="json", by_alias=True)
-            for module in store_modules[instance.id]
-          ],
-        }
+        assignment = tuple(module.id for module in store_modules[instance.id])
+        body = store_topology_bodies[assignment]
       else:
         return None
-      response = await self._http.post(f"{instance.base_url}{endpoint}", json=body)
+      response = await self._http.post(
+        f"{instance.base_url}{endpoint}",
+        content=body,
+        headers={"content-type": "application/json"},
+      )
       if response.is_success:
         return None
       return instance.id, response.status_code, response.text

@@ -114,18 +114,19 @@ def test_overseer_state_atomically_replaces_instances() -> None:
       "/state",
       json={
         "revision": 4,
+        "schemas": {"receiver": schema},
         "instances": [
           {
             "id": "receiver-1",
             "base_url": "http://receiver.internal",
-            "schema": schema,
+            "schema": "receiver",
           }
         ],
       },
     )
     stale = test_client.post(
       "/state",
-      json={"revision": 3, "instances": []},
+      json={"revision": 3, "schemas": {}, "instances": []},
     )
 
   assert response.status_code == 204
@@ -143,11 +144,12 @@ def test_service_owns_clients_for_every_microservice_kind() -> None:
       "/state",
       json={
         "revision": 2,
+        "schemas": {"receiver": schema},
         "instances": [
           {
             "id": "receiver-1",
             "base_url": "http://receiver.internal",
-            "schema": schema,
+            "schema": "receiver",
           }
         ],
         "stores": [
@@ -172,3 +174,45 @@ def test_service_owns_clients_for_every_microservice_kind() -> None:
 def test_store_and_gateway_clients_share_the_microservice_client_backbone() -> None:
   assert issubclass(StoreClient, MicroserviceClient)
   assert issubclass(GatewayClient, MicroserviceClient)
+
+
+def test_gateway_client_routes_guild_control_to_owning_shard() -> None:
+  calls: list[tuple[str, str]] = []
+
+  def respond(request: httpx2.Request) -> httpx2.Response:
+    calls.append((request.url.host, request.url.path))
+    return httpx2.Response(204)
+
+  async def exercise() -> None:
+    async with GatewayClient(transport=httpx2.MockTransport(respond)) as client:
+      client.apply_state(
+        {
+          "revision": 0,
+          "gateways": [
+            {
+              "id": "gateway-a",
+              "base_url": "http://a.internal",
+              "shard_ids": [0, 1],
+              "shard_count": 4,
+            },
+            {
+              "id": "gateway-b",
+              "base_url": "http://b.internal",
+              "shard_ids": [2, 3],
+              "shard_count": 4,
+            },
+          ],
+        }
+      )
+      guild_on_shard_three = 3 << 22
+      await client.request_guild_members(guild_on_shard_three, query="")
+      await client.update_voice_state(guild_on_shard_three, None)
+      await client.update_presence(status="dnd")
+
+  asyncio.run(exercise())
+  assert calls == [
+    ("b.internal", "/gateway/guild-members"),
+    ("b.internal", "/gateway/voice-state"),
+    ("a.internal", "/gateway/presence"),
+    ("b.internal", "/gateway/presence"),
+  ]

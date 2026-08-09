@@ -6,10 +6,17 @@ from typing import Any, Protocol
 from uuid import uuid7
 
 import hikari
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue, ValidationError
 from pydantic_core import to_json
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from micro._microservices import Microservice
+from micro._microservices._gateway_control import (
+  GuildMembersRequest,
+  PresenceUpdate,
+  VoiceStateUpdate,
+)
 from micro.queue import QueueClient
 
 from ._runner import event_loop_factory
@@ -60,6 +67,14 @@ class _GatewayBot(Protocol):
 
   async def join(self) -> None: ...
 
+  def update_presence(self, **kwargs: Any) -> None: ...
+
+  def request_guild_members(self, guild: int, **kwargs: Any) -> None: ...
+
+  def update_voice_state(
+    self, guild: int, channel: int | None, **kwargs: Any
+  ) -> None: ...
+
 
 async def _ignore_connection_event(event: ConnectionEvent) -> None:
   pass
@@ -99,6 +114,24 @@ class Gateway(Microservice):
       banner=None,
     )
     self._subscribe()
+    self.add_route(
+      "/gateway/presence",
+      self._update_presence,
+      methods=("POST",),
+      name="gateway:presence",
+    )
+    self.add_route(
+      "/gateway/guild-members",
+      self._request_guild_members,
+      methods=("POST",),
+      name="gateway:guild-members",
+    )
+    self.add_route(
+      "/gateway/voice-state",
+      self._update_voice_state,
+      methods=("POST",),
+      name="gateway:voice-state",
+    )
 
   @property
   def service(self) -> Microservice:
@@ -125,7 +158,60 @@ class Gateway(Microservice):
     document["service"] = "micro.gateway"
     document["events"] = []
     document["requests"] = []
+    document["shard_ids"] = list(self._shard_ids or ())
+    document["shard_count"] = self._shard_count
     return document
+
+  async def _update_presence(self, request: Request) -> Response:
+    update = await _control_request(request, PresenceUpdate)
+    if isinstance(update, Response):
+      return update
+    activity = (
+      hikari.Activity(
+        name=update.activity.name,
+        type=hikari.ActivityType(update.activity.type),
+        url=update.activity.url,
+        state=update.activity.state,
+      )
+      if update.activity is not None
+      else None
+    )
+    self._bot.update_presence(
+      status=hikari.Status(update.status),
+      idle_since=update.idle_since,
+      activity=activity,
+      afk=update.afk,
+    )
+    return Response(status_code=204)
+
+  async def _request_guild_members(self, request: Request) -> Response:
+    members = await _control_request(request, GuildMembersRequest)
+    if isinstance(members, Response):
+      return members
+    kwargs: dict[str, Any] = {
+      "include_presences": members.include_presences,
+      "limit": members.limit,
+    }
+    if members.query is not None:
+      kwargs["query"] = members.query
+    if members.users is not None:
+      kwargs["users"] = members.users
+    if members.nonce is not None:
+      kwargs["nonce"] = members.nonce
+    self._bot.request_guild_members(members.guild_id, **kwargs)
+    return Response(status_code=204)
+
+  async def _update_voice_state(self, request: Request) -> Response:
+    update = await _control_request(request, VoiceStateUpdate)
+    if isinstance(update, Response):
+      return update
+    self._bot.update_voice_state(
+      update.guild_id,
+      update.channel_id,
+      self_mute=update.self_mute,
+      self_deaf=update.self_deaf,
+    )
+    return Response(status_code=204)
 
   def run(self) -> None:
     """Run the Gateway until it closes, using an accelerated loop if available."""
@@ -278,3 +364,26 @@ def _validate_shards(
   if not normalized:
     raise ValueError("shard_ids cannot be empty.")
   return normalized, shard_count
+
+
+async def _control_request[ModelT: BaseModel](
+  request: Request,
+  model: type[ModelT],
+) -> ModelT | Response:
+  if request.headers.get("content-type", "").partition(";")[0].strip() != (
+    "application/json"
+  ):
+    return JSONResponse(
+      {"detail": "Gateway control requests require application/json."},
+      status_code=415,
+    )
+  try:
+    return model.model_validate_json(await request.body())
+  except ValidationError as exc:
+    return JSONResponse(
+      {
+        "detail": "Gateway control request does not match its schema.",
+        "errors": exc.errors(include_url=False),
+      },
+      status_code=422,
+    )

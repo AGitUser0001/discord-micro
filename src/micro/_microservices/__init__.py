@@ -6,6 +6,7 @@ from ._client import (
   StaleStateError,
 )
 from ._gateway_client import GatewayClient
+from ._gateway_control import ActivityUpdate
 from ._microservice import (
   DuplicateEndpointError,
   Microservice,
@@ -14,6 +15,7 @@ from ._microservice import (
 from ._store_client import StoreClient
 
 __all__ = (
+  "ActivityUpdate",
   "DuplicateEndpointError",
   "GatewayClient",
   "InvalidMicroserviceSchemaError",

@@ -83,6 +83,8 @@ reply = await service.client.request(GreetingRequest, payload)
 `POST /state` atomically replaces the clients' directory snapshot. Snapshots
 contain a non-negative revision plus service, store, and Gateway routes; older
 revisions are rejected rather than overwriting newer topology.
+Identical service schemas are transmitted once in a hash-indexed table, while
+each instance route carries only its schema hash.
 
 ## Gateway workers
 
@@ -107,6 +109,16 @@ connections. Dispatches are published on `gateway.events` as compact
 `[event_name, payload]` records. Connection callbacks separately report connect,
 disconnect, ready, resume, invalidation, and clean-close transitions. The gateway
 starts and closes with ASGI lifespan, so it can run directly under Uvicorn.
+
+Gateway control calls are typed and shard-aware. Guild member requests and voice
+state updates route to the worker that owns the guild's shard; presence updates
+are broadcast to every Gateway worker:
+
+```python
+await service.gateway.request_guild_members(guild_id, query="", limit=0)
+await service.gateway.update_voice_state(guild_id, channel_id)
+await service.gateway.update_presence(status="idle")
+```
 
 `GatewayEventService` instances share one durable queue consumer. The active
 instance routes each dispatch once per listening service name and chooses one

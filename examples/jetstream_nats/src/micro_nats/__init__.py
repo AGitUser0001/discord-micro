@@ -8,7 +8,7 @@ from nats.errors import TimeoutError
 from nats.js.client import JetStreamContext
 from nats.js.errors import BadRequestError, NotFoundError
 
-from micro.gateway.event_service import GatewayEventDelivery
+from micro.queue import QueueDelivery
 
 
 class JetStreamBackend:
@@ -66,7 +66,7 @@ class JetStreamBackend:
     self._jetstream = None
 
 
-class _JetStreamDelivery(GatewayEventDelivery):
+class _JetStreamDelivery(QueueDelivery):
   def __init__(self, message: Msg) -> None:
     self._message = message
 
@@ -81,21 +81,22 @@ class _JetStreamDelivery(GatewayEventDelivery):
     await self._message.nak()
 
 
-class JetStreamGatewayEventSource:
-  """Competing durable consumer for Micro's single gateway event channel."""
+class JetStreamSource:
+  """JetStream competing consumer bound to one Micro queue channel."""
 
   def __init__(
     self,
     servers: Sequence[str] = ("nats://127.0.0.1:4222",),
     *,
+    channel: str,
+    consumer: str,
     stream: str = "MICRO_QUEUE",
-    durable: str = "micro-gateway-event-service",
-    subject: str = "micro.queue.gateway.events",
+    subject_prefix: str = "micro.queue",
   ) -> None:
     self._servers = tuple(servers)
     self._stream = stream
-    self._durable = durable
-    self._subject = subject
+    self._consumer = consumer
+    self._subject = f"{subject_prefix}.{channel}"
     self._connection: Client | None = None
     self._subscription: Any = None
 
@@ -104,7 +105,7 @@ class JetStreamGatewayEventSource:
     try:
       self._subscription = await connection.jetstream().pull_subscribe(
         self._subject,
-        durable=self._durable,
+        durable=self._consumer,
         stream=self._stream,
       )
     except BaseException:
@@ -112,9 +113,9 @@ class JetStreamGatewayEventSource:
       raise
     self._connection = connection
 
-  async def receive(self) -> GatewayEventDelivery:
+  async def receive(self) -> QueueDelivery:
     if self._subscription is None:
-      raise RuntimeError("The JetStream event source has not started.")
+      raise RuntimeError("The JetStream source has not started.")
     while True:
       try:
         messages = await self._subscription.fetch(batch=1, timeout=1)
@@ -130,4 +131,4 @@ class JetStreamGatewayEventSource:
     self._subscription = None
 
 
-__all__ = ("JetStreamBackend", "JetStreamGatewayEventSource")
+__all__ = ("JetStreamBackend", "JetStreamSource")

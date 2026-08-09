@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-micro = { path = "../..", editable = true }
+micro = { path = "../.." }
 
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]

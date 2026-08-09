@@ -68,7 +68,30 @@ class MicroserviceClient:
     self._positions.clear()
 
   def apply_state(self, state: JsonValue) -> None:
-    self._apply_state_collection(state, "instances", self._instance_registration)
+    if not isinstance(state, dict):
+      raise TypeError("Overseer state must be an object.")
+    schemas = state.get("schemas")
+    if not isinstance(schemas, dict):
+      raise TypeError("Overseer state needs a schemas object.")
+    validated: dict[str, dict[str, Any]] = {}
+    for schema_hash, schema in schemas.items():
+      if not isinstance(schema_hash, str) or not isinstance(schema, dict):
+        raise TypeError("Every schema entry needs a string hash and object value.")
+      validated[schema_hash] = self.validate_schema(schema)
+
+    def registration(value: dict[str, JsonValue]) -> Instance:
+      schema_hash = value.get("schema")
+      if not isinstance(schema_hash, str):
+        raise TypeError("Every service instance needs a string schema hash.")
+      try:
+        schema = validated[schema_hash]
+      except KeyError as exc:
+        raise ValueError(
+          f"Service instance references unknown schema {schema_hash!r}."
+        ) from exc
+      return self._instance_registration(value, schema)
+
+    self._apply_state_collection(state, "instances", registration)
 
   def _apply_state_collection(
     self,
@@ -104,15 +127,16 @@ class MicroserviceClient:
     self._positions.clear()
     self._state_revision = revision
 
-  def _instance_registration(self, registration: dict[str, JsonValue]) -> Instance:
+  def _instance_registration(
+    self,
+    registration: dict[str, JsonValue],
+    schema: dict[str, Any],
+  ) -> Instance:
     instance_id = registration.get("id")
     base_url = registration.get("base_url")
-    schema = registration.get("schema")
     if not isinstance(instance_id, str) or not isinstance(base_url, str):
       raise TypeError("Every instance needs string id and base_url fields.")
-    if not isinstance(schema, dict):
-      raise TypeError("Every instance needs a microservice schema object.")
-    return self.make_instance(instance_id, base_url, schema)
+    return self.make_instance(instance_id, base_url, schema, validate=False)
 
   @property
   def instance_ids(self) -> tuple[str, ...]:
@@ -184,6 +208,8 @@ class MicroserviceClient:
     instance_id: str,
     base_url: str,
     schema: MicroserviceSchema,
+    *,
+    validate: bool = True,
   ) -> Instance:
     if not instance_id:
       raise ValueError("instance_id cannot be empty.")
@@ -192,4 +218,7 @@ class MicroserviceClient:
       raise ValueError("base_url must be an absolute HTTP(S) URL.")
     if parsed_url.query or parsed_url.fragment:
       raise ValueError("base_url cannot contain a query or fragment.")
-    return Instance(instance_id, base_url.rstrip("/"), self.validate_schema(schema))
+    document = self.validate_schema(schema) if validate else schema
+    if not isinstance(document, dict):
+      raise TypeError("Validated microservice schemas must be dictionaries.")
+    return Instance(instance_id, base_url.rstrip("/"), document)

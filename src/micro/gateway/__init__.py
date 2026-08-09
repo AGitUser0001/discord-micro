@@ -1,4 +1,4 @@
-from micro._microservices import GatewayClient
+from micro._microservices import ActivityUpdate, GatewayClient
 
 from ._gateway import (
   ConnectionEvent,
@@ -9,12 +9,11 @@ from ._gateway import (
   Gateway,
 )
 from .event_service import (
-  GatewayEventDelivery,
   GatewayEventService,
-  GatewayEventSource,
 )
 
 __all__ = (
+  "ActivityUpdate",
   "ConnectionEvent",
   "ConnectionEventKind",
   "ConnectionSink",
@@ -22,7 +21,5 @@ __all__ = (
   "DispatchSink",
   "Gateway",
   "GatewayClient",
-  "GatewayEventDelivery",
   "GatewayEventService",
-  "GatewayEventSource",
 )

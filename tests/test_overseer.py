@@ -1,7 +1,9 @@
 import asyncio
+import json
 from typing import Any
 
 import httpx2
+import pytest
 from starlette.testclient import TestClient
 
 from micro.overseer import (
@@ -9,6 +11,7 @@ from micro.overseer import (
   GraphModule,
   NetworkDiscovery,
   Overseer,
+  TopologyPushError,
 )
 
 SERVICE_SCHEMA: dict[str, Any] = {
@@ -177,3 +180,42 @@ def test_overseer_loads_replaces_and_unloads_graph_modules() -> None:
   assert overseer.unload_graph_module("guilds")
   assert overseer.graph_modules == ()
   assert not overseer.unload_graph_module("guilds")
+
+
+def test_failed_push_does_not_reuse_its_revision() -> None:
+  pushed_revisions: list[int] = []
+  fail = True
+
+  def respond(request: httpx2.Request) -> httpx2.Response:
+    nonlocal fail
+    revision = json.loads(request.read())["revision"]
+    pushed_revisions.append(revision)
+    if fail:
+      fail = False
+      return httpx2.Response(503)
+    return httpx2.Response(204)
+
+  discovery = NetworkDiscovery(
+    (
+      DiscoveredInstance(
+        id="service-1",
+        base_url="http://service.internal",
+        role="service",
+        schema=SERVICE_SCHEMA,
+      ),
+    )
+  )
+
+  async def exercise() -> Overseer:
+    overseer = Overseer(discovery, transport=httpx2.MockTransport(respond))
+    try:
+      with pytest.raises(TopologyPushError):
+        await overseer.reconcile()
+      assert await overseer.reconcile() == 1
+      return overseer
+    finally:
+      await overseer.aclose()
+
+  overseer = asyncio.run(exercise())
+  assert pushed_revisions == [0, 1]
+  assert overseer.revision == 1

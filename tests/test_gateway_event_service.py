@@ -17,6 +17,33 @@ class Source:
     pass
 
 
+class Delivery:
+  def __init__(self, payload: bytes) -> None:
+    self.payload = payload
+    self.acknowledged = asyncio.Event()
+    self.retried = asyncio.Event()
+
+  async def acknowledge(self) -> None:
+    self.acknowledged.set()
+
+  async def retry(self) -> None:
+    self.retried.set()
+
+
+class LiveSource:
+  def __init__(self) -> None:
+    self.items: asyncio.Queue[Delivery] = asyncio.Queue()
+
+  async def start(self) -> None:
+    pass
+
+  async def receive(self) -> Delivery:
+    return await self.items.get()
+
+  async def close(self) -> None:
+    pass
+
+
 def event_schema(service: str, handler: str) -> dict[str, Any]:
   return {
     "format": 1,
@@ -50,21 +77,26 @@ def test_gateway_event_service_delivers_once_per_service_name() -> None:
   event_service.apply_state(
     {
       "revision": 0,
+      "schemas": {
+        "audit-v1": event_schema("audit", "audit:v1"),
+        "audit-v2": event_schema("audit", "audit:v2"),
+        "metrics-v1": event_schema("metrics", "metrics:v1"),
+      },
       "instances": [
         {
           "id": "audit-1",
           "base_url": "http://audit-one.internal",
-          "schema": event_schema("audit", "audit:v1"),
+          "schema": "audit-v1",
         },
         {
           "id": "audit-2",
           "base_url": "http://audit-two.internal",
-          "schema": event_schema("audit", "audit:v2"),
+          "schema": "audit-v2",
         },
         {
           "id": "metrics-1",
           "base_url": "http://metrics.internal",
-          "schema": event_schema("metrics", "metrics:v1"),
+          "schema": "metrics-v1",
         },
       ],
     }
@@ -98,16 +130,20 @@ def test_gateway_event_service_round_robins_replicas_without_hash_grouping() -> 
   event_service.apply_state(
     {
       "revision": 0,
+      "schemas": {
+        "v1": event_schema("audit", "v1"),
+        "v2": event_schema("audit", "v2"),
+      },
       "instances": [
         {
           "id": "audit-1",
           "base_url": "http://one.internal",
-          "schema": event_schema("audit", "v1"),
+          "schema": "v1",
         },
         {
           "id": "audit-2",
           "base_url": "http://two.internal",
-          "schema": event_schema("audit", "v2"),
+          "schema": "v2",
         },
       ],
     }
@@ -122,3 +158,42 @@ def test_gateway_event_service_round_robins_replicas_without_hash_grouping() -> 
 
   asyncio.run(exercise())
   assert calls == ["one.internal", "two.internal"]
+
+
+def test_gateway_event_consumer_drops_poison_and_retries_delivery_failures() -> None:
+  source = LiveSource()
+
+  def respond(request: httpx2.Request) -> httpx2.Response:
+    return httpx2.Response(503)
+
+  event_service = GatewayEventService(
+    source=source,
+    transport=httpx2.MockTransport(respond),
+  )
+  event_service.apply_state(
+    {
+      "revision": 0,
+      "schemas": {"audit": event_schema("audit", "v1")},
+      "instances": [
+        {
+          "id": "audit-1",
+          "base_url": "http://audit.internal",
+          "schema": "audit",
+        }
+      ],
+    }
+  )
+  poison = Delivery(b"not a gateway event")
+  transient = Delivery(b'["MESSAGE_CREATE",{}]')
+
+  async def exercise() -> None:
+    await event_service.start()
+    await source.items.put(poison)
+    await asyncio.wait_for(poison.acknowledged.wait(), 1)
+    await source.items.put(transient)
+    await asyncio.wait_for(transient.retried.wait(), 1)
+    await event_service.close()
+
+  asyncio.run(exercise())
+  assert not poison.retried.is_set()
+  assert not transient.acknowledged.is_set()

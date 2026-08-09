@@ -12,6 +12,16 @@ async def main() -> None:
         "role": "store",
         "modules": ["example.greetings"],
       },
+      {
+        "id": "queue-1",
+        "base_url": "http://127.0.0.1:8104",
+        "role": "queue",
+      },
+      {
+        "id": "gateway-events-1",
+        "base_url": "http://127.0.0.1:8105",
+        "role": "gateway.event_service",
+      },
       await service_registration(
         client,
         "api-1",
