@@ -4,8 +4,8 @@ import httpx2
 import pytest
 from starlette.testclient import TestClient
 
-from micro._microservices import NoCompatibleInstanceError
-from micro.queue import Queue, QueueBackendDelivery, QueueClient
+from micro._microservices import NoCompatibleInstanceError, OperationEvent
+from micro.queue import Queue, QueueBackendDelivery, QueueClient, QueueObservation
 
 
 class Backend:
@@ -35,14 +35,20 @@ class Backend:
   async def acknowledge(self, receipt: str) -> None:
     self.settlements.append(("acknowledge", receipt, None, b""))
 
-  async def retry(self, receipt: str) -> None:
+  async def retry(self, receipt: str, *, delay: float = 0) -> None:
     self.settlements.append(("retry", receipt, None, b""))
+
+  async def dead_letter(self, receipt: str) -> None:
+    self.settlements.append(("dead_letter", receipt, None, b""))
 
   async def respond(self, receipt: str, reply: str, payload: bytes) -> None:
     self.settlements.append(("respond", receipt, reply, payload))
 
   async def close(self) -> None:
     self.closed = True
+
+  async def observe(self) -> QueueObservation:
+    return QueueObservation(True, pending=self.deliveries.qsize(), consumers=1)
 
 
 def test_queue_publishes_raw_items_to_its_backend() -> None:
@@ -62,11 +68,61 @@ def test_queue_publishes_raw_items_to_its_backend() -> None:
   assert backend.closed
 
 
+def test_queue_emits_structured_operation_events() -> None:
+  backend = Backend()
+  queue = Queue(backend=backend)
+  events: list[OperationEvent] = []
+
+  async def observe(event: OperationEvent) -> None:
+    events.append(event)
+
+  queue.add_operation_observer(observe)
+  with TestClient(queue) as client:
+    assert client.post("/channels/events", content=b"payload").status_code == 204
+
+  assert [(event.operation, event.phase) for event in events] == [
+    ("publish", "started"),
+    ("publish", "completed"),
+  ]
+
+
 def test_queue_rejects_invalid_channels() -> None:
   with TestClient(Queue(backend=Backend())) as client:
     response = client.post("/channels/bad%20channel", content=b"payload")
 
   assert response.status_code == 422
+
+
+def test_queue_enforces_size_limits_and_exposes_observations() -> None:
+  backend = Backend()
+  with TestClient(Queue(backend=backend, max_payload_size=4)) as client:
+    oversized = client.post("/channels/jobs", content=b"12345")
+    observed = client.get("/queue/observations")
+
+  assert oversized.status_code == 413
+  assert observed.json() == {
+    "connected": True,
+    "pending": 0,
+    "consumers": 1,
+    "active_operations": 0,
+    "accepting": True,
+  }
+
+
+def test_queue_supports_delayed_retry_and_dead_letter_policy() -> None:
+  backend = Backend()
+  backend.deliveries.put_nowait(QueueBackendDelivery(b"job", "receipt"))
+  with TestClient(Queue(backend=backend)) as client:
+    consumed = client.post("/channels/jobs/consumers/worker")
+    headers = {"micro-receipt": consumed.headers["micro-receipt"]}
+    retried = client.post("/deliveries/retry?delay=2", headers=headers)
+    dead = client.post("/deliveries/dead_letter", headers=headers)
+
+  assert retried.status_code == dead.status_code == 204
+  assert backend.settlements == [
+    ("retry", "receipt", None, b""),
+    ("dead_letter", "receipt", None, b""),
+  ]
 
 
 def test_queue_serves_request_and_delivery_settlement() -> None:

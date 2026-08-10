@@ -36,6 +36,8 @@ from graphql.language import (
   UnionTypeExtensionNode,
 )
 
+from micro._microservices import TopologyError
+
 from .._module import GraphModule
 from ._directive import (
   DirectiveBindContext,
@@ -49,7 +51,7 @@ from ._directive import (
 )
 
 
-class GraphCompositionError(ValueError):
+class GraphCompositionError(TopologyError):
   pass
 
 

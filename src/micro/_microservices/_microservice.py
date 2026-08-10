@@ -1,8 +1,10 @@
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from json import JSONDecodeError
-from typing import Protocol
+from typing import Any
 
 from pydantic import JsonValue
 from starlette.applications import Starlette
@@ -18,12 +20,31 @@ _STANDARD_PATHS = frozenset(
 )
 
 
-class StateReceiver(Protocol):
-  def apply_state(self, state: JsonValue) -> None: ...
-
-
 class DuplicateEndpointError(ValueError):
   pass
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleEvent:
+  component: str
+  event: str
+  attributes: dict[str, Any] = field(default_factory=dict)
+
+
+type EventObserver = Callable[[LifecycleEvent], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class OperationEvent:
+  """A framework operation transition suitable for metrics and tracing."""
+
+  component: str
+  operation: str
+  phase: str
+  attributes: dict[str, Any] = field(default_factory=dict)
+
+
+type OperationObserver = Callable[[OperationEvent], Awaitable[None]]
 
 
 class Microservice:
@@ -32,17 +53,16 @@ class Microservice:
   def __init__(
     self,
     kind: str,
-    *,
-    state_receiver: StateReceiver | None = None,
   ) -> None:
     if not kind:
       raise ValueError("Microservice kind cannot be empty.")
     self.kind = kind
-    self._state_receiver = state_receiver
     self._accepting = True
     self._running = False
     self._sealed = False
     self._paths: set[str] = set(_STANDARD_PATHS)
+    self._observers: list[EventObserver] = []
+    self._operation_observers: list[OperationObserver] = []
     self._app = Starlette(
       routes=[
         Route("/health/live", self._live_endpoint, methods=["GET"]),
@@ -74,6 +94,24 @@ class Microservice:
 
   def drain(self) -> None:
     self._accepting = False
+
+  def add_observer(self, observer: EventObserver) -> None:
+    self._observers.append(observer)
+
+  def add_operation_observer(self, observer: OperationObserver) -> None:
+    self._operation_observers.append(observer)
+
+  @asynccontextmanager
+  async def operation(self, name: str, **attributes: Any) -> AsyncIterator[None]:
+    """Emit structured start/completion/failure transitions around an operation."""
+    await self._emit_operation(name, "started", attributes)
+    try:
+      yield
+    except BaseException as exc:
+      await self._emit_operation(name, "failed", attributes | {"error": str(exc)})
+      raise
+    else:
+      await self._emit_operation(name, "completed", attributes)
 
   def resume(self) -> None:
     self._accepting = True
@@ -122,6 +160,9 @@ class Microservice:
   async def close(self) -> None:
     pass
 
+  def apply_state(self, state: JsonValue) -> None:
+    raise NotImplementedError
+
   async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
     self._sealed = True
     if scope["type"] != "lifespan":
@@ -147,7 +188,7 @@ class Microservice:
     )
 
   async def _state_endpoint(self, request: Request) -> Response:
-    if self._state_receiver is None:
+    if type(self).apply_state is Microservice.apply_state:
       return JSONResponse(
         {"detail": "This microservice does not consume overseer state."},
         status_code=503,
@@ -159,7 +200,7 @@ class Microservice:
       )
     try:
       state: JsonValue = await request.json()
-      self._state_receiver.apply_state(state)
+      self.apply_state(state)
     except JSONDecodeError, UnicodeDecodeError:
       return JSONResponse(
         {"detail": "Request body is not valid JSON."}, status_code=400
@@ -175,22 +216,40 @@ class Microservice:
     while True:
       message = await receive()
       if message["type"] == "lifespan.startup":
+        await self._emit("starting")
         try:
           await self.start()
         except BaseException as exc:
+          await self._emit("start_failed", error=str(exc))
           await send({"type": "lifespan.startup.failed", "message": str(exc)})
           return
         self._running = True
+        await self._emit("started")
         await send({"type": "lifespan.startup.complete"})
       elif message["type"] == "lifespan.shutdown":
         self._running = False
+        await self._emit("stopping")
         try:
           await self.close()
         except BaseException as exc:
+          await self._emit("stop_failed", error=str(exc))
           await send({"type": "lifespan.shutdown.failed", "message": str(exc)})
           return
+        await self._emit("stopped")
         await send({"type": "lifespan.shutdown.complete"})
         return
+
+  async def _emit(self, event: str, **attributes: Any) -> None:
+    item = LifecycleEvent(self.kind, event, attributes)
+    for observer in tuple(self._observers):
+      await observer(item)
+
+  async def _emit_operation(
+    self, operation: str, phase: str, attributes: dict[str, Any]
+  ) -> None:
+    item = OperationEvent(self.kind, operation, phase, attributes)
+    for observer in tuple(self._operation_observers):
+      await observer(item)
 
   def _implementation_hash(self) -> str:
     encoded = json.dumps(

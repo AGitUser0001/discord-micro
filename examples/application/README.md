@@ -77,3 +77,13 @@ curl -sS http://127.0.0.1:8101/graphql \
 `NetworkDiscovery` is deliberately only a control-plane building block. Put
 authentication or a trusted-network boundary around `/discovery` and `/refresh`
 in a real deployment.
+
+## Verify the complete stack
+
+With AGE and NATS running, the repository integration test starts all seven
+ASGI processes, reconciles topology, sends a queued service event, queries the
+graph, and shuts every process down cleanly:
+
+```console
+MICRO_RUN_APPLICATION_INTEGRATION=1 uv run pytest tests/test_application_integration.py
+```

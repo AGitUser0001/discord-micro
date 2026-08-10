@@ -10,8 +10,6 @@ from starlette.responses import JSONResponse, Response
 from micro._microservices import (
   GatewayClient,
   Microservice,
-  MicroserviceClient,
-  StateReceiver,
   StoreClient,
 )
 from micro.queue import QueueClient
@@ -50,13 +48,7 @@ class Service(Microservice):
     self.store = StoreClient()
     self.gateway = GatewayClient()
     self.queue = QueueClient()
-    receivers: tuple[StateReceiver, ...] = (
-      self.client,
-      self.store,
-      self.gateway,
-      self.queue,
-    )
-    super().__init__("service", state_receiver=_StateReceivers(receivers))
+    super().__init__("service")
     self.name = name
     self._events: dict[str, tuple[EventSchema[Any], EventHandler[Any]]] = {}
     self._requests: dict[
@@ -68,6 +60,17 @@ class Service(Microservice):
     await self.store.aclose()
     await self.gateway.aclose()
     await self.queue.aclose()
+
+  def apply_state(self, state: JsonValue) -> None:
+    receivers = (self.client, self.store, self.gateway, self.queue)
+    snapshots = {receiver: receiver.state_snapshot() for receiver in receivers}
+    try:
+      for receiver in receivers:
+        receiver.apply_state(state)
+    except Exception:
+      for receiver, snapshot in snapshots.items():
+        receiver.restore_state(snapshot)
+      raise
 
   def listen[T](
     self,
@@ -201,25 +204,6 @@ class Service(Microservice):
 
 def _content_type(request: Request) -> str:
   return request.headers.get("content-type", "").partition(";")[0].strip()
-
-
-class _StateReceivers:
-  def __init__(self, receivers: tuple[StateReceiver, ...]) -> None:
-    self._receivers = receivers
-
-  def apply_state(self, state: JsonValue) -> None:
-    snapshots = {
-      receiver: receiver._state_snapshot()
-      for receiver in self._receivers
-      if isinstance(receiver, MicroserviceClient)
-    }
-    try:
-      for receiver in self._receivers:
-        receiver.apply_state(state)
-    except Exception:
-      for receiver, snapshot in snapshots.items():
-        receiver._restore_state(snapshot)
-      raise
 
 
 def _validation_error(exc: ValidationError, subject: str) -> JSONResponse:

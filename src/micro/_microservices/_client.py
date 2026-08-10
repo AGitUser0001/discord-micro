@@ -7,19 +7,21 @@ from urllib.parse import urlsplit
 import httpx2
 from pydantic import JsonValue
 
+from ._errors import RemoteResponseError, RoutingError, TopologyError
+
 type MicroserviceSchema = Mapping[str, Any]
 type MicroserviceRegistration = tuple[str, str, MicroserviceSchema]
 
 
-class InvalidMicroserviceSchemaError(ValueError):
+class InvalidMicroserviceSchemaError(TopologyError):
   pass
 
 
-class NoCompatibleInstanceError(LookupError):
+class NoCompatibleInstanceError(RoutingError):
   pass
 
 
-class RemoteMicroserviceError(RuntimeError):
+class RemoteMicroserviceError(RemoteResponseError):
   def __init__(self, instance_id: str, status_code: int, body: str) -> None:
     self.instance_id = instance_id
     self.status_code = status_code
@@ -29,7 +31,7 @@ class RemoteMicroserviceError(RuntimeError):
     )
 
 
-class StaleStateError(ValueError):
+class StaleStateError(TopologyError):
   pass
 
 
@@ -91,14 +93,15 @@ class MicroserviceClient:
         ) from exc
       return self._instance_registration(value, schema)
 
-    self._apply_state_collection(state, "instances", registration)
+    self.apply_state_collection(state, "instances", registration)
 
-  def _apply_state_collection(
+  def apply_state_collection(
     self,
     state: JsonValue,
     collection: str,
     parse_registration: Callable[[dict[str, JsonValue]], Instance],
   ) -> None:
+    """Validate and atomically replace one topology registration collection."""
     if not isinstance(state, dict):
       raise TypeError("Overseer state must be an object.")
     revision = state.get("revision")
@@ -146,12 +149,12 @@ class MicroserviceClient:
   def state_revision(self) -> int:
     return self._state_revision
 
-  def _state_snapshot(
+  def state_snapshot(
     self,
   ) -> tuple[dict[str, Instance], dict[str, int], int]:
     return dict(self._instances), dict(self._positions), self._state_revision
 
-  def _restore_state(
+  def restore_state(
     self,
     snapshot: tuple[dict[str, Instance], dict[str, int], int],
   ) -> None:

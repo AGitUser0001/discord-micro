@@ -8,3 +8,10 @@ class QueueBackendDelivery:
   payload: bytes
   receipt: str
   reply: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QueueObservation:
+  connected: bool
+  pending: int | None = None
+  consumers: int | None = None

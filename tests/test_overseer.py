@@ -10,6 +10,7 @@ from micro.gateway import ConnectionEvent, ConnectionEventKind
 from micro.overseer import (
   DiscoveredInstance,
   GraphModule,
+  MemoryOverseerPersistence,
   NetworkDiscovery,
   Overseer,
   TopologyPushError,
@@ -265,3 +266,74 @@ def test_overseer_separates_desired_assignments_from_observed_connections() -> N
   overseer = asyncio.run(exercise())
   assert overseer.gateway_state.active_shards("gateway-a") == ()
   assert "/projection/connections/connection-a" in paths
+
+
+def test_overseer_persists_reserved_revisions_across_restart() -> None:
+  persistence = MemoryOverseerPersistence()
+  discovery = NetworkDiscovery(
+    (
+      DiscoveredInstance(
+        id="service-1",
+        base_url="http://service.internal",
+        role="service",
+        schema=SERVICE_SCHEMA,
+      ),
+    )
+  )
+
+  async def exercise() -> tuple[int, int]:
+    first = Overseer(
+      discovery,
+      persistence=persistence,
+      transport=httpx2.MockTransport(lambda request: httpx2.Response(503)),
+    )
+    with pytest.raises(TopologyPushError):
+      await first.reconcile()
+    await first.aclose()
+    second = Overseer(
+      discovery,
+      persistence=persistence,
+      transport=httpx2.MockTransport(lambda request: httpx2.Response(204)),
+    )
+    revision = await second.reconcile()
+    next_revision = (
+      second.last_reconciliation.revision if second.last_reconciliation else -1
+    )
+    await second.aclose()
+    return revision, next_revision
+
+  assert asyncio.run(exercise()) == (1, 1)
+
+
+def test_overseer_records_partial_distribution_failures() -> None:
+  discovery = NetworkDiscovery(
+    (
+      DiscoveredInstance(
+        id="good",
+        base_url="http://good.internal",
+        role="service",
+        schema=SERVICE_SCHEMA,
+      ),
+      DiscoveredInstance(
+        id="bad",
+        base_url="http://bad.internal",
+        role="service",
+        schema=SERVICE_SCHEMA,
+      ),
+    )
+  )
+
+  def respond(request: httpx2.Request) -> httpx2.Response:
+    return httpx2.Response(503 if request.url.host == "bad.internal" else 204)
+
+  async def exercise() -> Overseer:
+    overseer = Overseer(discovery, transport=httpx2.MockTransport(respond))
+    with pytest.raises(TopologyPushError):
+      await overseer.reconcile()
+    await overseer.aclose()
+    return overseer
+
+  overseer = asyncio.run(exercise())
+  assert overseer.distributed_revisions == {"good": 0}
+  assert overseer.last_reconciliation is not None
+  assert overseer.last_reconciliation.failures[0][0] == "bad"

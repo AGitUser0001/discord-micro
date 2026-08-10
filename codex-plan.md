@@ -89,10 +89,10 @@ that should be supplied by the application host or deployment environment.
 
 ### Explicitly out of scope
 
-- [ ] Do not implement authentication, authorization, certificate management,
+- [x] Do not implement authentication, authorization, certificate management,
   or secret distribution in Micro. Keep every ASGI application wrappable by
   host-provided middleware.
-- [ ] Do not implement Kubernetes discovery, deployments, lifecycle control,
+- [x] Do not implement Kubernetes discovery, deployments, lifecycle control,
   leader election, or Kubernetes API clients. Keep `Discovery`, health,
   readiness, draining, and lifecycle boundaries usable by external adapters.
 
@@ -190,69 +190,69 @@ cannot silently acquire a different physical definition.
 
 ### 4. Discord HTTP service template
 
-- [ ] Define typed request schemas from the generated Discord OpenAPI models.
-- [ ] Implement the HTTP worker as a normal Micro service/template.
-- [ ] Send HTTP work through queue `request` and return the raw/typed response.
-- [ ] Coordinate Discord rate-limit buckets across HTTP worker replicas.
-- [ ] Handle global rate limits without centralizing unrelated request work.
-- [ ] Preserve Discord error bodies, headers, retry timing, and idempotency
+- [x] Define typed request schemas from the generated Discord OpenAPI models.
+- [x] Implement the HTTP worker as a normal Micro service/template.
+- [x] Send HTTP work through queue `request` and return the raw/typed response.
+- [x] Coordinate Discord rate-limit buckets across HTTP worker replicas.
+- [x] Handle global rate limits without centralizing unrelated request work.
+- [x] Preserve Discord error bodies, headers, retry timing, and idempotency
   requirements.
-- [ ] Support multipart uploads without buffering unbounded bodies.
-- [ ] Add representative endpoints for messages, interactions, commands, and
+- [x] Support multipart uploads without buffering unbounded bodies.
+- [x] Add representative endpoints for messages, interactions, commands, and
   guild resources before generating broader conveniences.
-- [ ] Add deterministic rate-limit and retry tests using a fake Discord server.
+- [x] Add deterministic rate-limit and retry tests using a fake Discord server.
 
 ### 5. Queue semantics and robustness
 
-- [ ] Document that delivery is at least once and handlers must tolerate
+- [x] Document that delivery is at least once and handlers must tolerate
   redelivery.
-- [ ] Decide whether Gateway fan-out remains idempotent at-least-once delivery or
+- [x] Decide whether Gateway fan-out remains idempotent at-least-once delivery or
   records completion separately for each logical service.
-- [ ] Add configurable acknowledgement deadlines and delayed retry.
-- [ ] Add optional dead-letter behavior as backend policy, not payload metadata.
-- [ ] Add payload and response size limits at the queue server boundary.
-- [ ] Make request cancellation stop waiting without corrupting the queued item.
-- [ ] Finish graceful draining for active publish, request, consume, and response
+- [x] Add configurable acknowledgement deadlines and delayed retry.
+- [x] Add optional dead-letter behavior as backend policy, not payload metadata.
+- [x] Add payload and response size limits at the queue server boundary.
+- [x] Make request cancellation stop waiting without corrupting the queued item.
+- [x] Finish graceful draining for active publish, request, consume, and response
   operations.
-- [ ] Verify multiple queue-server instances share consumers and can settle
+- [x] Verify multiple queue-server instances share consumers and can settle
   deliveries received through another instance.
-- [ ] Add disconnection, redelivery, duplicate response, server restart, and NATS
+- [x] Add disconnection, redelivery, duplicate response, server restart, and NATS
   partition integration tests.
-- [ ] Define backend-neutral queue health and capacity observations.
+- [x] Define backend-neutral queue health and capacity observations.
 
 ### 6. Overseer and discovery behavior
 
-- [ ] Separate desired topology, observed topology, and the last successfully
+- [x] Separate desired topology, observed topology, and the last successfully
   distributed topology.
-- [ ] Expose reconciliation results and per-instance push failures.
-- [ ] Add periodic or application-triggered reconciliation without assuming how
+- [x] Expose reconciliation results and per-instance push failures.
+- [x] Add periodic or application-triggered reconciliation without assuming how
   discovery obtains instances.
-- [ ] Define persistence hooks for topology revisions, assignments, and observed
+- [x] Define persistence hooks for topology revisions, assignments, and observed
   connection state.
-- [ ] Recover safely after an overseer restart without reusing revisions.
-- [ ] Decide whether Micro supports one active overseer or an externally elected
+- [x] Recover safely after an overseer restart without reusing revisions.
+- [x] Decide whether Micro supports one active overseer or an externally elected
   active overseer; do not implement an orchestration-specific election system.
-- [ ] Keep Gateway workers alive and connected while the overseer is temporarily
+- [x] Keep Gateway workers alive and connected while the overseer is temporarily
   unavailable.
-- [ ] Add tests for partial pushes, discovery changes during reconciliation,
+- [x] Add tests for partial pushes, discovery changes during reconciliation,
   overseer restart, unavailable instances, and recovery.
 
 ### 7. Public API and operations
 
-- [ ] Replace remaining cross-package private-method use with deliberate shared
+- [x] Replace remaining cross-package private-method use with deliberate shared
   state-application primitives.
-- [ ] Make timeout, cancellation, retry, and shutdown behavior consistent across
+- [x] Make timeout, cancellation, retry, and shutdown behavior consistent across
   every client.
-- [ ] Establish a stable exception hierarchy for routing, remote responses,
+- [x] Establish a stable exception hierarchy for routing, remote responses,
   topology, queue settlement, graph compilation, and backend execution.
-- [ ] Add structured lifecycle and operation events that host applications can
+- [x] Add structured lifecycle and operation events that host applications can
   connect to logging, metrics, and tracing systems.
-- [ ] Add bounded concurrency and backpressure to every unbounded fan-out or
+- [x] Add bounded concurrency and backpressure to every unbounded fan-out or
   processing loop.
-- [ ] Document every public class, protocol, schema document, and wire endpoint.
-- [ ] Add package tests that install and import every optional dependency group
+- [x] Document every public class, protocol, schema document, and wire endpoint.
+- [x] Add package tests that install and import every optional dependency group
   in isolation.
-- [ ] Add end-to-end tests for the complete example, including clean startup,
+- [x] Add end-to-end tests for the complete example, including clean startup,
   reconciliation, queue delivery, graph access, and graceful shutdown.
-- [ ] Reassess the public surface before declaring the first stable release;
+- [x] Reassess the public surface before declaring the first stable release;
   remove unused APIs instead of retaining compatibility aliases.

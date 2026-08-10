@@ -6,7 +6,7 @@ from pydantic_core import from_json, to_json
 
 from micro._microservices import Microservice
 from micro.queue import QueueClient
-from micro.service._client import ServiceClient
+from micro.service import ServiceClient
 
 
 class GatewayEventService(Microservice):
@@ -22,21 +22,21 @@ class GatewayEventService(Microservice):
     self.queue = QueueClient(transport=transport, timeout=timeout)
     self._topology_ready = asyncio.Event()
     self._consumer: asyncio.Task[None] | None = None
-    super().__init__("gateway.event_service", state_receiver=self)
+    super().__init__("gateway.event_service")
 
   @property
   def component_ready(self) -> bool:
     return self.client.state_revision >= 0 and self.queue.state_revision >= 0
 
   def apply_state(self, state: JsonValue) -> None:
-    service_snapshot = self.client._state_snapshot()
-    queue_snapshot = self.queue._state_snapshot()
+    service_snapshot = self.client.state_snapshot()
+    queue_snapshot = self.queue.state_snapshot()
     try:
       self.client.apply_state(state)
       self.queue.apply_state(state)
     except Exception:
-      self.client._restore_state(service_snapshot)
-      self.queue._restore_state(queue_snapshot)
+      self.client.restore_state(service_snapshot)
+      self.queue.restore_state(queue_snapshot)
       raise
     self._topology_ready.set()
 

@@ -5,13 +5,11 @@ from typing import Any
 import httpx2
 
 from micro._microservices import (
+  Instance,
   InvalidMicroserviceSchemaError,
   MicroserviceClient,
-  NoCompatibleInstanceError,
-)
-from micro._microservices._client import (
-  Instance,
   MicroserviceSchema,
+  NoCompatibleInstanceError,
 )
 
 from ._event import EventSchema
@@ -28,7 +26,11 @@ class ServiceClient(MicroserviceClient):
     *,
     transport: httpx2.AsyncBaseTransport | None = None,
     timeout: float = 5.0,
+    max_concurrency: int = 100,
   ) -> None:
+    if max_concurrency <= 0:
+      raise ValueError("max_concurrency must be positive.")
+    self._concurrency = asyncio.Semaphore(max_concurrency)
     super().__init__(
       (
         (instance_id, base_url, schema)
@@ -67,9 +69,12 @@ class ServiceClient(MicroserviceClient):
     for service in candidates:
       key = f"event-route:{event_id}:{service}"
       self._positions[key] = self._positions.get(key, 0) + 1
-    await asyncio.gather(
-      *(self.post(instance, path, payload) for instance, path in selected)
-    )
+
+    async def deliver(instance: Instance, path: str) -> None:
+      async with self._concurrency:
+        await self.post(instance, path, payload)
+
+    await asyncio.gather(*(deliver(instance, path) for instance, path in selected))
     return len(selected)
 
   def validate_schema(self, schema: MicroserviceSchema) -> dict[str, Any]:

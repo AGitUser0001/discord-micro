@@ -5,10 +5,11 @@ from typing import Any
 import nats
 from nats.aio.client import Client
 from nats.errors import TimeoutError
+from nats.js.api import ConsumerConfig
 from nats.js.client import JetStreamContext
 from nats.js.errors import BadRequestError, NotFoundError
 
-from micro.queue import QueueBackendDelivery
+from micro.queue import QueueBackendDelivery, QueueObservation
 
 _REPLY_HEADER = "Micro-Reply"
 
@@ -22,10 +23,16 @@ class JetStreamBackend:
     *,
     stream: str = "MICRO_QUEUE",
     subject_prefix: str = "micro.queue",
+    acknowledgement_deadline: float = 30.0,
+    max_deliveries: int = 10,
   ) -> None:
+    if acknowledgement_deadline <= 0 or max_deliveries <= 0:
+      raise ValueError("JetStream delivery limits must be positive.")
     self._servers = tuple(servers)
     self._stream = stream
     self._subject_prefix = subject_prefix
+    self._acknowledgement_deadline = acknowledgement_deadline
+    self._max_deliveries = max_deliveries
     self._connection: Client | None = None
     self._jetstream: JetStreamContext | None = None
     self._subscriptions: dict[tuple[str, str], Any] = {}
@@ -106,6 +113,11 @@ class JetStreamBackend:
             f"{self._subject_prefix}.{channel}",
             durable=consumer,
             stream=self._stream,
+            config=ConsumerConfig(
+              durable_name=consumer,
+              ack_wait=self._acknowledgement_deadline,
+              max_deliver=self._max_deliveries,
+            ),
           )
           self._subscriptions[key] = subscription
     try:
@@ -122,8 +134,16 @@ class JetStreamBackend:
   async def acknowledge(self, receipt: str) -> None:
     await self._settle(receipt)
 
-  async def retry(self, receipt: str) -> None:
-    await self._settle(receipt, b"-NAK")
+  async def retry(self, receipt: str, *, delay: float = 0) -> None:
+    payload = (
+      b"-NAK"
+      if delay == 0
+      else f'-NAK {{"delay":{int(delay * 1_000_000_000)}}}'.encode()
+    )
+    await self._settle(receipt, payload)
+
+  async def dead_letter(self, receipt: str) -> None:
+    await self._settle(receipt, b"+TERM")
 
   async def respond(self, receipt: str, reply: str, payload: bytes) -> None:
     if self._connection is None:
@@ -145,6 +165,16 @@ class JetStreamBackend:
     self._connection = None
     self._jetstream = None
     self._subscriptions.clear()
+
+  async def observe(self) -> QueueObservation:
+    if self._jetstream is None:
+      return QueueObservation(False)
+    info = await self._jetstream.stream_info(self._stream)
+    return QueueObservation(
+      True,
+      pending=info.state.messages,
+      consumers=info.state.consumer_count,
+    )
 
 
 __all__ = ("JetStreamBackend",)

@@ -42,7 +42,7 @@ class GatewayProjection(Microservice):
     self._topology_ready = asyncio.Event()
     self._tasks: list[asyncio.Task[None]] = []
     self._pending: asyncio.Queue[QueueDelivery] = asyncio.Queue(batch_size * 2)
-    super().__init__("gateway.projection", state_receiver=self)
+    super().__init__("gateway.projection")
     self.add_route(
       "/projection/connections/{connection_id}",
       self._delete_connection,
@@ -55,14 +55,14 @@ class GatewayProjection(Microservice):
     return self.store.state_revision >= 0 and self.queue.state_revision >= 0
 
   def apply_state(self, state: JsonValue) -> None:
-    store_snapshot = self.store._state_snapshot()
-    queue_snapshot = self.queue._state_snapshot()
+    store_snapshot = self.store.state_snapshot()
+    queue_snapshot = self.queue.state_snapshot()
     try:
       self.store.apply_state(state)
       self.queue.apply_state(state)
     except Exception:
-      self.store._restore_state(store_snapshot)
-      self.queue._restore_state(queue_snapshot)
+      self.store.restore_state(store_snapshot)
+      self.queue.restore_state(queue_snapshot)
       raise
     self._topology_ready.set()
 

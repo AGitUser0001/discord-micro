@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 
-from micro._microservices import Microservice
+from micro._microservices import BackendExecutionError, Microservice
 
 from ._module import GraphModule
 from .composer import DirectiveMetadata, TypeDirectiveMetadata
@@ -106,7 +106,7 @@ class GraphLayout:
   entities: tuple[GraphEntityLayout, ...]
 
 
-class GraphBackendError(GraphQLError):
+class GraphBackendError(GraphQLError, BackendExecutionError):
   """A stable, backend-neutral failure returned by a graph executor."""
 
   def __init__(

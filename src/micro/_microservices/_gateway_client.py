@@ -25,7 +25,7 @@ class GatewayClient(MicroserviceClient):
     super().__init__(transport=transport, timeout=timeout)
 
   def apply_state(self, state: JsonValue) -> None:
-    self._apply_state_collection(state, "gateways", self._gateway_registration)
+    self.apply_state_collection(state, "gateways", self._gateway_registration)
 
   def _gateway_registration(self, gateway: dict[str, JsonValue]) -> Instance:
     instance_id = gateway.get("id")

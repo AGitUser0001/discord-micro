@@ -3,8 +3,12 @@ from collections.abc import Buffer
 import httpx2
 from pydantic import JsonValue
 
-from micro._microservices import MicroserviceClient, RemoteMicroserviceError
-from micro._microservices._client import Instance
+from micro._microservices import (
+  Instance,
+  MicroserviceClient,
+  QueueSettlementError,
+  RemoteMicroserviceError,
+)
 
 from ._queue import validate_channel
 
@@ -21,7 +25,7 @@ class QueueClient(MicroserviceClient):
     super().__init__(transport=transport, timeout=timeout)
 
   def apply_state(self, state: JsonValue) -> None:
-    self._apply_state_collection(state, "queues", self._queue_registration)
+    self.apply_state_collection(state, "queues", self._queue_registration)
 
   def _queue_registration(self, queue: dict[str, JsonValue]) -> Instance:
     instance_id = queue.get("id")
@@ -84,7 +88,7 @@ class QueueClient(MicroserviceClient):
         continue
       receipt = response.headers.get("micro-receipt")
       if receipt is None:
-        raise ValueError("Queue delivery omitted its receipt capability.")
+        raise QueueSettlementError("Queue delivery omitted its receipt capability.")
       return QueueDelivery(
         self,
         instance,
@@ -93,7 +97,7 @@ class QueueClient(MicroserviceClient):
         response.headers.get("micro-reply"),
       )
 
-  async def _settle(
+  async def settle_delivery(
     self,
     instance: Instance,
     action: str,
@@ -134,12 +138,19 @@ class QueueDelivery:
   async def acknowledge(self) -> None:
     await self._finish("acknowledge")
 
-  async def retry(self) -> None:
-    await self._finish("retry")
+  async def retry(self, *, delay: float = 0) -> None:
+    if not 0 <= delay <= 86400:
+      raise ValueError("Retry delay must be 0 through 86400 seconds.")
+    await self._finish("retry", query=f"?delay={delay}")
+
+  async def dead_letter(self) -> None:
+    await self._finish("dead_letter")
 
   async def respond(self, payload: Buffer) -> None:
     if self._reply is None:
-      raise RuntimeError("This queue delivery did not originate from request().")
+      raise QueueSettlementError(
+        "This queue delivery did not originate from request()."
+      )
     await self._finish("respond", self._reply, bytes(payload))
 
   async def _finish(
@@ -147,12 +158,13 @@ class QueueDelivery:
     action: str,
     reply: str | None = None,
     payload: bytes = b"",
+    query: str = "",
   ) -> None:
     if self._settled:
-      raise RuntimeError("Queue delivery has already been settled.")
-    await self._client._settle(
+      raise QueueSettlementError("Queue delivery has already been settled.")
+    await self._client.settle_delivery(
       self._instance,
-      action,
+      f"{action}{query}",
       self._receipt,
       reply,
       payload,

@@ -1,5 +1,6 @@
-from micro._microservices import DuplicateEndpointError, StateReceiver
+from micro._microservices import DuplicateEndpointError
 
+from ._client import ServiceClient
 from ._event import EventSchema
 from ._request import RequestSchema
 from ._service import (
@@ -19,5 +20,5 @@ __all__ = (
   "RequestHandler",
   "RequestSchema",
   "Service",
-  "StateReceiver",
+  "ServiceClient",
 )

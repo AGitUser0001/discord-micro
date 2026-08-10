@@ -1,5 +1,9 @@
 # Micro
 
+Operational behavior and every internal wire endpoint are documented in
+[docs/operations.md](docs/operations.md). The complete runnable deployment is
+in [examples/application](examples/application/README.md).
+
 Micro is an extensible library for building applications from independently
 replaceable microservices. Its first major use case is a distributed Discord
 bot platform.

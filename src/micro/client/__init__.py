@@ -4,7 +4,7 @@ from micro._microservices import (
   RemoteMicroserviceError,
   StaleStateError,
 )
-from micro.service._client import (
+from micro.service import (
   ServiceClient,
 )
 

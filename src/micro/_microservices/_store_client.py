@@ -20,7 +20,7 @@ class StoreClient(MicroserviceClient):
     super().__init__(transport=transport, timeout=timeout)
 
   def apply_state(self, state: JsonValue) -> None:
-    self._apply_state_collection(state, "stores", self._store_registration)
+    self.apply_state_collection(state, "stores", self._store_registration)
 
   def _store_registration(self, store: dict[str, JsonValue]) -> Instance:
     instance_id = store.get("id")

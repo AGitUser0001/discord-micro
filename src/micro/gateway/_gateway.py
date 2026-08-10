@@ -11,9 +11,9 @@ from pydantic_core import to_json
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from micro._microservices import Microservice
-from micro._microservices._gateway_control import (
+from micro._microservices import (
   GuildMembersRequest,
+  Microservice,
   PresenceUpdate,
   VoiceStateUpdate,
 )
@@ -93,7 +93,7 @@ class Gateway(Microservice):
     if not token:
       raise ValueError("token cannot be empty.")
     self.queue = QueueClient()
-    super().__init__("gateway", state_receiver=self)
+    super().__init__("gateway")
     self._intents = intents
     self._shard_ids, self._shard_count = _validate_shards(shard_ids, shard_count)
     self._uses_queue_dispatch = dispatch is None
