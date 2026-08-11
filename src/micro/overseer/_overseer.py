@@ -1,7 +1,8 @@
 import asyncio
 import hashlib
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from typing import Any, Literal, Protocol, Self
 from urllib.parse import urlsplit
 
@@ -22,7 +23,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
-from micro._microservices import TopologyError
+from micro._microservices import TopologyError, request_content_type
 from micro.gateway import (
   ConnectionEvent,
   ConnectionEventKind,
@@ -137,7 +138,6 @@ class NetworkDiscovery:
     self._instances = {instance.id: instance for instance in instances}
     if len(self._instances) != len(instances):
       raise ValueError("Discovery instance IDs must be unique.")
-    self._adapter = TypeAdapter(DiscoveredInstance)
     self._app = Starlette(
       routes=[
         Route("/instances", self._list, methods=["GET"]),
@@ -167,15 +167,12 @@ class NetworkDiscovery:
     )
 
   async def _upsert(self, request: Request) -> Response:
-    if (
-      request.headers.get("content-type", "").partition(";")[0].strip()
-      != "application/json"
-    ):
+    if request_content_type(request) != "application/json":
       return JSONResponse(
         {"detail": "Discovery requires application/json."}, status_code=415
       )
     try:
-      instance = self._adapter.validate_json(await request.body())
+      instance = DiscoveredInstance.model_validate_json(await request.body())
     except ValueError as exc:
       return JSONResponse(
         {"detail": "Invalid discovery instance.", "message": str(exc)},
@@ -243,18 +240,16 @@ class Overseer:
     self._type_directives = tuple(type_directives)
     self._http = httpx2.AsyncClient(transport=transport, timeout=timeout)
     self._app = Starlette(
+      lifespan=self._lifespan,
       routes=[
         Route("/health/live", self._live, methods=["GET"]),
         Route("/topology", self._topology, methods=["GET"]),
         Route("/refresh", self._refresh, methods=["POST"]),
-      ]
+      ],
     )
 
   async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-    if scope["type"] != "lifespan":
-      await self._app(scope, receive, send)
-      return
-    await self._lifespan(receive, send)
+    await self._app(scope, receive, send)
 
   async def reconcile(self) -> int:
     async with self._reconcile_lock:
@@ -641,17 +636,14 @@ class Overseer:
       )
     return JSONResponse({"revision": revision})
 
-  async def _lifespan(self, receive: Receive, send: Send) -> None:
-    while True:
-      message = await receive()
-      if message["type"] == "lifespan.startup":
-        await self._restore()
-        if self._reconcile_interval is not None:
-          self._reconciler = asyncio.create_task(
-            self._periodic_reconcile(), name="micro.overseer.reconcile"
-          )
-        await send({"type": "lifespan.startup.complete"})
-      elif message["type"] == "lifespan.shutdown":
-        await self.aclose()
-        await send({"type": "lifespan.shutdown.complete"})
-        return
+  @asynccontextmanager
+  async def _lifespan(self, app: Starlette) -> AsyncIterator[None]:
+    await self._restore()
+    if self._reconcile_interval is not None:
+      self._reconciler = asyncio.create_task(
+        self._periodic_reconcile(), name="micro.overseer.reconcile"
+      )
+    try:
+      yield
+    finally:
+      await self.aclose()

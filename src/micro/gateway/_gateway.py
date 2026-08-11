@@ -16,6 +16,7 @@ from micro._microservices import (
   Microservice,
   PresenceUpdate,
   VoiceStateUpdate,
+  request_content_type,
 )
 from micro.queue import QueueClient
 
@@ -411,9 +412,7 @@ async def _control_request[ModelT: BaseModel](
   request: Request,
   model: type[ModelT],
 ) -> ModelT | Response:
-  if request.headers.get("content-type", "").partition(";")[0].strip() != (
-    "application/json"
-  ):
+  if request_content_type(request) != "application/json":
     return JSONResponse(
       {"detail": "Gateway control requests require application/json."},
       status_code=415,

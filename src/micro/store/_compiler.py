@@ -3,31 +3,24 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 from graphql import (
   FieldNode,
   FragmentDefinitionNode,
-  FragmentSpreadNode,
-  GraphQLCompositeType,
   GraphQLError,
   GraphQLField,
-  GraphQLIncludeDirective,
   GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
   GraphQLSchema,
-  GraphQLSkipDirective,
   GraphQLType,
-  InlineFragmentNode,
   SelectionSetNode,
-  do_types_overlap,
   get_argument_values,
-  get_directive_values,
   get_named_type,
-  is_composite_type,
   is_leaf_type,
 )
+from graphql.execution.collect_fields import collect_fields
 from pydantic import JsonValue
 
 from ._store import (
@@ -402,87 +395,34 @@ def _collect_fields(
   selection_set: SelectionSetNode,
   fragments: Mapping[str, FragmentDefinitionNode],
   variables: Mapping[str, Any],
-  visited: frozenset[str] = frozenset(),
 ) -> tuple[FieldNode, ...]:
-  fields: dict[str, FieldNode] = {}
-
-  def add(field: FieldNode) -> None:
-    response_name = field.alias.value if field.alias else field.name.value
-    previous = fields.get(response_name)
-    if previous is None:
-      fields[response_name] = field
-      return
-    selections = (
-      *((previous.selection_set.selections) if previous.selection_set else ()),
-      *((field.selection_set.selections) if field.selection_set else ()),
-    )
-    fields[response_name] = FieldNode(
-      alias=previous.alias,
-      name=previous.name,
-      arguments=previous.arguments,
-      directives=previous.directives,
-      selection_set=SelectionSetNode(selections=selections) if selections else None,
-    )
-
-  for selection in selection_set.selections:
-    if not _included(selection, variables):
-      continue
-    if isinstance(selection, FieldNode):
-      add(selection)
-      continue
-    if isinstance(selection, FragmentSpreadNode):
-      name = selection.name.value
-      if name in visited:
-        continue
-      fragment = fragments[name]
-      condition = schema.get_type(fragment.type_condition.name.value)
-      if (
-        condition is None
-        or not is_composite_type(condition)
-        or not do_types_overlap(
-          schema, object_type, cast(GraphQLCompositeType, condition)
-        )
-      ):
-        continue
-      for field in _collect_fields(
-        schema,
-        object_type,
-        fragment.selection_set,
-        fragments,
-        variables,
-        visited | {name},
-      ):
-        add(field)
-      continue
-    if isinstance(selection, InlineFragmentNode):
-      if selection.type_condition is not None:
-        condition = schema.get_type(selection.type_condition.name.value)
-        if (
-          condition is None
-          or not is_composite_type(condition)
-          or not do_types_overlap(
-            schema, object_type, cast(GraphQLCompositeType, condition)
-          )
-        ):
-          continue
-      for field in _collect_fields(
-        schema,
-        object_type,
-        selection.selection_set,
-        fragments,
-        variables,
-        visited,
-      ):
-        add(field)
-  return tuple(fields.values())
+  groups = collect_fields(
+    schema,
+    dict(fragments),
+    dict(variables),
+    object_type,
+    selection_set,
+  )
+  return tuple(_merge_fields(fields) for fields in groups.values())
 
 
-def _included(node: Any, variables: Mapping[str, Any]) -> bool:
-  skipped = get_directive_values(GraphQLSkipDirective, node, dict(variables))
-  if skipped is not None and skipped["if"]:
-    return False
-  included = get_directive_values(GraphQLIncludeDirective, node, dict(variables))
-  return included is None or bool(included["if"])
+def _merge_fields(fields: Sequence[FieldNode]) -> FieldNode:
+  first = fields[0]
+  selections = tuple(
+    selection
+    for field in fields
+    if field.selection_set is not None
+    for selection in field.selection_set.selections
+  )
+  if len(fields) == 1 or not selections:
+    return first
+  return FieldNode(
+    alias=first.alias,
+    name=first.name,
+    arguments=first.arguments,
+    directives=first.directives,
+    selection_set=SelectionSetNode(selections=selections),
+  )
 
 
 def _return_columns(returns: Sequence[str]) -> Sequence[str]:

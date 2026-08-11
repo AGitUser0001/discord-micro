@@ -20,6 +20,10 @@ _STANDARD_PATHS = frozenset(
 )
 
 
+def request_content_type(request: Request) -> str:
+  return request.headers.get("content-type", "").partition(";")[0].strip()
+
+
 class DuplicateEndpointError(ValueError):
   pass
 
@@ -64,13 +68,14 @@ class Microservice:
     self._observers: list[EventObserver] = []
     self._operation_observers: list[OperationObserver] = []
     self._app = Starlette(
+      lifespan=self._lifespan,
       routes=[
         Route("/health/live", self._live_endpoint, methods=["GET"]),
         Route("/health/ready", self._ready_endpoint, methods=["GET"]),
         Route("/health/drained", self._drained_endpoint, methods=["GET"]),
         Route("/schema", self._schema_endpoint, methods=["GET"]),
         Route("/state", self._state_endpoint, methods=["POST"]),
-      ]
+      ],
     )
 
   def add_route(
@@ -165,10 +170,7 @@ class Microservice:
 
   async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
     self._sealed = True
-    if scope["type"] != "lifespan":
-      await self._app(scope, receive, send)
-      return
-    await self._lifespan(receive, send)
+    await self._app(scope, receive, send)
 
   def unavailable_response(self) -> Response:
     return JSONResponse({"detail": "Microservice is not ready."}, status_code=503)
@@ -193,8 +195,7 @@ class Microservice:
         {"detail": "This microservice does not consume overseer state."},
         status_code=503,
       )
-    content_type = request.headers.get("content-type", "").partition(";")[0].strip()
-    if content_type != "application/json":
+    if request_content_type(request) != "application/json":
       return JSONResponse(
         {"detail": "Overseer state requires application/json."}, status_code=415
       )
@@ -212,32 +213,27 @@ class Microservice:
       )
     return Response(status_code=204)
 
-  async def _lifespan(self, receive: Receive, send: Send) -> None:
-    while True:
-      message = await receive()
-      if message["type"] == "lifespan.startup":
-        await self._emit("starting")
-        try:
-          await self.start()
-        except BaseException as exc:
-          await self._emit("start_failed", error=str(exc))
-          await send({"type": "lifespan.startup.failed", "message": str(exc)})
-          return
-        self._running = True
-        await self._emit("started")
-        await send({"type": "lifespan.startup.complete"})
-      elif message["type"] == "lifespan.shutdown":
-        self._running = False
-        await self._emit("stopping")
-        try:
-          await self.close()
-        except BaseException as exc:
-          await self._emit("stop_failed", error=str(exc))
-          await send({"type": "lifespan.shutdown.failed", "message": str(exc)})
-          return
-        await self._emit("stopped")
-        await send({"type": "lifespan.shutdown.complete"})
-        return
+  @asynccontextmanager
+  async def _lifespan(self, app: Starlette) -> AsyncIterator[None]:
+    await self._emit("starting")
+    try:
+      await self.start()
+    except BaseException as exc:
+      await self._emit("start_failed", error=str(exc))
+      raise
+    self._running = True
+    await self._emit("started")
+    try:
+      yield
+    finally:
+      self._running = False
+      await self._emit("stopping")
+      try:
+        await self.close()
+      except BaseException as exc:
+        await self._emit("stop_failed", error=str(exc))
+        raise
+      await self._emit("stopped")
 
   async def _emit(self, event: str, **attributes: Any) -> None:
     item = LifecycleEvent(self.kind, event, attributes)

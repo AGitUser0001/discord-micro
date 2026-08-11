@@ -1,5 +1,5 @@
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from re import fullmatch
 from typing import Any
 
@@ -11,6 +11,8 @@ from micro._microservices import (
   GatewayClient,
   Microservice,
   StoreClient,
+  apply_state_atomically,
+  request_content_type,
 )
 from micro.queue import QueueClient
 
@@ -62,15 +64,7 @@ class Service(Microservice):
     await self.queue.aclose()
 
   def apply_state(self, state: JsonValue) -> None:
-    receivers = (self.client, self.store, self.gateway, self.queue)
-    snapshots = {receiver: receiver.state_snapshot() for receiver in receivers}
-    try:
-      for receiver in receivers:
-        receiver.apply_state(state)
-    except Exception:
-      for receiver, snapshot in snapshots.items():
-        receiver.restore_state(snapshot)
-      raise
+    apply_state_atomically((self.client, self.store, self.gateway, self.queue), state)
 
   def listen[T](
     self,
@@ -125,22 +119,8 @@ class Service(Microservice):
   def schema_document(self, root_path: str) -> dict[str, JsonValue]:
     document = super().schema_document(root_path)
     document["service"] = self.name
-    events: list[JsonValue] = []
-    for event, handler in self._events.values():
-      operation = event.document()
-      operation["path"] = f"{root_path}{event.endpoint}"
-      operation["handler"] = f"{handler.__module__}:{handler.__qualname__}"
-      events.append(operation)
-    events.sort(key=lambda value: str(value["id"]) if isinstance(value, dict) else "")
-    requests: list[JsonValue] = []
-    for request, handler in self._requests.values():
-      operation = request.document()
-      operation["path"] = f"{root_path}{request.endpoint}"
-      operation["handler"] = f"{handler.__module__}:{handler.__qualname__}"
-      requests.append(operation)
-    requests.sort(key=lambda value: str(value["id"]) if isinstance(value, dict) else "")
-    document["events"] = events
-    document["requests"] = requests
+    document["events"] = _operation_documents(self._events.values(), root_path)
+    document["requests"] = _operation_documents(self._requests.values(), root_path)
     return document
 
   def _event_endpoint[T](
@@ -151,7 +131,7 @@ class Service(Microservice):
     async def endpoint(request: Request) -> Response:
       if not self.accepting:
         return JSONResponse({"detail": "Service is draining."}, status_code=503)
-      if _content_type(request) != "application/json":
+      if request_content_type(request) != "application/json":
         return JSONResponse(
           {"detail": "Event requests require application/json."}, status_code=415
         )
@@ -177,7 +157,7 @@ class Service(Microservice):
     async def endpoint(request: Request) -> Response:
       if not self.accepting:
         return JSONResponse({"detail": "Service is draining."}, status_code=503)
-      if _content_type(request) != "application/json":
+      if request_content_type(request) != "application/json":
         return JSONResponse(
           {"detail": "Requests require application/json."}, status_code=415
         )
@@ -202,8 +182,19 @@ class Service(Microservice):
     return endpoint
 
 
-def _content_type(request: Request) -> str:
-  return request.headers.get("content-type", "").partition(";")[0].strip()
+def _operation_documents(
+  declarations: Iterable[tuple[Any, Callable[..., Any]]], root_path: str
+) -> list[JsonValue]:
+  operations: list[JsonValue] = []
+  for schema, handler in declarations:
+    operation = schema.document()
+    operation["path"] = f"{root_path}{schema.endpoint}"
+    operation["handler"] = f"{handler.__module__}:{handler.__qualname__}"
+    operations.append(operation)
+  return sorted(
+    operations,
+    key=lambda operation: str(operation["id"]) if isinstance(operation, dict) else "",
+  )
 
 
 def _validation_error(exc: ValidationError, subject: str) -> JSONResponse:

@@ -3,6 +3,7 @@ from base64 import b64decode, urlsafe_b64encode
 from binascii import Error
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 from re import fullmatch
 from typing import Protocol
 
@@ -90,7 +91,14 @@ class Queue(Microservice):
       methods=("POST",),
       name="queue:consume",
     )
-    for action in ("acknowledge", "retry", "respond", "dead_letter"):
+    for action in ("acknowledge", "dead_letter"):
+      self.add_route(
+        f"/deliveries/{action}",
+        partial(self._settle, action=action),
+        methods=("POST",),
+        name=f"queue:{action}",
+      )
+    for action in ("retry", "respond"):
       self.add_route(
         f"/deliveries/{action}",
         getattr(self, f"_{action}"),
@@ -171,13 +179,14 @@ class Queue(Microservice):
       headers=headers,
     )
 
-  async def _acknowledge(self, request: Request) -> Response:
+  async def _settle(self, request: Request, *, action: str) -> Response:
     try:
       receipt = _capability(request, "micro-receipt")
     except ValueError as exc:
       return JSONResponse({"detail": str(exc)}, status_code=422)
-    async with self._operation("acknowledge"):
-      await self.backend.acknowledge(receipt)
+    settle = getattr(self.backend, action)
+    async with self._operation(action):
+      await settle(receipt)
     return Response(status_code=204)
 
   async def _retry(self, request: Request) -> Response:
@@ -208,15 +217,6 @@ class Queue(Microservice):
       return JSONResponse({"detail": "Queue response is too large."}, status_code=413)
     async with self._operation("respond"):
       await self.backend.respond(receipt, reply, payload)
-    return Response(status_code=204)
-
-  async def _dead_letter(self, request: Request) -> Response:
-    try:
-      receipt = _capability(request, "micro-receipt")
-    except ValueError as exc:
-      return JSONResponse({"detail": str(exc)}, status_code=422)
-    async with self._operation("dead_letter"):
-      await self.backend.dead_letter(receipt)
     return Response(status_code=204)
 
   async def _observations(self, request: Request) -> Response:

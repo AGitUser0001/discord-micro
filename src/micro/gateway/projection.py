@@ -9,7 +9,7 @@ from pydantic_core import from_json
 from starlette.requests import Request
 from starlette.responses import Response
 
-from micro._microservices import Microservice, StoreClient
+from micro._microservices import Microservice, StoreClient, apply_state_atomically
 from micro.queue import QueueClient, QueueDelivery
 
 from ._gateway import ConnectionEventKind
@@ -55,15 +55,7 @@ class GatewayProjection(Microservice):
     return self.store.state_revision >= 0 and self.queue.state_revision >= 0
 
   def apply_state(self, state: JsonValue) -> None:
-    store_snapshot = self.store.state_snapshot()
-    queue_snapshot = self.queue.state_snapshot()
-    try:
-      self.store.apply_state(state)
-      self.queue.apply_state(state)
-    except Exception:
-      self.store.restore_state(store_snapshot)
-      self.queue.restore_state(queue_snapshot)
-      raise
+    apply_state_atomically((self.store, self.queue), state)
     self._topology_ready.set()
 
   async def start(self) -> None:

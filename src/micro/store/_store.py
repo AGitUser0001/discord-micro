@@ -1,6 +1,5 @@
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from json import JSONDecodeError
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
@@ -20,11 +19,15 @@ from graphql import (
 )
 from graphql.error import GraphQLSyntaxError
 from graphql.execution.values import get_variable_values
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 
-from micro._microservices import BackendExecutionError, Microservice
+from micro._microservices import (
+  BackendExecutionError,
+  Microservice,
+  request_content_type,
+)
 
 from ._module import GraphModule
 from .composer import DirectiveMetadata, TypeDirectiveMetadata
@@ -39,6 +42,12 @@ class StoreTopology(BaseModel):
 
   revision: int = Field(ge=0)
   modules: tuple[GraphModule, ...]
+
+
+class _GraphQLBody(BaseModel):
+  query: str
+  variables: dict[str, JsonValue] | None = None
+  operation_name: str | None = Field(None, alias="operationName")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,48 +213,34 @@ class Store(Microservice):
   async def _graphql(self, request: Request) -> Response:
     if not self.ready:
       return self._unavailable()
-    content_type = request.headers.get("content-type", "").partition(";")[0].strip()
-    if content_type != "application/json":
+    if request_content_type(request) != "application/json":
       return self._errors("GraphQL requests require application/json.", status_code=415)
 
     try:
-      body: Any = await request.json()
-    except JSONDecodeError, UnicodeDecodeError:
-      return self._errors("Request body is not valid JSON.", status_code=400)
-    if not isinstance(body, dict):
-      return self._errors("GraphQL request body must be an object.", status_code=400)
-
-    query = body.get("query")
-    variables = body.get("variables")
-    operation_name = body.get("operationName")
-    if not isinstance(query, str):
-      return self._errors("GraphQL request requires a string query.", status_code=400)
-    if variables is not None and not isinstance(variables, dict):
-      return self._errors(
-        "GraphQL variables must be an object or null.", status_code=400
-      )
-    if operation_name is not None and not isinstance(operation_name, str):
-      return self._errors(
-        "GraphQL operationName must be a string or null.", status_code=400
+      body = _GraphQLBody.model_validate_json(await request.body())
+    except ValidationError as exc:
+      return JSONResponse(
+        {"errors": [{"message": "Invalid GraphQL request.", "detail": str(exc)}]},
+        status_code=400,
       )
 
     runtime = self._runtime
     try:
-      document = parse(query)
+      document = parse(body.query)
     except GraphQLSyntaxError as exc:
       return JSONResponse({"errors": [exc.formatted]}, status_code=400)
     if errors := validate(runtime.schema, document):
       return JSONResponse(
         {"errors": [error.formatted for error in errors]}, status_code=400
       )
-    operation = get_operation_ast(document, operation_name)
+    operation = get_operation_ast(document, body.operation_name)
     if operation is None:
       return self._errors("GraphQL operation could not be selected.", status_code=400)
 
     coerced = get_variable_values(
       runtime.schema,
       operation.variable_definitions or (),
-      variables or {},
+      body.variables or {},
     )
     if isinstance(coerced, list):
       return JSONResponse(
@@ -257,7 +252,7 @@ class Store(Microservice):
         runtime.schema,
         document,
         variable_values=coerced,
-        operation_name=operation_name,
+        operation_name=body.operation_name,
       )
       response: dict[str, Any] = {"data": result.data}
       if result.errors:
@@ -269,7 +264,7 @@ class Store(Microservice):
       document,
       operation,
       MappingProxyType(coerced),
-      operation_name,
+      body.operation_name,
     )
     try:
       compiled = runtime.compiler.compile(graphql_request)
@@ -287,10 +282,7 @@ class Store(Microservice):
     )
 
   async def _topology(self, request: Request) -> Response:
-    if (
-      request.headers.get("content-type", "").partition(";")[0].strip()
-      != "application/json"
-    ):
+    if request_content_type(request) != "application/json":
       return self._errors("Store topology requires application/json.", status_code=415)
     try:
       topology = StoreTopology.model_validate_json(await request.body())

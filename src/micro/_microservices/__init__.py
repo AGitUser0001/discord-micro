@@ -6,6 +6,7 @@ from ._client import (
   NoCompatibleInstanceError,
   RemoteMicroserviceError,
   StaleStateError,
+  apply_state_atomically,
 )
 from ._errors import (
   BackendExecutionError,
@@ -27,6 +28,7 @@ from ._microservice import (
   LifecycleEvent,
   Microservice,
   OperationEvent,
+  request_content_type,
 )
 from ._store_client import StoreClient
 
@@ -54,4 +56,6 @@ __all__ = (
   "StoreClient",
   "TopologyError",
   "VoiceStateUpdate",
+  "apply_state_atomically",
+  "request_content_type",
 )

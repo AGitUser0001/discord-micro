@@ -4,7 +4,7 @@ import httpx2
 from pydantic import JsonValue
 from pydantic_core import from_json, to_json
 
-from micro._microservices import Microservice
+from micro._microservices import Microservice, apply_state_atomically
 from micro.queue import QueueClient
 from micro.service import ServiceClient
 
@@ -29,15 +29,7 @@ class GatewayEventService(Microservice):
     return self.client.state_revision >= 0 and self.queue.state_revision >= 0
 
   def apply_state(self, state: JsonValue) -> None:
-    service_snapshot = self.client.state_snapshot()
-    queue_snapshot = self.queue.state_snapshot()
-    try:
-      self.client.apply_state(state)
-      self.queue.apply_state(state)
-    except Exception:
-      self.client.restore_state(service_snapshot)
-      self.queue.restore_state(queue_snapshot)
-      raise
+    apply_state_atomically((self.client, self.queue), state)
     self._topology_ready.set()
 
   async def start(self) -> None:

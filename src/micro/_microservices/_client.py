@@ -13,6 +13,21 @@ type MicroserviceSchema = Mapping[str, Any]
 type MicroserviceRegistration = tuple[str, str, MicroserviceSchema]
 
 
+def apply_state_atomically(
+  receivers: Iterable[MicroserviceClient], state: JsonValue
+) -> None:
+  """Apply one topology document to clients without leaving partial state."""
+  clients = tuple(receivers)
+  snapshots = tuple(client.state_snapshot() for client in clients)
+  try:
+    for client in clients:
+      client.apply_state(state)
+  except Exception:
+    for client, snapshot in zip(clients, snapshots):
+      client.restore_state(snapshot)
+    raise
+
+
 class InvalidMicroserviceSchemaError(TopologyError):
   pass
 
