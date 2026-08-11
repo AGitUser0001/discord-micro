@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import hikari
@@ -37,7 +37,6 @@ class Gateway(Microservice):
     connection: ConnectionSink | None = None,
     shard_ids: Sequence[int] | None = None,
     shard_count: int | None = None,
-    _bot_factory: Callable[[str, hikari.Intents], Any] | None = None,
   ) -> None:
     if token == "":
       raise ValueError("token cannot be empty.")
@@ -49,7 +48,6 @@ class Gateway(Microservice):
       initial_shards = tuple(range(initial_count))
     self.queue = QueueClient()
     self.intents = intents
-    self._bot_factory = _bot_factory
     self._uses_queue_dispatch = dispatch is None
     self._dispatch_sink = dispatch
     self._connection_sink = connection
@@ -105,19 +103,6 @@ class Gateway(Microservice):
     if self._credential is None:
       raise RuntimeError("Discord credential is not configured.")
     return self._credential
-
-  def create_bot(self) -> Any:
-    if self._bot_factory is not None:
-      return self._bot_factory(self.credential, self.intents)
-    return hikari.GatewayBot(
-      self.credential,
-      intents=self.intents,
-      cache_settings=hikari.impl.CacheSettings(
-        components=hikari.api.CacheComponents.NONE
-      ),
-      auto_chunk_members=False,
-      banner=None,
-    )
 
   @property
   def component_ready(self) -> bool:

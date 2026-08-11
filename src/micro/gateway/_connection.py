@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any, Protocol
 from uuid import uuid7
 
@@ -8,37 +8,11 @@ import hikari
 from ._events import ConnectionEvent, ConnectionEventKind, Dispatch
 
 
-class _GatewayBot(Protocol):
-  def listen[EventT: hikari.Event](
-    self, *event_types: type[EventT]
-  ) -> Callable[
-    [Callable[[EventT], Awaitable[None]]], Callable[[EventT], Awaitable[None]]
-  ]: ...
-
-  async def start(
-    self,
-    *,
-    check_for_updates: bool = True,
-    shard_ids: Sequence[int] | None = None,
-    shard_count: int | None = None,
-  ) -> None: ...
-
-  async def close(self) -> None: ...
-  async def join(self) -> None: ...
-  async def update_presence(self, **kwargs: Any) -> None: ...
-  async def request_guild_members(self, guild: int, **kwargs: Any) -> None: ...
-  async def update_voice_state(
-    self, guild: int, channel: int | None, **kwargs: Any
-  ) -> None: ...
-
-
 class ShardOwner(Protocol):
   intents: hikari.Intents
 
   @property
   def credential(self) -> str: ...
-
-  def create_bot(self) -> _GatewayBot: ...
 
   async def publish_dispatch(
     self, dispatch: Dispatch, *, application: bool
@@ -54,7 +28,7 @@ class ShardConnection:
     self.gateway = gateway
     self.shard_id = shard_id
     self.shard_count = shard_count
-    self.bot: _GatewayBot | None = None
+    self.bot: hikari.GatewayBot | None = None
     self.started = False
     self.connection_id: str | None = None
     self.may_publish = False
@@ -77,9 +51,17 @@ class ShardConnection:
         self.bot = None
         raise
 
-  def prepare(self) -> _GatewayBot:
+  def prepare(self) -> hikari.GatewayBot:
     if self.bot is None:
-      self.bot = self.gateway.create_bot()
+      self.bot = hikari.GatewayBot(
+        self.gateway.credential,
+        intents=self.gateway.intents,
+        cache_settings=hikari.impl.CacheSettings(
+          components=hikari.api.CacheComponents.NONE
+        ),
+        auto_chunk_members=False,
+        banner=None,
+      )
       self._subscribe(self.bot)
     return self.bot
 
@@ -99,7 +81,7 @@ class ShardConnection:
     if self.bot is not None:
       await self.bot.join()
 
-  def _subscribe(self, bot: _GatewayBot) -> None:
+  def _subscribe(self, bot: hikari.GatewayBot) -> None:
     bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
     bot.listen(hikari.ShardConnectedEvent)(self._on_connected)
     bot.listen(hikari.ShardDisconnectedEvent)(self._on_disconnected)
