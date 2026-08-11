@@ -152,13 +152,13 @@ class DiscordHTTPWorker(Microservice):
       if completed is not None:
         return completed
     operation = HTTP_OPERATIONS[request.operation]
-    unknown_fields = request.data.keys() - operation.input_model.model_fields.keys()
+    unknown_fields = request.data.keys() - operation.request_model.model_fields.keys()
     if unknown_fields:
       raise ValueError(
         f"Operation {operation.id!r} received unknown fields: "
         f"{', '.join(sorted(unknown_fields))}."
       )
-    data = operation.input_model.model_validate_json(to_json(request.data))
+    data = operation.request_model.model_validate_json(to_json(request.data))
     route = _route_key(operation, data)
     for attempt in range(self._max_attempts):
       await self._coordinator.acquire(route)
@@ -178,18 +178,34 @@ class DiscordHTTPWorker(Microservice):
   async def _execute_operation(
     self, operation: DiscordHTTPOperation, request: BaseModel
   ) -> httpx2.Response:
-    values = request.model_dump(mode="json", by_alias=True, exclude_none=True)
+    path_value = getattr(request, "path", None)
+    query_value = getattr(request, "query", None)
+    header_value = getattr(request, "headers", None)
+    path_values = (
+      path_value.model_dump(mode="json", by_alias=True, exclude_none=True)
+      if isinstance(path_value, BaseModel)
+      else {}
+    )
     path = operation.path
     for field in operation.path_fields:
-      path = path.replace("{" + field + "}", quote(str(values[field]), safe=""))
-    query = {
-      field: values[field] for field in operation.query_fields if field in values
-    }
-    headers = {
-      field: str(values[field]) for field in operation.header_fields if field in values
-    }
+      path = path.replace("{" + field + "}", quote(str(path_values[field]), safe=""))
+    query = (
+      query_value.model_dump(mode="json", by_alias=True, exclude_none=True)
+      if isinstance(query_value, BaseModel)
+      else {}
+    )
+    headers = (
+      {
+        name: str(value)
+        for name, value in header_value.model_dump(
+          mode="json", by_alias=True, exclude_none=True
+        ).items()
+      }
+      if isinstance(header_value, BaseModel)
+      else {}
+    )
     body = getattr(request, "body", None)
-    content_type = values.get("content_type")
+    content_type = getattr(request, "content_type", None)
     if body is None:
       return await self._http.request(
         operation.method, path, params=query, headers=headers
@@ -240,7 +256,7 @@ class DiscordHTTPWorker(Microservice):
         await delivery.retry()
 
 
-class DiscordHTTPClient(GeneratedDiscordHTTPClient[DiscordHTTPResponse]):
+class DiscordHTTPClient(GeneratedDiscordHTTPClient):
   """Generated Discord API methods transported through Micro Queue."""
 
   def __init__(self, queue: QueueClient | None = None) -> None:
@@ -257,12 +273,25 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient[DiscordHTTPResponse]):
 
   async def _request_operation(
     self, operation: DiscordOperationId, request: BaseModel
-  ) -> DiscordHTTPResponse:
-    return await self.request(
+  ) -> BaseModel:
+    raw = await self.request(
       DiscordHTTPRequest(
         operation=operation,
         data=request.model_dump(mode="json", by_alias=True),
       )
+    )
+    definition = HTTP_OPERATIONS[operation]
+    body = None
+    if raw.body:
+      try:
+        body = definition.response_body_model.model_validate_json(raw.body)
+      except ValueError:
+        pass
+    return definition.response_model(
+      status=raw.status,
+      headers=raw.headers,
+      body=body,
+      raw_body=raw.body,
     )
 
   async def aclose(self) -> None:
@@ -270,7 +299,10 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient[DiscordHTTPResponse]):
 
 
 def _route_key(operation: DiscordHTTPOperation, request: BaseModel) -> str:
-  values = request.model_dump(mode="json", by_alias=True)
+  path = getattr(request, "path", None)
+  values = (
+    path.model_dump(mode="json", by_alias=True) if isinstance(path, BaseModel) else {}
+  )
   major = tuple(
     str(values[field])
     for field in ("channel_id", "guild_id", "webhook_id", "webhook_token")

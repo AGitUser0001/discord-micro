@@ -32,10 +32,13 @@ Payload and response limits are enforced while reading ASGI body chunks.
 ## Discord HTTP
 
 Discord's OpenAPI `operationId` values define the queue protocol. Generation
-produces one aggregate Pydantic input model and one physical
-`DiscordHTTPClient` method for every operation, plus `HTTP_OPERATIONS` for
-generic worker dispatch. For example, `create_message` accepts
-`DiscordHTTPCreateMessageInput`; callers never supply an HTTP path or method.
+produces typed body, query, and response fragments in `models.http`, then
+defragments them into concrete request and response contracts in
+`models.http_requests`. Every response-body union is a Pydantic `RootModel`,
+not a type alias. A physical `DiscordHTTPClient` method and `HTTP_OPERATIONS`
+registry entry are generated for every operation. For example,
+`create_message` accepts `CreateMessageHTTPRequest`; callers never supply an
+HTTP path or method.
 
 `DiscordHTTPClient` carries the operation ID and validated input data through
 the `discord.http` queue channel. `DiscordHTTPWorker` expands path, query, and

@@ -10,12 +10,18 @@ from micro.discord import (
   DiscordHTTPWorker,
 )
 from micro.discord.models.http import (
-  DiscordHTTPCreateMessageInput,
-  DiscordHTTPGetGuildInput,
-  DiscordHTTPUploadApplicationAttachmentInput,
-  DiscordHTTPUploadApplicationAttachmentMultipartFormDataBody,
-  MessageCreateRequest,
+  CreateMessageParametersPath,
+  CreateMessageRequest,
+  GetGuildParametersPath,
   SnowflakeType,
+  UploadApplicationAttachmentParametersPath,
+  UploadApplicationAttachmentRequest,
+)
+from micro.discord.models.http_requests import (
+  CreateMessageHTTPRequest,
+  CreateMessageHTTPResponse,
+  GetGuildHTTPRequest,
+  UploadApplicationAttachmentHTTPRequest,
 )
 from micro.queue import QueueClient
 
@@ -45,9 +51,9 @@ def test_discord_http_retries_rate_limits_and_preserves_response() -> None:
       response = await worker.execute(
         DiscordHTTPRequest(
           operation="create_message",
-          data=DiscordHTTPCreateMessageInput(
-            channel_id=SnowflakeType("123"),
-            body=MessageCreateRequest(content="hello"),
+          data=CreateMessageHTTPRequest(
+            path=CreateMessageParametersPath(channel_id=SnowflakeType("123")),
+            body=CreateMessageRequest(content="hello"),
           ).model_dump(mode="json", by_alias=True),
           idempotency_key="message-1",
         )
@@ -78,9 +84,9 @@ def test_discord_http_binary_wire_format_and_idempotent_replay() -> None:
     worker = DiscordHTTPWorker("token", transport=httpx2.MockTransport(respond))
     request = DiscordHTTPRequest(
       operation="get_guild",
-      data=DiscordHTTPGetGuildInput(guild_id=SnowflakeType("1")).model_dump(
-        mode="json"
-      ),
+      data=GetGuildHTTPRequest(
+        path=GetGuildParametersPath(guild_id=SnowflakeType("1"))
+      ).model_dump(mode="json"),
       idempotency_key="x",
     )
     encoded = request.model_dump_json()
@@ -106,7 +112,7 @@ def test_generated_physical_method_uses_the_operation_registry() -> None:
     response = DiscordHTTPResponse(status=200, headers=(), body=b"{}")
     return httpx2.Response(200, content=response.model_dump_json().encode())
 
-  async def exercise() -> None:
+  async def exercise() -> CreateMessageHTTPResponse:
     queue = QueueClient(transport=httpx2.MockTransport(respond))
     queue.apply_state(
       {
@@ -116,19 +122,22 @@ def test_generated_physical_method_uses_the_operation_registry() -> None:
     )
     client = DiscordHTTPClient(queue)
     try:
-      await client.create_message(
-        DiscordHTTPCreateMessageInput(
-          channel_id=SnowflakeType("123"),
-          body=MessageCreateRequest(content="hello"),
+      return await client.create_message(
+        CreateMessageHTTPRequest(
+          path=CreateMessageParametersPath(channel_id=SnowflakeType("123")),
+          body=CreateMessageRequest(content="hello"),
         )
       )
     finally:
       await client.aclose()
 
-  asyncio.run(exercise())
+  result = asyncio.run(exercise())
+  assert isinstance(result, CreateMessageHTTPResponse)
+  assert result.status == 200
+  assert result.raw_body == b"{}"
   assert received is not None
   assert received.operation == "create_message"
-  assert received.data["channel_id"] == "123"
+  assert received.data["path"] == {"channel_id": "123"}
 
 
 def test_generated_multipart_operation_preserves_binary_files() -> None:
@@ -141,11 +150,9 @@ def test_generated_multipart_operation_preserves_binary_files() -> None:
 
   async def exercise() -> None:
     worker = DiscordHTTPWorker("token", transport=httpx2.MockTransport(respond))
-    data = DiscordHTTPUploadApplicationAttachmentInput(
-      application_id=SnowflakeType("1"),
-      body=DiscordHTTPUploadApplicationAttachmentMultipartFormDataBody(
-        file=b"\x00binary\xff"
-      ),
+    data = UploadApplicationAttachmentHTTPRequest(
+      path=UploadApplicationAttachmentParametersPath(application_id=SnowflakeType("1")),
+      body=UploadApplicationAttachmentRequest(file=b"\x00binary\xff"),
     )
     try:
       await worker.execute(

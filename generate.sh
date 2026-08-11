@@ -22,9 +22,11 @@ application_declarations="$temporary/node_modules/discord-api-types/payloads/v10
 gateway_entrypoint="$temporary/gateway.ts"
 gateway_schema="$temporary/gateway.schema.json"
 http_schema="$temporary/openapi.json"
+normalized_http_schema="$temporary/openapi.normalized.json"
 gateway_models="$temporary/gateway.py"
 http_models="$temporary/http.py"
 http_operations="$temporary/http_operations.py"
+http_requests="$temporary/http_requests.py"
 event_schemas="$repository/src/micro/schemas/events.py"
 
 node -e '
@@ -82,8 +84,8 @@ curl --fail --location --silent --show-error \
   https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json
 
 uv run --project "$repository" python \
-  "$repository/scripts/generate_http_operations.py" \
-  "$http_schema" "$http_schema" "$http_operations"
+  "$repository/scripts/normalize_http_openapi.py" \
+  "$http_schema" "$normalized_http_schema"
 
 generate_models() {
   uv run --project "$repository" datamodel-codegen \
@@ -103,9 +105,11 @@ generate_models() {
 
 generate_models "$gateway_schema" "$gateway_models"
 uv run --project "$repository" datamodel-codegen \
-  --input "$http_schema" \
+  --input "$normalized_http_schema" \
   --input-file-type openapi \
-  --openapi-scopes schemas \
+  --openapi-scopes schemas paths parameters requestbodies \
+  --use-operation-id-as-name \
+  --use-status-code-in-response-name \
   --output "$http_models" \
   --output-model-type pydantic_v2.BaseModel \
   --base-class micro.discord._model.DiscordModel \
@@ -116,21 +120,29 @@ uv run --project "$repository" datamodel-codegen \
   --use-annotated \
   --extra-fields allow
 
+uv run --project "$repository" python \
+  "$repository/scripts/generate_http_operations.py" \
+  "$normalized_http_schema" "$http_models" "$http_requests" "$http_operations"
+
 models="$repository/src/micro/discord/models"
 mkdir -p "$models"
 install -m 0644 "$gateway_models" "$models/gateway.py"
 install -m 0644 "$http_models" "$models/http.py"
+install -m 0644 "$http_requests" "$models/http_requests.py"
 install -m 0644 "$http_operations" \
   "$repository/src/micro/discord/http_operations.py"
 uv run --project "$repository" ruff check --fix \
+  "$models/http_requests.py" \
   "$repository/src/micro/discord/http_operations.py"
 uv run --project "$repository" ruff format \
+  "$models/http_requests.py" \
   "$repository/src/micro/discord/http_operations.py"
 uv run --project "$repository" python "$repository/scripts/generate_events.py" \
   "$gateway_models" "$event_schemas"
 
-printf 'Generated %s, %s, %s, and %s\n' \
+printf 'Generated %s, %s, %s, %s, and %s\n' \
   "$models/gateway.py" \
   "$models/http.py" \
+  "$models/http_requests.py" \
   "$repository/src/micro/discord/http_operations.py" \
   "$event_schemas"
