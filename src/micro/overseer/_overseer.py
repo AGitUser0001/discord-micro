@@ -23,7 +23,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
-from micro._microservices import TopologyError, request_content_type
+from micro._microservices import DiscordCredential, TopologyError, request_content_type
 from micro.gateway import (
   ConnectionEvent,
   ConnectionEventKind,
@@ -99,8 +99,15 @@ class DiscoveredInstance(BaseModel):
     return self
 
 
+class DiscoverySnapshot(BaseModel):
+  model_config = ConfigDict(extra="forbid", frozen=True)
+
+  instances: tuple[DiscoveredInstance, ...] = ()
+  discord_credential: DiscordCredential | None = None
+
+
 class Discovery(Protocol):
-  async def snapshot(self) -> Sequence[DiscoveredInstance]: ...
+  async def snapshot(self) -> DiscoverySnapshot: ...
 
 
 class OverseerPersistence(Protocol):
@@ -134,26 +141,47 @@ class NetworkDiscovery:
   a trusted control network.
   """
 
-  def __init__(self, instances: Sequence[DiscoveredInstance] = ()) -> None:
+  def __init__(
+    self,
+    instances: Sequence[DiscoveredInstance] = (),
+    *,
+    discord_credential: DiscordCredential | None = None,
+  ) -> None:
     self._instances = {instance.id: instance for instance in instances}
     if len(self._instances) != len(instances):
       raise ValueError("Discovery instance IDs must be unique.")
+    self._discord_credential = discord_credential
     self._app = Starlette(
       routes=[
         Route("/instances", self._list, methods=["GET"]),
         Route("/instances", self._upsert, methods=["POST"]),
         Route("/instances/{instance_id}", self._remove, methods=["DELETE"]),
+        Route("/discord/credential", self._credential_status, methods=["GET"]),
+        Route("/discord/credential", self._set_credential, methods=["POST"]),
+        Route("/discord/credential", self._clear_credential, methods=["DELETE"]),
       ]
     )
 
-  async def snapshot(self) -> Sequence[DiscoveredInstance]:
-    return tuple(self._instances.values())
+  async def snapshot(self) -> DiscoverySnapshot:
+    return DiscoverySnapshot(
+      instances=tuple(self._instances.values()),
+      discord_credential=self._discord_credential,
+    )
 
   def add(self, instance: DiscoveredInstance) -> None:
     self._instances[instance.id] = instance
 
   def remove(self, instance_id: str) -> bool:
     return self._instances.pop(instance_id, None) is not None
+
+  def set_discord_credential(self, credential: DiscordCredential) -> None:
+    current = self._discord_credential
+    if current is not None:
+      if credential.revision < current.revision:
+        raise ValueError("Discord credential revision is stale.")
+      if credential.revision == current.revision and credential.token != current.token:
+        raise ValueError("A revision cannot identify two Discord credentials.")
+    self._discord_credential = credential
 
   async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
     await self._app(scope, receive, send)
@@ -185,6 +213,35 @@ class NetworkDiscovery:
     return Response(
       status_code=204 if self.remove(request.path_params["instance_id"]) else 404
     )
+
+  async def _credential_status(self, request: Request) -> Response:
+    credential = self._discord_credential
+    return JSONResponse(
+      {
+        "configured": credential is not None,
+        "revision": credential.revision if credential is not None else None,
+      }
+    )
+
+  async def _set_credential(self, request: Request) -> Response:
+    if request_content_type(request) != "application/json":
+      return JSONResponse(
+        {"detail": "Credential updates require application/json."},
+        status_code=415,
+      )
+    try:
+      credential = DiscordCredential.model_validate_json(await request.body())
+      self.set_discord_credential(credential)
+    except ValueError as exc:
+      return JSONResponse(
+        {"detail": "Invalid Discord credential.", "message": str(exc)},
+        status_code=422,
+      )
+    return Response(status_code=204)
+
+  async def _clear_credential(self, request: Request) -> Response:
+    self._discord_credential = None
+    return Response(status_code=204)
 
 
 class TopologyPushError(TopologyError):
@@ -261,7 +318,9 @@ class Overseer:
       raise RuntimeError(
         "This overseer is not the externally selected active instance."
       )
-    instances = tuple(await self.discovery.snapshot())
+    snapshot = await self.discovery.snapshot()
+    instances = snapshot.instances
+    credential = snapshot.discord_credential
     self._desired_instances = instances
     ids = [instance.id for instance in instances]
     if len(ids) != len(set(ids)):
@@ -403,6 +462,19 @@ class Overseer:
         ),
       )
 
+    async def post(
+      instance: DiscoveredInstance, endpoint: str, body: bytes
+    ) -> tuple[str, int, str] | None:
+      async with self._push_concurrency:
+        response = await self._http.post(
+          f"{instance.base_url}{endpoint}",
+          content=body,
+          headers={"content-type": "application/json"},
+        )
+      if response.is_success:
+        return None
+      return instance.id, response.status_code, response.text
+
     async def push(instance: DiscoveredInstance) -> tuple[str, int, str] | None:
       if instance.role in {
         "service",
@@ -419,15 +491,14 @@ class Overseer:
         body = store_topology_bodies[assignment]
       else:
         return None
-      async with self._push_concurrency:
-        response = await self._http.post(
-          f"{instance.base_url}{endpoint}",
-          content=body,
-          headers={"content-type": "application/json"},
-        )
-      if response.is_success:
-        return None
-      return instance.id, response.status_code, response.text
+      failure = await post(instance, endpoint, body)
+      if failure is not None:
+        return failure
+      if instance.role in {"gateway", "discord.http"}:
+        if credential is None:
+          return instance.id, 503, "Discord credential is not configured."
+        return await post(instance, "/discord/credential", credential.wire_bytes())
+      return None
 
     results = await asyncio.gather(*(push(instance) for instance in instances))
     failures = tuple(result for result in results if result is not None)

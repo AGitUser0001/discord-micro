@@ -2,16 +2,17 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import uuid7
 
 import hikari
-from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue, SecretStr, ValidationError
 from pydantic_core import to_json
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from micro._microservices import (
+  DiscordCredential,
   GuildMembersRequest,
   Microservice,
   PresenceUpdate,
@@ -82,7 +83,7 @@ class _GatewayBot(Protocol):
 class Gateway(Microservice):
   def __init__(
     self,
-    token: str,
+    token: str | None = None,
     *,
     intents: hikari.Intents,
     dispatch: DispatchSink | None = None,
@@ -91,7 +92,7 @@ class Gateway(Microservice):
     shard_count: int | None = None,
     bot: _GatewayBot | None = None,
   ) -> None:
-    if not token:
+    if token == "":
       raise ValueError("token cannot be empty.")
     self.queue = QueueClient()
     super().__init__("gateway")
@@ -105,16 +106,20 @@ class Gateway(Microservice):
     self._started = False
     self._topology_ready = asyncio.Event()
     self._activation: asyncio.Task[None] | None = None
-    self._bot = bot or hikari.GatewayBot(
-      token,
-      intents=intents,
-      cache_settings=hikari.impl.CacheSettings(
-        components=hikari.api.CacheComponents.NONE
-      ),
-      auto_chunk_members=False,
-      banner=None,
-    )
-    self._subscribe()
+    self._credential_revision = -1
+    self._credential_token: str | None = None
+    self._credential_ready = asyncio.Event()
+    self._bot_lock = asyncio.Lock()
+    self._managed_bot = bot is None
+    self._bot: _GatewayBot | None = bot
+    if token is not None:
+      self._set_credential(DiscordCredential(token=SecretStr(token), revision=0))
+      if self._bot is None:
+        self._bot = self._new_bot(token)
+    elif bot is not None:
+      raise ValueError("token is required when injecting a Gateway bot.")
+    if self._bot is not None:
+      self._subscribe()
     self.add_route(
       "/gateway/presence",
       self._update_presence,
@@ -133,6 +138,12 @@ class Gateway(Microservice):
       methods=("POST",),
       name="gateway:voice-state",
     )
+    self.add_route(
+      "/discord/credential",
+      self._credential_endpoint,
+      methods=("POST",),
+      name="gateway:credential",
+    )
 
   @property
   def service(self) -> Microservice:
@@ -148,7 +159,65 @@ class Gateway(Microservice):
 
   @property
   def component_ready(self) -> bool:
-    return self._started
+    return self._started and self._credential_revision >= 0
+
+  def _new_bot(self, token: str) -> _GatewayBot:
+    return cast(
+      _GatewayBot,
+      hikari.GatewayBot(
+        token,
+        intents=self._intents,
+        cache_settings=hikari.impl.CacheSettings(
+          components=hikari.api.CacheComponents.NONE
+        ),
+        auto_chunk_members=False,
+        banner=None,
+      ),
+    )
+
+  def _set_credential(self, credential: DiscordCredential) -> bool:
+    token = credential.token.get_secret_value()
+    if credential.revision < self._credential_revision:
+      raise ValueError("Discord credential revision is stale.")
+    if credential.revision == self._credential_revision:
+      if token != self._credential_token:
+        raise ValueError("A revision cannot identify two Discord credentials.")
+      return False
+    changed = self._credential_token is not None and token != self._credential_token
+    self._credential_token = token
+    self._credential_revision = credential.revision
+    self._credential_ready.set()
+    return changed
+
+  async def _credential_endpoint(self, request: Request) -> Response:
+    credential = await _control_request(request, DiscordCredential)
+    if isinstance(credential, Response):
+      return credential
+    async with self._bot_lock:
+      try:
+        incoming_token = credential.token.get_secret_value()
+        if (
+          self._bot is not None
+          and not self._managed_bot
+          and self._credential_token is not None
+          and incoming_token != self._credential_token
+        ):
+          raise ValueError("An injected Gateway bot cannot rotate credentials.")
+        changed = self._set_credential(credential)
+        if self._bot is None:
+          self._bot = self._new_bot(credential.token.get_secret_value())
+          self._subscribe()
+        elif changed:
+          was_started = self._started
+          if was_started:
+            await self._stop_bot()
+          self._bot = self._new_bot(credential.token.get_secret_value())
+          self._subscribe()
+          if was_started:
+            await self._start_bot_unlocked()
+      except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    return Response(status_code=204)
 
   def apply_state(self, state: JsonValue) -> None:
     self.queue.apply_state(state)
@@ -177,7 +246,7 @@ class Gateway(Microservice):
       if update.activity is not None
       else None
     )
-    self._bot.update_presence(
+    self._require_bot().update_presence(
       status=hikari.Status(update.status),
       idle_since=update.idle_since,
       activity=activity,
@@ -199,14 +268,14 @@ class Gateway(Microservice):
       kwargs["users"] = members.users
     if members.nonce is not None:
       kwargs["nonce"] = members.nonce
-    self._bot.request_guild_members(members.guild_id, **kwargs)
+    self._require_bot().request_guild_members(members.guild_id, **kwargs)
     return Response(status_code=204)
 
   async def _update_voice_state(self, request: Request) -> Response:
     update = await _control_request(request, VoiceStateUpdate)
     if isinstance(update, Response):
       return update
-    self._bot.update_voice_state(
+    self._require_bot().update_voice_state(
       update.guild_id,
       update.channel_id,
       self_mute=update.self_mute,
@@ -225,21 +294,24 @@ class Gateway(Microservice):
   async def start(self) -> None:
     if self._started or self._activation is not None:
       raise RuntimeError("Gateway is already running.")
-    if self._uses_queue_dispatch:
-      self._activation = asyncio.create_task(
-        self._activate(), name="micro.gateway.activate"
-      )
-      return
-    await self._start_bot()
+    self._activation = asyncio.create_task(
+      self._activate(), name="micro.gateway.activate"
+    )
 
   async def _activate(self) -> None:
-    await self._topology_ready.wait()
+    if self._uses_queue_dispatch:
+      await self._topology_ready.wait()
+    await self._credential_ready.wait()
     await self._start_bot()
 
   async def _start_bot(self) -> None:
+    async with self._bot_lock:
+      await self._start_bot_unlocked()
+
+  async def _start_bot_unlocked(self) -> None:
     self._started = True
     try:
-      await self._bot.start(
+      await self._require_bot().start(
         check_for_updates=False,
         shard_ids=self._shard_ids,
         shard_count=self._shard_count,
@@ -254,9 +326,14 @@ class Gateway(Microservice):
         self._activation.cancel()
       await asyncio.gather(self._activation, return_exceptions=True)
       self._activation = None
+    async with self._bot_lock:
+      await self._stop_bot()
+    await self.queue.aclose()
+
+  async def _stop_bot(self) -> None:
     try:
       if self._started:
-        await self._bot.close()
+        await self._require_bot().close()
     finally:
       connections, self._connections = self._connections, {}
       for shard_id, connection_id in connections.items():
@@ -264,21 +341,26 @@ class Gateway(Microservice):
           ConnectionEvent(ConnectionEventKind.CLOSED, shard_id, connection_id)
         )
       self._started = False
-      await self.queue.aclose()
 
   async def _run_until_closed(self) -> None:
     try:
       await self.start()
       if self._activation is not None:
         await self._activation
-      await self._bot.join()
+      await self._require_bot().join()
     finally:
       await self.close()
 
   def _subscribe(self) -> None:
-    self._bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
-    self._bot.listen(hikari.ShardConnectedEvent)(self._on_connected)
-    self._bot.listen(hikari.ShardDisconnectedEvent)(self._on_disconnected)
+    bot = self._require_bot()
+    bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
+    bot.listen(hikari.ShardConnectedEvent)(self._on_connected)
+    bot.listen(hikari.ShardDisconnectedEvent)(self._on_disconnected)
+
+  def _require_bot(self) -> _GatewayBot:
+    if self._bot is None:
+      raise RuntimeError("Discord credential is not configured.")
+    return self._bot
 
   async def _on_dispatch(self, event: hikari.ShardPayloadEvent) -> None:
     shard_id = event.shard.id
@@ -362,7 +444,7 @@ class Gateway(Microservice):
             continue
           guild_id = guild.get("id")
           if isinstance(guild_id, str) and guild_id.isdecimal():
-            self._bot.request_guild_members(
+            self._require_bot().request_guild_members(
               int(guild_id),
               include_presences=bool(self._intents & hikari.Intents.GUILD_PRESENCES),
               query="",

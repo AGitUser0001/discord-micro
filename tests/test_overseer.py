@@ -8,6 +8,7 @@ from starlette.testclient import TestClient
 
 from micro.gateway import ConnectionEvent, ConnectionEventKind
 from micro.overseer import (
+  DiscordCredential,
   DiscoveredInstance,
   GraphModule,
   MemoryOverseerPersistence,
@@ -44,7 +45,73 @@ def test_network_discovery_has_asgi_control_surface() -> None:
   assert added.status_code == 204
   assert instances.json()[0]["modules"] == ["guilds"]
   assert removed.status_code == 204
-  assert asyncio.run(discovery.snapshot()) == ()
+  snapshot = asyncio.run(discovery.snapshot())
+  assert snapshot.instances == ()
+  assert snapshot.discord_credential is None
+
+
+def test_discovery_manages_one_revisioned_discord_credential_without_readback() -> None:
+  discovery = NetworkDiscovery()
+
+  with TestClient(discovery) as client:
+    assert client.get("/discord/credential").json() == {
+      "configured": False,
+      "revision": None,
+    }
+    assert (
+      client.post(
+        "/discord/credential", json={"token": "first", "revision": 2}
+      ).status_code
+      == 204
+    )
+    status = client.get("/discord/credential")
+    stale = client.post("/discord/credential", json={"token": "older", "revision": 1})
+
+  assert status.json() == {"configured": True, "revision": 2}
+  assert "first" not in status.text
+  assert stale.status_code == 422
+
+
+def test_overseer_pushes_credentials_only_to_discord_workers() -> None:
+  requests: list[tuple[str, str, bytes]] = []
+
+  def respond(request: httpx2.Request) -> httpx2.Response:
+    requests.append((request.url.host, request.url.path, request.read()))
+    return httpx2.Response(204)
+
+  discovery = NetworkDiscovery(
+    (
+      DiscoveredInstance(
+        id="service",
+        base_url="http://service.internal",
+        role="service",
+        schema=SERVICE_SCHEMA,
+      ),
+      DiscoveredInstance(
+        id="http", base_url="http://http.internal", role="discord.http"
+      ),
+    ),
+    discord_credential=DiscordCredential.model_validate(
+      {"token": "managed-secret", "revision": 7}
+    ),
+  )
+
+  async def exercise() -> None:
+    overseer = Overseer(discovery, transport=httpx2.MockTransport(respond))
+    await overseer.reconcile()
+    await overseer.aclose()
+
+  asyncio.run(exercise())
+  credential_pushes = [item for item in requests if item[1] == "/discord/credential"]
+  assert [(host, path) for host, path, _ in credential_pushes] == [
+    ("http.internal", "/discord/credential")
+  ]
+  assert b"managed-secret" in credential_pushes[0][2]
+  assert all(
+    b"managed-secret" not in body
+    for _, path, body in requests
+    if path != "/discord/credential"
+  )
 
 
 def test_overseer_pushes_discovered_topology() -> None:
@@ -130,7 +197,10 @@ def test_overseer_composes_each_store_assignment_independently() -> None:
         role="store",
         modules=("audit",),
       ),
-    )
+    ),
+    discord_credential=DiscordCredential.model_validate(
+      {"token": "token", "revision": 0}
+    ),
   )
   modules = (
     GraphModule(id="guilds", schema="type Query { item: String }"),
@@ -244,7 +314,10 @@ def test_overseer_separates_desired_assignments_from_observed_connections() -> N
         base_url="http://projection.internal",
         role="gateway.projection",
       ),
-    )
+    ),
+    discord_credential=DiscordCredential.model_validate(
+      {"token": "token", "revision": 0}
+    ),
   )
 
   async def exercise() -> Overseer:

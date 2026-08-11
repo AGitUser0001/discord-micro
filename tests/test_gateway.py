@@ -101,6 +101,38 @@ def test_gateway_lifespan_starts_assigned_shards_and_closes() -> None:
   assert bot.close_calls == 1
 
 
+def test_managed_gateway_rotates_revisioned_credentials() -> None:
+  bots: list[FakeGatewayBot] = []
+  tokens: list[str] = []
+
+  async def dispatch(event: Dispatch) -> None:
+    pass
+
+  gateway = Gateway(intents=hikari.Intents.GUILDS, dispatch=dispatch)
+
+  def create(token: str) -> Any:
+    tokens.append(token)
+    bot = FakeGatewayBot()
+    bots.append(bot)
+    return bot
+
+  gateway._new_bot = create  # pyright: ignore[reportPrivateUsage]
+  with TestClient(gateway) as client:
+    first = client.post("/discord/credential", json={"token": "first", "revision": 0})
+    assert client.get("/health/ready").status_code == 204
+    rotated = client.post(
+      "/discord/credential", json={"token": "second", "revision": 1}
+    )
+    stale = client.post("/discord/credential", json={"token": "stale", "revision": 0})
+
+  assert first.status_code == 204
+  assert rotated.status_code == 204
+  assert stale.status_code == 409
+  assert tokens == ["first", "second"]
+  assert bots[0].close_calls == 1
+  assert len(bots[1].start_calls) == 1
+
+
 def test_gateway_run_owns_the_event_loop_and_lifecycle() -> None:
   bot = FakeGatewayBot()
   gateway = make_gateway(bot)

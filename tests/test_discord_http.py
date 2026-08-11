@@ -3,6 +3,7 @@ import json
 from typing import Any
 
 import httpx2
+from starlette.testclient import TestClient
 
 from micro._microservices import StoreClient
 from micro.discord import (
@@ -105,6 +106,39 @@ def test_discord_http_retries_rate_limits_and_preserves_response() -> None:
   assert len(calls) == 2
   assert calls[0].headers["authorization"] == "Bot token"
   assert calls[0].content == b'{"content":"hello"}'
+
+
+def test_discord_http_credential_endpoint_rotates_new_requests() -> None:
+  calls: list[httpx2.Request] = []
+
+  def respond(request: httpx2.Request) -> httpx2.Response:
+    calls.append(request)
+    return httpx2.Response(200, json={"id": "123", "name": "guild"})
+
+  worker = DiscordHTTPWorker(
+    "old",
+    transport=httpx2.MockTransport(respond),
+    api_url="https://discord.test",
+    coordinator=MemoryRateLimits(),
+  )
+  with TestClient(worker) as client:
+    rotated = client.post("/discord/credential", json={"token": "new", "revision": 1})
+    stale = client.post("/discord/credential", json={"token": "stale", "revision": 0})
+    response = asyncio.run(
+      worker.execute(
+        DiscordHTTPRequest(
+          operation="get_guild",
+          data=GetGuildHTTPRequest(
+            path=GetGuildParametersPath(guild_id=SnowflakeType("123"))
+          ).model_dump(mode="json", by_alias=True),
+        )
+      )
+    )
+
+  assert rotated.status_code == 204
+  assert stale.status_code == 409
+  assert response.status == 200
+  assert calls[-1].headers["authorization"] == "Bot new"
 
 
 def test_discord_http_binary_wire_format_and_idempotent_replay() -> None:
@@ -212,7 +246,7 @@ def test_generated_multipart_operation_preserves_binary_files() -> None:
 def test_store_rate_limits_map_discovered_buckets_and_acquire_capacity() -> None:
   async def exercise() -> _RateLimitStore:
     store = _RateLimitStore()
-    coordinator = StoreRateLimits(store, "token")
+    coordinator = StoreRateLimits(store)
     response = DiscordHTTPResponse(
       status=200,
       headers=(
@@ -239,7 +273,7 @@ def test_store_rate_limits_map_discovered_buckets_and_acquire_capacity() -> None
 def test_store_rate_limits_extend_the_shared_global_gate() -> None:
   async def exercise() -> _RateLimitStore:
     store = _RateLimitStore()
-    coordinator = StoreRateLimits(store, "token")
+    coordinator = StoreRateLimits(store)
     await coordinator.observe(
       "create_message:123",
       DiscordHTTPResponse(

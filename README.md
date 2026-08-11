@@ -100,7 +100,6 @@ guild/member ingestion separately.
 
 ```python
 gateway = Gateway(
-  token,
   intents=hikari.Intents.GUILDS | hikari.Intents.GUILD_MESSAGES,
   connection=update_connection_graph,
   shard_ids=[0, 2],
@@ -108,8 +107,15 @@ gateway = Gateway(
 )
 ```
 
-The overseer pushes queue topology to the gateway before it opens its Discord
-connections. Dispatches are published on `gateway.events` as compact
+Discovery owns one revisioned Discord credential for the entire deployment. The
+overseer pushes it over the specialized `/discord/credential` management route
+only to Gateway and Discord HTTP workers; it is never part of `/topology` or
+service state. Gateway workers reconnect and HTTP workers use the new token for
+new requests when its revision changes. A token may still be passed directly to
+`Gateway` for a standalone process or local test.
+
+The overseer pushes queue topology and the credential to the gateway before it
+opens its Discord connections. Dispatches are published on `gateway.events` as compact
 `[event_name, payload]` records. Connection callbacks separately report connect,
 disconnect, ready, resume, invalidation, and clean-close transitions. The gateway
 starts and closes with ASGI lifespan, so it can run directly under Uvicorn.

@@ -1,8 +1,10 @@
+from micro._microservices import DiscordCredential
 from micro.store import GraphModule
 
 from ._overseer import (
   DiscoveredInstance,
   Discovery,
+  DiscoverySnapshot,
   MemoryOverseerPersistence,
   NetworkDiscovery,
   Overseer,
@@ -12,8 +14,10 @@ from ._overseer import (
 )
 
 __all__ = (
+  "DiscordCredential",
   "DiscoveredInstance",
   "Discovery",
+  "DiscoverySnapshot",
   "GraphModule",
   "MemoryOverseerPersistence",
   "NetworkDiscovery",

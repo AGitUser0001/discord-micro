@@ -201,6 +201,10 @@ cannot silently acquire a different physical definition.
 - [x] Add representative endpoints for messages, interactions, commands, and
   guild resources before generating broader conveniences.
 - [x] Add deterministic rate-limit and retry tests using a fake Discord server.
+- [x] Manage one revisioned Discord credential through Discovery and push it
+  only to Gateway and Discord HTTP workers outside standard topology.
+- [x] Rotate HTTP authorization live, reconnect managed Gateway workers, reject
+  stale credential revisions, and keep rate-limit state stable across rotation.
 
 ### 5. Queue semantics and robustness
 

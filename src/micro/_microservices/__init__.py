@@ -8,6 +8,7 @@ from ._client import (
   StaleStateError,
   apply_state_atomically,
 )
+from ._credential import DiscordCredential
 from ._errors import (
   BackendExecutionError,
   MicroError,
@@ -35,6 +36,7 @@ from ._store_client import StoreClient
 __all__ = (
   "ActivityUpdate",
   "BackendExecutionError",
+  "DiscordCredential",
   "DuplicateEndpointError",
   "GatewayClient",
   "GuildMembersRequest",

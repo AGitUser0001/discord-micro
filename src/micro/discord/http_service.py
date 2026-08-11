@@ -7,10 +7,18 @@ from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode
 
 import httpx2
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, ValidationError
 from pydantic_core import from_json, to_json
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
-from micro._microservices import Microservice, StoreClient, apply_state_atomically
+from micro._microservices import (
+  DiscordCredential,
+  Microservice,
+  StoreClient,
+  apply_state_atomically,
+  request_content_type,
+)
 from micro.queue import QueueClient
 
 from .http_operations import (
@@ -109,9 +117,8 @@ class StoreRateLimits:
 
   MODULE = "micro.discord.http.rate_limits"
 
-  def __init__(self, store: StoreClient, token: str) -> None:
+  def __init__(self, store: StoreClient) -> None:
     self.store = store
-    self._identity = hashlib.sha256(token.encode()).hexdigest()
     self._completed: dict[str, DiscordHTTPResponse] = {}
     self._completed_lock = asyncio.Lock()
 
@@ -125,7 +132,7 @@ class StoreRateLimits:
           global: discordHTTPGlobalLimit(id: $global) { blockedUntil }
         }
         """,
-        {"route": route_id, "global": self._identity},
+        {"route": route_id, "global": "discord"},
       )
       global_limit = state.get("global")
       if not isinstance(global_limit, dict):
@@ -239,7 +246,7 @@ class StoreRateLimits:
         createDiscordHTTPGlobalLimit(id: $id, blockedUntil: $until) { id }
       }
       """,
-      {"id": self._identity, "until": 0.0},
+      {"id": "discord", "until": 0.0},
     )
 
   async def _extend_global(self, until: float) -> None:
@@ -250,7 +257,7 @@ class StoreRateLimits:
         extendDiscordHTTPGlobalLimit(id: $id, until: $until) { id }
       }
       """,
-      {"id": self._identity, "until": until},
+      {"id": "discord", "until": until},
     )
 
   async def _ensure_bucket(
@@ -329,13 +336,11 @@ class StoreRateLimits:
     return data
 
   def _route_id(self, route: str) -> str:
-    return hashlib.sha256(f"{self._identity}\0{route}".encode()).hexdigest()
+    return hashlib.sha256(route.encode()).hexdigest()
 
   def _bucket_id(self, route: str, bucket_hash: str) -> str:
     major_parameters = route.partition(":")[2]
-    return hashlib.sha256(
-      f"{self._identity}\0{bucket_hash}\0{major_parameters}".encode()
-    ).hexdigest()
+    return hashlib.sha256(f"{bucket_hash}\0{major_parameters}".encode()).hexdigest()
 
 
 class DiscordHTTPWorker(Microservice):
@@ -343,14 +348,14 @@ class DiscordHTTPWorker(Microservice):
 
   def __init__(
     self,
-    token: str,
+    token: str | None = None,
     *,
     api_url: str = "https://discord.com/api/v10",
     transport: httpx2.AsyncBaseTransport | None = None,
     coordinator: RateLimitCoordinator | None = None,
     max_attempts: int = 4,
   ) -> None:
-    if not token:
+    if token == "":
       raise ValueError("token cannot be empty.")
     if not 1 <= max_attempts <= 10:
       raise ValueError("max_attempts must be between 1 and 10.")
@@ -359,13 +364,24 @@ class DiscordHTTPWorker(Microservice):
     self._http = httpx2.AsyncClient(
       base_url=api_url,
       transport=transport,
-      headers={"authorization": f"Bot {token}", "user-agent": "DiscordBot (Micro)"},
+      headers={"user-agent": "DiscordBot (Micro)"},
     )
-    self._coordinator = coordinator or StoreRateLimits(self.store, token)
+    self._coordinator = coordinator or StoreRateLimits(self.store)
     self._max_attempts = max_attempts
     self._consumer: asyncio.Task[None] | None = None
     self._topology_ready = asyncio.Event()
+    self._credential_ready = asyncio.Event()
+    self._credential_revision = -1
+    self._credential_token: str | None = None
     super().__init__("discord.http")
+    self.add_route(
+      "/discord/credential",
+      self._credential_endpoint,
+      methods=("POST",),
+      name="discord:http:credential",
+    )
+    if token is not None:
+      self._apply_credential(DiscordCredential(token=SecretStr(token), revision=0))
 
   def apply_state(self, state: JsonValue) -> None:
     apply_state_atomically((self.queue, self.store), state)
@@ -373,7 +389,46 @@ class DiscordHTTPWorker(Microservice):
 
   @property
   def component_ready(self) -> bool:
-    return self.queue.state_revision >= 0 and self.store.state_revision >= 0
+    return (
+      self.queue.state_revision >= 0
+      and self.store.state_revision >= 0
+      and self._credential_revision >= 0
+    )
+
+  def _apply_credential(self, credential: DiscordCredential) -> None:
+    token = credential.token.get_secret_value()
+    if credential.revision < self._credential_revision:
+      raise ValueError("Discord credential revision is stale.")
+    if (
+      credential.revision == self._credential_revision
+      and self._credential_token is not None
+      and token != self._credential_token
+    ):
+      raise ValueError("A revision cannot identify two Discord credentials.")
+    self._http.headers["authorization"] = f"Bot {token}"
+    self._credential_token = token
+    self._credential_revision = credential.revision
+    self._credential_ready.set()
+
+  async def _credential_endpoint(self, request: Request) -> Response:
+    if request_content_type(request) != "application/json":
+      return JSONResponse(
+        {"detail": "Credential updates require application/json."}, status_code=415
+      )
+    try:
+      credential = DiscordCredential.model_validate_json(await request.body())
+      self._apply_credential(credential)
+    except ValidationError as exc:
+      return JSONResponse(
+        {
+          "detail": "Invalid Discord credential.",
+          "errors": exc.errors(include_url=False),
+        },
+        status_code=422,
+      )
+    except ValueError as exc:
+      return JSONResponse({"detail": str(exc)}, status_code=409)
+    return Response(status_code=204)
 
   async def start(self) -> None:
     self._consumer = asyncio.create_task(self._consume(), name="micro.discord.http")
@@ -388,6 +443,8 @@ class DiscordHTTPWorker(Microservice):
     await self.store.aclose()
 
   async def execute(self, request: DiscordHTTPRequest) -> DiscordHTTPResponse:
+    if self._credential_revision < 0:
+      raise RuntimeError("Discord credential is not configured.")
     if request.idempotency_key is not None:
       completed = await self._coordinator.completed(request.idempotency_key)
       if completed is not None:
@@ -485,6 +542,7 @@ class DiscordHTTPWorker(Microservice):
 
   async def _consume(self) -> None:
     await self._topology_ready.wait()
+    await self._credential_ready.wait()
     while True:
       delivery = await self.queue.consume(DISCORD_HTTP_CHANNEL, "micro-discord-http")
       try:
