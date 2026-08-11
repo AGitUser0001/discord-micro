@@ -1,16 +1,98 @@
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
-from graphql import OperationType, StringValueNode
+from graphglot import ast
+from graphglot.dialect import Dialect
+from graphql import EnumValueNode, ObjectValueNode, OperationType, StringValueNode
 from pydantic import JsonValue
 
 from ._composer import (
   Entity,
-  FromExpression,
   GraphCompositionError,
-  _compile_from_expression,
+  KeyBinding,
+  _compile_key,
   _is_list_type,
 )
+
+_GQL = Dialect.get_or_raise("fullgql")
+
+
+@dataclass(frozen=True, slots=True)
+class GQLExpression:
+  tree: Any
+  parameters: frozenset[str]
+
+  def render(
+    self,
+    entity: Entity,
+    variable: str,
+    parameter_prefix: str,
+    arguments: dict[str, object],
+  ) -> tuple[str, dict[str, JsonValue]]:
+    from .._compiler import physical_field
+
+    tree = self.tree.deep_copy()
+    for node in tree.dfs():
+      if isinstance(node, ast.PropertyReference):
+        source_reference = node.property_source
+        if not isinstance(source_reference, ast.BindingVariableReference):
+          raise TypeError("Validated GQL property source changed unexpectedly.")
+        source_reference.binding_variable.name = variable
+        field = node.property_name[0].identifier
+        field.name = physical_field(f"{entity.name}.{field.name}")
+      elif isinstance(node, ast.GeneralParameterReference):
+        name = node.parameter_name.name
+        node.parameter_name.name = f"{parameter_prefix}_{name}"
+    rendered = _GQL.generate(tree)
+    if not rendered.startswith("RETURN "):
+      raise TypeError("GQL expression wrapper was not preserved.")
+    return rendered.removeprefix("RETURN "), {
+      f"{parameter_prefix}_{name}": arguments[name]  # type: ignore[dict-item]
+      for name in self.parameters
+    }
+
+
+def compile_gql_expression(
+  source: str, entity: Entity, arguments: set[str]
+) -> GQLExpression:
+  try:
+    tree = _GQL.parse(f"RETURN {source}")[0]
+  except Exception as exc:
+    raise GraphCompositionError(f"Invalid GQL expression: {exc}") from exc
+  parameters: set[str] = set()
+  properties: set[str] = set()
+  for node in tree.dfs():
+    if isinstance(node, ast.PropertyReference):
+      property_source = node.property_source
+      if (
+        not isinstance(property_source, ast.BindingVariableReference)
+        or property_source.binding_variable.name != "current"
+        or len(node.property_name) != 1
+      ):
+        raise GraphCompositionError(
+          "GQL expressions may reference properties through current only."
+        )
+      properties.add(node.property_name[0].identifier.name)
+    elif isinstance(node, ast.GeneralParameterReference):
+      parameters.add(node.parameter_name.name)
+  if unknown := properties - entity.fields:
+    raise GraphCompositionError(
+      f"GQL expression references unknown fields: {', '.join(sorted(unknown))}."
+    )
+  if unknown := parameters - arguments:
+    raise GraphCompositionError(
+      f"GQL expression references unknown arguments: {', '.join(sorted(unknown))}."
+    )
+  return GQLExpression(tree, frozenset(parameters))
+
+
+@dataclass(frozen=True, slots=True)
+class Assignment:
+  field: str
+  argument: str | None = None
+  expression: GQLExpression | None = None
+
+
 from ._directive import (
   DirectiveBindContext,
   DirectiveCompileContext,
@@ -23,27 +105,28 @@ from ._directive import (
 class EntityMutation:
   action: Literal["insert", "update"]
   entity: Entity
-  key: FromExpression
-  fields: FromExpression
+  key: KeyBinding
+  assignments: tuple[Assignment, ...]
+  where: GQLExpression | None
 
 
 @dataclass(frozen=True, slots=True)
 class DeleteMutation:
   entity: Entity
-  key: FromExpression
+  key: KeyBinding
 
 
 @dataclass(frozen=True, slots=True)
 class RelationshipMutation:
   action: Literal["connect", "disconnect"]
   source: Entity
-  source_key: FromExpression
+  source_key: KeyBinding
   target: Entity
-  target_key: FromExpression
+  target_key: KeyBinding
   field: str
 
 
-def _directive_argument(context: DirectiveBindContext, name: str) -> str:
+def _directive_argument(context: DirectiveBindContext, name: str):
   directive = next(
     item
     for item in context.field.directives or ()
@@ -53,9 +136,9 @@ def _directive_argument(context: DirectiveBindContext, name: str) -> str:
     (item for item in directive.arguments or () if item.name.value == name),
     None,
   )
-  if argument is None or not isinstance(argument.value, StringValueNode):
-    raise GraphCompositionError(f"@{directive.name.value} requires {name}: String!.")
-  return argument.value.value
+  if argument is None:
+    raise GraphCompositionError(f"@{directive.name.value} requires {name}.")
+  return argument.value
 
 
 def _mutation_arguments(context: DirectiveBindContext) -> set[str]:
@@ -77,20 +160,56 @@ def _attach_entity_mutation(
   if not isinstance(context.entity, Entity):
     raise GraphCompositionError(f"@{action} must return an @entity type.")
   arguments = _mutation_arguments(context)
-  key = _compile_from_expression(_directive_argument(context, "key"), arguments)
-  fields = _compile_from_expression(_directive_argument(context, "fields"), arguments)
+  key = _compile_key(_directive_argument(context, "key"), arguments, action)
+  set_value = _directive_argument(context, "set")
+  if not isinstance(set_value, ObjectValueNode) or not set_value.fields:
+    raise GraphCompositionError(f"@{action} set must be a non-empty object.")
+  assignments: list[Assignment] = []
+  for field in set_value.fields:
+    if isinstance(field.value, EnumValueNode):
+      if field.value.value not in arguments:
+        raise GraphCompositionError(
+          f"@{action} references unknown argument {field.value.value!r}."
+        )
+      assignments.append(Assignment(field.name.value, argument=field.value.value))
+    elif isinstance(field.value, StringValueNode):
+      assignments.append(
+        Assignment(
+          field.name.value,
+          expression=compile_gql_expression(
+            field.value.value, context.entity, arguments
+          ),
+        )
+      )
+    else:
+      raise GraphCompositionError(
+        f"@{action} set values must be argument names or GQL strings."
+      )
   if key.key_fields not in context.entity.keys:
     raise GraphCompositionError(f"@{action} key does not match an @entity key.")
-  unknown = set(fields.key_fields) - context.entity.fields
+  unknown = {assignment.field for assignment in assignments} - context.entity.fields
   if unknown:
     raise GraphCompositionError(
       f"@{action} references unknown fields: {', '.join(sorted(unknown))}."
     )
-  if not fields.key_fields:
-    raise GraphCompositionError(f"@{action} fields cannot be empty.")
-  if action == "insert" and not set(key.key_fields) <= set(fields.key_fields):
-    raise GraphCompositionError("@insert fields must include every entity key field.")
-  return EntityMutation(action, context.entity, key, fields)
+  if action == "insert" and not set(key.key_fields) <= {
+    assignment.field for assignment in assignments
+  }:
+    raise GraphCompositionError("@insert set must include every entity key field.")
+  directive = next(
+    item for item in context.field.directives or () if item.name.value == action
+  )
+  where_argument = next(
+    (item for item in directive.arguments or () if item.name.value == "where"), None
+  )
+  where = None
+  if where_argument is not None:
+    if action != "update" or not isinstance(where_argument.value, StringValueNode):
+      raise GraphCompositionError("@update where must be a GQL string.")
+    where = compile_gql_expression(
+      where_argument.value.value, context.entity, arguments
+    )
+  return EntityMutation(action, context.entity, key, tuple(assignments), where)
 
 
 def _attach_insert(context: DirectiveBindContext) -> EntityMutation:
@@ -108,19 +227,29 @@ def _compile_entity_mutation(context: DirectiveCompileContext) -> DirectiveResul
   if not isinstance(binding, EntityMutation):
     raise TypeError("Entity mutation received invalid attached metadata.")
   key = binding.key.evaluate(context.arguments)
-  fields = binding.fields.evaluate(context.arguments)
   identity_parameter = f"{context.parameter_prefix}_identity"
   parameters: dict[str, JsonValue] = {
     identity_parameter: entity_identity(binding.entity.name, key)
   }
   properties: list[str] = [f"_micro_id: ${identity_parameter}"]
   assignments: list[str] = []
-  for field_name, value in fields.items():
-    parameter = f"{context.parameter_prefix}_{field_name}"
-    parameters[parameter] = cast(JsonValue, value)
-    physical = physical_field(f"{binding.entity.name}.{field_name}")
-    properties.append(f"{physical}: ${parameter}")
-    assignments.append(f"{context.variable}.{physical} = ${parameter}")
+  for assignment in binding.assignments:
+    physical = physical_field(f"{binding.entity.name}.{assignment.field}")
+    if assignment.argument is not None:
+      parameter = f"{context.parameter_prefix}_{assignment.argument}"
+      parameters[parameter] = cast(JsonValue, context.arguments[assignment.argument])
+      value = f"${parameter}"
+    else:
+      assert assignment.expression is not None
+      value, expression_parameters = assignment.expression.render(
+        binding.entity,
+        context.variable,
+        context.parameter_prefix,
+        dict(context.arguments),
+      )
+      parameters.update(expression_parameters)
+    properties.append(f"{physical}: {value}")
+    assignments.append(f"{context.variable}.{physical} = {value}")
   if binding.action == "insert":
     clauses = (
       (
@@ -129,22 +258,35 @@ def _compile_entity_mutation(context: DirectiveCompileContext) -> DirectiveResul
       ),
     )
   else:
-    clauses = (
+    clauses_list = [
       f"MATCH ({context.variable}:{physical_type(binding.entity.name)})",
       f"WHERE {context.variable}._micro_id = ${identity_parameter}",
-      f"SET {', '.join(assignments)}",
-    )
+    ]
+    if binding.where is not None:
+      where, where_parameters = binding.where.render(
+        binding.entity,
+        context.variable,
+        context.parameter_prefix,
+        dict(context.arguments),
+      )
+      parameters.update(where_parameters)
+      clauses_list[-1] += f" AND ({where})"
+    clauses_list.append(f"SET {', '.join(assignments)}")
+    clauses = tuple(clauses_list)
   return DirectiveResult(clauses, parameters, binding.entity.name)
 
 
 def _attach_delete(context: DirectiveBindContext) -> DeleteMutation:
   _require_mutation(context, "delete")
-  entity_name = _directive_argument(context, "type")
+  entity_name_value = _directive_argument(context, "type")
+  if not isinstance(entity_name_value, StringValueNode):
+    raise GraphCompositionError("@delete type must be a string.")
+  entity_name = entity_name_value.value
   entity = context.entities.get(entity_name)
   if not isinstance(entity, Entity):
     raise GraphCompositionError(f"@delete references unknown entity {entity_name!r}.")
-  key = _compile_from_expression(
-    _directive_argument(context, "key"), _mutation_arguments(context)
+  key = _compile_key(
+    _directive_argument(context, "key"), _mutation_arguments(context), "delete"
   )
   if key.key_fields not in entity.keys:
     raise GraphCompositionError("@delete key does not match an @entity key.")
@@ -179,24 +321,29 @@ def _attach_relationship(
   action: Literal["connect", "disconnect"],
 ) -> RelationshipMutation:
   _require_mutation(context, action)
-  source_name = _directive_argument(context, "fromType")
-  target_name = _directive_argument(context, "toType")
+  source_name_value = _directive_argument(context, "fromType")
+  target_name_value = _directive_argument(context, "toType")
+  if not isinstance(source_name_value, StringValueNode) or not isinstance(
+    target_name_value, StringValueNode
+  ):
+    raise GraphCompositionError(f"@{action} entity types must be strings.")
+  source_name = source_name_value.value
+  target_name = target_name_value.value
   source = context.entities.get(source_name)
   target = context.entities.get(target_name)
   if not isinstance(source, Entity) or not isinstance(target, Entity):
     raise GraphCompositionError(f"@{action} references an unknown entity type.")
-  field = _directive_argument(context, "field")
+  field_value = _directive_argument(context, "field")
+  if not isinstance(field_value, StringValueNode):
+    raise GraphCompositionError(f"@{action} field must be a string.")
+  field = field_value.value
   if field not in source.fields:
     raise GraphCompositionError(
       f"@{action} references unknown field {source.name}.{field}."
     )
   arguments = _mutation_arguments(context)
-  source_key = _compile_from_expression(
-    _directive_argument(context, "fromKey"), arguments
-  )
-  target_key = _compile_from_expression(
-    _directive_argument(context, "toKey"), arguments
-  )
+  source_key = _compile_key(_directive_argument(context, "fromKey"), arguments, action)
+  target_key = _compile_key(_directive_argument(context, "toKey"), arguments, action)
   if (
     source_key.key_fields not in source.keys or target_key.key_fields not in target.keys
   ):
@@ -262,7 +409,7 @@ def _compile_relationship(context: DirectiveCompileContext) -> DirectiveResult:
 
 INSERT_DIRECTIVE = DirectiveMetadata(
   "insert",
-  "directive @insert(key: String!, fields: String!) on FIELD_DEFINITION",
+  "directive @insert(key: GQL!, set: GQL!) on FIELD_DEFINITION",
   _attach_insert,
   _compile_entity_mutation,
   frozenset((OperationType.MUTATION,)),
@@ -270,7 +417,7 @@ INSERT_DIRECTIVE = DirectiveMetadata(
 
 UPDATE_DIRECTIVE = DirectiveMetadata(
   "update",
-  "directive @update(key: String!, fields: String!) on FIELD_DEFINITION",
+  "directive @update(key: GQL!, where: GQL, set: GQL!) on FIELD_DEFINITION",
   _attach_update,
   _compile_entity_mutation,
   frozenset((OperationType.MUTATION,)),
@@ -278,15 +425,15 @@ UPDATE_DIRECTIVE = DirectiveMetadata(
 
 DELETE_DIRECTIVE = DirectiveMetadata(
   "delete",
-  "directive @delete(type: String!, key: String!) on FIELD_DEFINITION",
+  "directive @delete(type: String!, key: GQL!) on FIELD_DEFINITION",
   _attach_delete,
   _compile_delete,
   frozenset((OperationType.MUTATION,)),
 )
 
 _RELATIONSHIP_DEFINITION = (
-  "(fromType: String!, fromKey: String!, toType: String!, "
-  "toKey: String!, field: String!) on FIELD_DEFINITION"
+  "(fromType: String!, fromKey: GQL!, toType: String!, "
+  "toKey: GQL!, field: String!) on FIELD_DEFINITION"
 )
 
 CONNECT_DIRECTIVE = DirectiveMetadata(

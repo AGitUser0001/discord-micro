@@ -161,7 +161,7 @@ def test_overseer_loads_replaces_and_unloads_graph_modules() -> None:
     schema="""
       type Guild @entity(key: ["id"]) { id: ID! }
       type Query {
-        guild(id: ID!): Guild @from(key: "{'id': id}")
+        guild(id: ID!): Guild @from(key: {id: id})
       }
     """,
   )

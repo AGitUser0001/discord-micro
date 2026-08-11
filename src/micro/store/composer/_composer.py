@@ -1,8 +1,7 @@
-import ast
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from types import CodeType, MappingProxyType
+from types import MappingProxyType
 from typing import Any, cast
 
 from graphql import (
@@ -19,6 +18,7 @@ from graphql import (
 from graphql.language import (
   EnumTypeDefinitionNode,
   EnumTypeExtensionNode,
+  EnumValueNode,
   InputObjectTypeDefinitionNode,
   InputObjectTypeExtensionNode,
   InterfaceTypeDefinitionNode,
@@ -28,6 +28,7 @@ from graphql.language import (
   NamedTypeNode,
   Node,
   NonNullTypeNode,
+  ObjectValueNode,
   SchemaDefinitionNode,
   SchemaExtensionNode,
   StringValueNode,
@@ -56,28 +57,23 @@ class GraphCompositionError(TopologyError):
 
 
 @dataclass(frozen=True, slots=True)
-class FromExpression:
-  """A validated Python key expression evaluated for each root-field request."""
+class KeyBinding:
+  """A declarative entity-field to GraphQL-argument mapping."""
 
-  source: str
-  code: CodeType
-  key_fields: tuple[str, ...]
-  argument_names: tuple[str, ...]
+  fields: tuple[tuple[str, str], ...]
+
+  @property
+  def key_fields(self) -> tuple[str, ...]:
+    return tuple(field for field, _ in self.fields)
 
   def evaluate(self, arguments: Mapping[str, object]) -> dict[str, object]:
-    values = {name: arguments.get(name) for name in self.argument_names}
-    value = eval(self.code, {"__builtins__": {}}, values)
-    if not isinstance(value, dict):
-      raise TypeError("A @from key expression must produce a dict.")
-    if set(value) != set(self.key_fields):
-      raise ValueError("A @from key expression produced unexpected key fields.")
-    return value
+    return {field: arguments[argument] for field, argument in self.fields}
 
 
 @dataclass(frozen=True, slots=True)
 class FromDirective:
   entity: Entity
-  expression: FromExpression
+  expression: KeyBinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,8 +106,7 @@ def compose_graph(
     raise GraphCompositionError("Graph module IDs must be unique.")
 
   from ._mutation import MUTATION_DIRECTIVES
-  from ._ownership import FROM_ACTIVE_DIRECTIVE
-  from ._pagination import SCAN_DIRECTIVE
+  from ._queries import FROM_ACTIVE_DIRECTIVE, SCAN_DIRECTIVE
 
   registered = (
     FROM_DIRECTIVE,
@@ -221,6 +216,7 @@ def _merge_documents(
 
   metadata_sdl = "\n".join(
     (
+      "scalar GQL",
       *(item.definition for item in type_directives),
       *(item.definition for item in directives),
     )
@@ -494,34 +490,24 @@ def _collect_bindings(
   return bindings
 
 
-def _compile_from_expression(source: str, arguments: set[str]) -> FromExpression:
-  try:
-    expression = ast.parse(source, mode="eval")
-  except SyntaxError as exc:
-    raise GraphCompositionError(f"Invalid @from Python expression: {exc}") from exc
-  if not isinstance(expression.body, ast.Dict):
-    raise GraphCompositionError("A @from expression must be a dict literal.")
-  key_fields: list[str] = []
-  for key in expression.body.keys:
-    if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-      raise GraphCompositionError("@from dict keys must be string literals.")
-    key_fields.append(key.value)
-  if len(set(key_fields)) != len(key_fields):
-    raise GraphCompositionError("@from cannot produce duplicate key fields.")
-  referenced_names = {
-    node.id for node in ast.walk(expression) if isinstance(node, ast.Name)
-  }
-  unknown = referenced_names - arguments
+def _compile_key(value: Node, arguments: set[str], directive: str) -> KeyBinding:
+  if not isinstance(value, ObjectValueNode):
+    raise GraphCompositionError(f"@{directive} key must be an object.")
+  fields: list[tuple[str, str]] = []
+  for field in value.fields:
+    if not isinstance(field.value, EnumValueNode | StringValueNode):
+      raise GraphCompositionError(
+        f"@{directive} key values must name GraphQL arguments."
+      )
+    fields.append((field.name.value, field.value.value))
+  if not fields:
+    raise GraphCompositionError(f"@{directive} key cannot be empty.")
+  unknown = {argument for _, argument in fields} - arguments
   if unknown:
     raise GraphCompositionError(
-      f"@from references unknown arguments: {', '.join(sorted(unknown))}."
+      f"@{directive} references unknown arguments: {', '.join(sorted(unknown))}."
     )
-  return FromExpression(
-    source,
-    compile(expression, "<micro @from>", "eval"),
-    tuple(key_fields),
-    tuple(sorted(referenced_names)),
-  )
+  return KeyBinding(tuple(fields))
 
 
 def _attach_from(context: DirectiveBindContext) -> FromDirective:
@@ -545,11 +531,12 @@ def _attach_from(context: DirectiveBindContext) -> FromDirective:
     ),
     None,
   )
-  if key_argument is None or not isinstance(key_argument.value, StringValueNode):
-    raise GraphCompositionError("@from requires a key expression.")
-  expression = _compile_from_expression(
-    key_argument.value.value,
+  if key_argument is None:
+    raise GraphCompositionError("@from requires a key.")
+  expression = _compile_key(
+    key_argument.value,
     {argument.name.value for argument in context.field.arguments or ()},
+    "from",
   )
   if expression.key_fields not in context.entity.keys:
     raise GraphCompositionError(
@@ -579,7 +566,7 @@ def _compile_from(context: DirectiveCompileContext) -> DirectiveResult:
 
 FROM_DIRECTIVE = DirectiveMetadata(
   "from",
-  "directive @from(key: String!) on FIELD_DEFINITION",
+  "directive @from(key: GQL!) on FIELD_DEFINITION",
   _attach_from,
   _compile_from,
   frozenset((OperationType.QUERY,)),

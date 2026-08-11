@@ -44,7 +44,7 @@ GREETING_STORE = GraphModule(
 
     type Query {
       greeting(name: String!): Greeting
-        @from(key: "{'name': name}")
+        @from(key: {name: name})
     }
   """,
 )

@@ -44,7 +44,7 @@ GUILDS = GraphModule(
     }
 
     type Query {
-      guild(id: ID!): Guild @from(key: "{'id': id}")
+      guild(id: ID!): Guild @from(key: {id: id})
     }
   """,
 )
@@ -94,7 +94,7 @@ def test_from_expression_must_match_an_entity_key() -> None:
     schema="""
       type Guild @entity(key: ["id"]) { id: ID! }
       type Query {
-        guild(name: String!): Guild @from(key: "{'name': name}")
+        guild(name: String!): Guild @from(key: {name: name})
       }
     """,
   )
@@ -384,26 +384,33 @@ def test_builtin_mutation_directives_compile_entity_and_relationship_writes() ->
       type Guild @entity(key: ["id"]) {
         id: ID!
         name: String!
+        remaining: Int!
         channels: [Channel!]!
       }
       type Channel @entity(key: ["id"]) { id: ID!, name: String! }
-      type Query { guild(id: ID!): Guild @from(key: "{'id': id}") }
+      type Query { guild(id: ID!): Guild @from(key: {id: id}) }
       type Mutation {
         insertGuild(id: ID!, name: String!): Guild!
-          @insert(key: "{'id': id}", fields: "{'id': id, 'name': name}")
+          @insert(key: {id: id}, set: {id: id, name: name})
         updateGuild(id: ID!, name: String!): Guild
-          @update(key: "{'id': id}", fields: "{'name': name}")
+          @update(key: {id: id}, set: {name: name})
+        decrementGuild(id: ID!): Guild
+          @update(
+            key: {id: "id"}
+            where: "current.remaining > 0"
+            set: {remaining: "current.remaining - 1"}
+          )
         deleteGuild(id: ID!): Boolean!
-          @delete(type: "Guild", key: "{'id': id}")
+          @delete(type: "Guild", key: {id: id})
         connectChannel(guild: ID!, channel: ID!): Boolean!
           @connect(
-            fromType: "Guild", fromKey: "{'id': guild}",
-            toType: "Channel", toKey: "{'id': channel}", field: "channels"
+            fromType: "Guild", fromKey: {id: guild},
+            toType: "Channel", toKey: {id: channel}, field: "channels"
           )
         disconnectChannel(guild: ID!, channel: ID!): Boolean!
           @disconnect(
-            fromType: "Guild", fromKey: "{'id': guild}",
-            toType: "Channel", toKey: "{'id': channel}", field: "channels"
+            fromType: "Guild", fromKey: {id: guild},
+            toType: "Channel", toKey: {id: channel}, field: "channels"
           )
       }
     """,
@@ -424,6 +431,9 @@ def test_builtin_mutation_directives_compile_entity_and_relationship_writes() ->
   updated = compile(
     'mutation { updateGuild(id: "1", name: "Updated") { name } }'
   ).batch.statements[0]
+  decremented = compile(
+    'mutation { decrementGuild(id: "1") { remaining } }'
+  ).batch.statements[0]
   deleted = compile('mutation { deleteGuild(id: "1") }').batch.statements[0]
   connected = compile(
     'mutation { connectChannel(guild: "1", channel: "2") }'
@@ -436,6 +446,8 @@ def test_builtin_mutation_directives_compile_entity_and_relationship_writes() ->
   assert physical_type("Guild") in inserted.text
   assert physical_field("Guild.name") in inserted.text
   assert "SET" in updated.text
+  assert f"n0.{physical_field('Guild.remaining')} > 0" in decremented.text
+  assert f"n0.{physical_field('Guild.remaining')} - 1" in decremented.text
   assert "DETACH DELETE" in deleted.text
   assert f"[:{physical_reference('Guild.channels')}]" in connected.text
   assert "DELETE" in disconnected.text
@@ -452,7 +464,7 @@ def test_composer_merges_all_extensible_graphql_type_kinds() -> None:
       type A implements Node @entity(key: ["id"]) { id: ID! }
       union Result = A
       type Root {
-        a(id: ID!): A @from(key: "{'id': id}")
+        a(id: ID!): A @from(key: {id: id})
       }
     """,
   )
@@ -469,7 +481,7 @@ def test_composer_merges_all_extensible_graphql_type_kinds() -> None:
       }
       extend union Result = B
       extend type Root {
-        b(id: ID!): B @from(key: "{'id': id}")
+        b(id: ID!): B @from(key: {id: id})
       }
     """,
   )

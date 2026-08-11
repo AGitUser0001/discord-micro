@@ -3,7 +3,6 @@ from ._composer import (
   FROM_DIRECTIVE,
   Entity,
   FromDirective,
-  FromExpression,
   GraphCompositionError,
   MicroGraph,
   compose_graph,
@@ -29,8 +28,13 @@ from ._mutation import (
   EntityMutation,
   RelationshipMutation,
 )
-from ._ownership import FROM_ACTIVE_DIRECTIVE, ActiveOwnedLookup
-from ._pagination import MAX_PAGE_SIZE, SCAN_DIRECTIVE, EntityScan
+from ._queries import (
+  FROM_ACTIVE_DIRECTIVE,
+  MAX_PAGE_SIZE,
+  SCAN_DIRECTIVE,
+  ActiveOwnedLookup,
+  EntityScan,
+)
 
 __all__ = (
   "CONNECT_DIRECTIVE",
@@ -55,7 +59,6 @@ __all__ = (
   "EntityMutation",
   "EntityScan",
   "FromDirective",
-  "FromExpression",
   "GraphCompositionError",
   "MicroGraph",
   "RelationshipMutation",

@@ -42,7 +42,7 @@ PEOPLE = GraphModule(
   schema="""
     type Person @entity(key: ["name"]) { name: String! }
     type Query {
-      person(name: String!): Person @from(key: "{'name': name}")
+      person(name: String!): Person @from(key: {name: name})
     }
   """,
 )
@@ -139,7 +139,7 @@ def test_overseer_topology_activates_distributed_store_module() -> None:
     schema="""
       type Status @entity(key: ["value"]) { value: String! }
       type Query {
-        moduleStatus(value: String!): Status @from(key: "{'value': value}")
+        moduleStatus(value: String!): Status @from(key: {value: value})
       }
     """,
   )
@@ -210,7 +210,7 @@ def test_store_can_retry_a_failed_desired_revision() -> None:
     schema="""
       type Person @entity(key: ["name"]) { name: String! }
       type Query {
-        person(name: String!): Person @from(key: "{'name': name}")
+        person(name: String!): Person @from(key: {name: name})
       }
     """,
   )
