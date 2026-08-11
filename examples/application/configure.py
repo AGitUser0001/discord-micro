@@ -10,7 +10,11 @@ async def main() -> None:
         "id": "store-1",
         "base_url": "http://127.0.0.1:8101",
         "role": "store",
-        "modules": ["example.greetings", "micro.gateway.projection"],
+        "modules": [
+          "example.greetings",
+          "micro.gateway.projection",
+          "micro.discord.http.rate_limits",
+        ],
       },
       {
         "id": "queue-1",

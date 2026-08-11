@@ -1,7 +1,8 @@
 import asyncio
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from time import monotonic
+from time import monotonic, time
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode
 
@@ -9,7 +10,7 @@ import httpx2
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from pydantic_core import from_json, to_json
 
-from micro._microservices import Microservice
+from micro._microservices import Microservice, StoreClient, apply_state_atomically
 from micro.queue import QueueClient
 
 from .http_operations import (
@@ -87,7 +88,7 @@ class MemoryRateLimits:
       delay = _retry_after(response, headers)
       if delay > 0:
         reset = monotonic() + delay
-        if headers.get("x-ratelimit-global") == "true":
+        if _is_global_rate_limit(response, headers):
           self._global_reset = max(self._global_reset, reset)
         else:
           bucket.reset_at = max(bucket.reset_at, reset)
@@ -101,6 +102,240 @@ class MemoryRateLimits:
       if len(self._completed) >= 10_000:
         self._completed.pop(next(iter(self._completed)))
       self._completed[key] = response
+
+
+class StoreRateLimits:
+  """Distributed Discord rate limits coordinated through atomic graph mutations."""
+
+  MODULE = "micro.discord.http.rate_limits"
+
+  def __init__(self, store: StoreClient, token: str) -> None:
+    self.store = store
+    self._identity = hashlib.sha256(token.encode()).hexdigest()
+    self._completed: dict[str, DiscordHTTPResponse] = {}
+    self._completed_lock = asyncio.Lock()
+
+  async def acquire(self, route: str) -> None:
+    route_id = self._route_id(route)
+    while True:
+      state = await self._data(
+        """
+        query RateLimitState($route: ID!, $global: ID!) {
+          route: discordHTTPRoute(id: $route) { bucketId }
+          global: discordHTTPGlobalLimit(id: $global) { blockedUntil }
+        }
+        """,
+        {"route": route_id, "global": self._identity},
+      )
+      global_limit = state.get("global")
+      if not isinstance(global_limit, dict):
+        await self._ensure_global()
+        continue
+      now = time()
+      blocked_until = global_limit.get("blockedUntil")
+      if isinstance(blocked_until, int | float) and blocked_until > now:
+        await asyncio.sleep(blocked_until - now)
+        continue
+      route_state = state.get("route")
+      if not isinstance(route_state, dict):
+        await self._ensure_route(route_id)
+        return
+      bucket_id = route_state.get("bucketId")
+      if not isinstance(bucket_id, str):
+        return
+      acquired = await self._data(
+        """
+        mutation Acquire($id: ID!, $now: Float!) {
+          bucket: acquireDiscordHTTPBucket(id: $id, now: $now) { id }
+        }
+        """,
+        {"id": bucket_id, "now": now},
+      )
+      if acquired.get("bucket") is not None:
+        return
+      bucket = await self._data(
+        """
+        query Bucket($id: ID!) {
+          bucket: discordHTTPBucket(id: $id) { resetAt probeUntil }
+        }
+        """,
+        {"id": bucket_id},
+      )
+      bucket_state = bucket.get("bucket")
+      if not isinstance(bucket_state, dict):
+        return
+      reset_at = bucket_state.get("resetAt")
+      probe_until = bucket_state.get("probeUntil")
+      if not isinstance(reset_at, int | float) or not isinstance(
+        probe_until, int | float
+      ):
+        return
+      now = time()
+      if reset_at <= now:
+        if probe_until > now:
+          await asyncio.sleep(probe_until - now)
+          continue
+        claimed = await self._data(
+          """
+          mutation Claim($id: ID!, $now: Float!, $lease: Float!) {
+            bucket: claimExpiredDiscordHTTPBucket(
+              id: $id, now: $now, leaseUntil: $lease
+            ) { id }
+          }
+          """,
+          {"id": bucket_id, "now": now, "lease": now + 30},
+        )
+        if claimed.get("bucket") is not None:
+          return
+        continue
+      await asyncio.sleep(reset_at - now)
+
+  async def observe(self, route: str, response: DiscordHTTPResponse) -> None:
+    headers = {name.lower(): value for name, value in response.headers}
+    retry_after = _retry_after(response, headers)
+    if _is_global_rate_limit(response, headers):
+      await self._extend_global(time() + retry_after)
+      return
+    bucket_hash = headers.get("x-ratelimit-bucket")
+    if bucket_hash is None:
+      return
+    route_id = self._route_id(route)
+    bucket_id = self._bucket_id(route, bucket_hash)
+    await self._ensure_route(route_id)
+    await self._ensure_bucket(bucket_id, headers, retry_after)
+    await self._data(
+      """
+      mutation Map($route: ID!, $bucket: ID!) {
+        mapDiscordHTTPRoute(id: $route, bucketId: $bucket) { id }
+      }
+      """,
+      {"route": route_id, "bucket": bucket_id},
+    )
+
+  async def completed(self, key: str) -> DiscordHTTPResponse | None:
+    async with self._completed_lock:
+      return self._completed.get(key)
+
+  async def complete(self, key: str, response: DiscordHTTPResponse) -> None:
+    async with self._completed_lock:
+      if len(self._completed) >= 10_000:
+        self._completed.pop(next(iter(self._completed)))
+      self._completed[key] = response
+
+  async def _ensure_route(self, route_id: str) -> None:
+    await self._create_or_ignore(
+      """
+      mutation CreateRoute($id: ID!) {
+        createDiscordHTTPRoute(id: $id, bucketId: null) { id }
+      }
+      """,
+      {"id": route_id},
+    )
+
+  async def _ensure_global(self) -> None:
+    await self._create_or_ignore(
+      """
+      mutation CreateGlobal($id: ID!, $until: Float!) {
+        createDiscordHTTPGlobalLimit(id: $id, blockedUntil: $until) { id }
+      }
+      """,
+      {"id": self._identity, "until": 0.0},
+    )
+
+  async def _extend_global(self, until: float) -> None:
+    await self._ensure_global()
+    await self._data(
+      """
+      mutation ExtendGlobal($id: ID!, $until: Float!) {
+        extendDiscordHTTPGlobalLimit(id: $id, until: $until) { id }
+      }
+      """,
+      {"id": self._identity, "until": until},
+    )
+
+  async def _ensure_bucket(
+    self, bucket_id: str, headers: Mapping[str, str], retry_after: float
+  ) -> None:
+    try:
+      limit = int(headers.get("x-ratelimit-limit", "1"))
+      remaining = int(headers.get("x-ratelimit-remaining", "0"))
+      reset_at = (
+        float(headers["x-ratelimit-reset"])
+        if "x-ratelimit-reset" in headers
+        else time()
+        + max(
+          0.0,
+          float(headers.get("x-ratelimit-reset-after", retry_after)),
+        )
+      )
+    except ValueError as exc:
+      raise ValueError("Discord returned invalid rate-limit headers.") from exc
+    values: dict[str, JsonValue] = {
+      "id": bucket_id,
+      "limit": max(1, limit),
+      "remaining": max(0, remaining),
+      "reset": reset_at,
+      "probe": 0.0,
+    }
+    created = await self._create_or_ignore(
+      """
+      mutation CreateBucket(
+        $id: ID!, $limit: Int!, $remaining: Int!, $reset: Float!, $probe: Float!
+      ) {
+        createDiscordHTTPBucket(
+          id: $id, limit: $limit, remaining: $remaining,
+          resetAt: $reset, probeUntil: $probe
+        ) { id }
+      }
+      """,
+      values,
+    )
+    if created:
+      return
+    await self._data(
+      """
+      mutation AdvanceBucket($id: ID!, $limit: Int!, $remaining: Int!, $reset: Float!) {
+        advanceDiscordHTTPBucket(
+          id: $id, limit: $limit, remaining: $remaining, resetAt: $reset
+        ) { id }
+      }
+      """,
+      values,
+    )
+    await self._data(
+      """
+      mutation ReduceBucket($id: ID!, $remaining: Int!, $reset: Float!) {
+        reduceDiscordHTTPBucket(id: $id, remaining: $remaining, resetAt: $reset) { id }
+      }
+      """,
+      values,
+    )
+
+  async def _create_or_ignore(
+    self, query: str, variables: Mapping[str, JsonValue]
+  ) -> bool:
+    response = await self.store.execute(query, variables=variables, module=self.MODULE)
+    return not response.get("errors")
+
+  async def _data(
+    self, query: str, variables: Mapping[str, JsonValue]
+  ) -> dict[str, Any]:
+    response = await self.store.execute(query, variables=variables, module=self.MODULE)
+    if errors := response.get("errors"):
+      raise RuntimeError(f"Discord rate-limit store rejected an operation: {errors}")
+    data = response.get("data")
+    if not isinstance(data, dict):
+      raise TypeError("Discord rate-limit store omitted GraphQL data.")
+    return data
+
+  def _route_id(self, route: str) -> str:
+    return hashlib.sha256(f"{self._identity}\0{route}".encode()).hexdigest()
+
+  def _bucket_id(self, route: str, bucket_hash: str) -> str:
+    major_parameters = route.partition(":")[2]
+    return hashlib.sha256(
+      f"{self._identity}\0{bucket_hash}\0{major_parameters}".encode()
+    ).hexdigest()
 
 
 class DiscordHTTPWorker(Microservice):
@@ -120,20 +355,25 @@ class DiscordHTTPWorker(Microservice):
     if not 1 <= max_attempts <= 10:
       raise ValueError("max_attempts must be between 1 and 10.")
     self.queue = QueueClient(transport=transport)
+    self.store = StoreClient(transport=transport)
     self._http = httpx2.AsyncClient(
       base_url=api_url,
       transport=transport,
       headers={"authorization": f"Bot {token}", "user-agent": "DiscordBot (Micro)"},
     )
-    self._coordinator = coordinator or MemoryRateLimits()
+    self._coordinator = coordinator or StoreRateLimits(self.store, token)
     self._max_attempts = max_attempts
     self._consumer: asyncio.Task[None] | None = None
     self._topology_ready = asyncio.Event()
     super().__init__("discord.http")
 
   def apply_state(self, state: JsonValue) -> None:
-    self.queue.apply_state(state)
+    apply_state_atomically((self.queue, self.store), state)
     self._topology_ready.set()
+
+  @property
+  def component_ready(self) -> bool:
+    return self.queue.state_revision >= 0 and self.store.state_revision >= 0
 
   async def start(self) -> None:
     self._consumer = asyncio.create_task(self._consume(), name="micro.discord.http")
@@ -145,6 +385,7 @@ class DiscordHTTPWorker(Microservice):
       self._consumer = None
     await self._http.aclose()
     await self.queue.aclose()
+    await self.store.aclose()
 
   async def execute(self, request: DiscordHTTPRequest) -> DiscordHTTPResponse:
     if request.idempotency_key is not None:
@@ -169,7 +410,7 @@ class DiscordHTTPWorker(Microservice):
         body=response.content,
       )
       await self._coordinator.observe(route, result)
-      if response.status_code != 429 or attempt + 1 == self._max_attempts:
+      if not _is_discord_rate_limit(result) or attempt + 1 == self._max_attempts:
         if request.idempotency_key is not None:
           await self._coordinator.complete(request.idempotency_key, result)
         return result
@@ -346,6 +587,26 @@ def _retry_after(response: DiscordHTTPResponse, headers: Mapping[str, str]) -> f
   return 0.0
 
 
+def _is_discord_rate_limit(response: DiscordHTTPResponse) -> bool:
+  return response.status == 429 and any(
+    name.lower() == "via" for name, _ in response.headers
+  )
+
+
+def _is_global_rate_limit(
+  response: DiscordHTTPResponse, headers: Mapping[str, str]
+) -> bool:
+  if response.status != 429:
+    return False
+  if headers.get("x-ratelimit-global") == "true":
+    return True
+  try:
+    body = from_json(response.body)
+  except ValueError:
+    return False
+  return isinstance(body, dict) and body.get("global") is True
+
+
 __all__ = (
   "DISCORD_HTTP_CHANNEL",
   "DiscordHTTPClient",
@@ -354,4 +615,5 @@ __all__ = (
   "DiscordHTTPWorker",
   "MemoryRateLimits",
   "RateLimitCoordinator",
+  "StoreRateLimits",
 )

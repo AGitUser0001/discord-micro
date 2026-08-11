@@ -13,6 +13,7 @@ from micro.discord.http_service import (
   DiscordHTTPWorker,
   MemoryRateLimits,
   RateLimitCoordinator,
+  StoreRateLimits,
 )
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
   "DiscordOperationId",
   "MemoryRateLimits",
   "RateLimitCoordinator",
+  "StoreRateLimits",
   "models",
 ]
