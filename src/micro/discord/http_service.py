@@ -2,35 +2,37 @@ import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from time import monotonic
-from typing import Protocol
+from typing import Any, Literal, Protocol
+from urllib.parse import quote, urlencode
 
 import httpx2
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-from pydantic_core import from_json
+from pydantic_core import from_json, to_json
 
 from micro._microservices import Microservice
 from micro.queue import QueueClient
 
-from .models.http import ApplicationCommandCreateRequest, MessageCreateRequest
+from .http_operations import (
+  HTTP_OPERATIONS,
+  DiscordHTTPOperation,
+  DiscordOperationId,
+  GeneratedDiscordHTTPClient,
+)
 
 DISCORD_HTTP_CHANNEL = "discord.http"
 
 
 class DiscordHTTPRequest(BaseModel):
-  """Discord REST work item carried through Micro Queue."""
+  """One generated Discord OpenAPI operation invocation."""
 
-  model_config = ConfigDict(
-    extra="forbid", frozen=True, ser_json_bytes="base64", val_json_bytes="base64"
-  )
-  method: str = Field(pattern=r"^(DELETE|GET|PATCH|POST|PUT)$")
-  path: str = Field(pattern=r"^/")
-  headers: tuple[tuple[str, str], ...] = ()
-  body: bytes = b""
+  model_config = ConfigDict(extra="forbid", frozen=True)
+  operation: DiscordOperationId
+  data: dict[str, JsonValue]
   idempotency_key: str | None = None
 
 
 class DiscordHTTPResponse(BaseModel):
-  """Unmodified Discord response data suitable for typed or raw callers."""
+  """Unmodified Discord response status, headers, and body."""
 
   model_config = ConfigDict(
     extra="forbid", frozen=True, ser_json_bytes="base64", val_json_bytes="base64"
@@ -38,16 +40,6 @@ class DiscordHTTPResponse(BaseModel):
   status: int = Field(ge=100, le=599)
   headers: tuple[tuple[str, str], ...]
   body: bytes
-
-
-class DiscordMultipartPart(BaseModel):
-  model_config = ConfigDict(
-    extra="forbid", frozen=True, ser_json_bytes="base64", val_json_bytes="base64"
-  )
-  name: str
-  data: bytes
-  filename: str | None = None
-  content_type: str = "application/octet-stream"
 
 
 class RateLimitCoordinator(Protocol):
@@ -112,7 +104,7 @@ class MemoryRateLimits:
 
 
 class DiscordHTTPWorker(Microservice):
-  """Normal Micro worker that performs queued Discord REST requests."""
+  """Queue worker that validates and executes generated Discord operations."""
 
   def __init__(
     self,
@@ -159,15 +151,18 @@ class DiscordHTTPWorker(Microservice):
       completed = await self._coordinator.completed(request.idempotency_key)
       if completed is not None:
         return completed
-    route = _route_key(request.method, request.path)
+    operation = HTTP_OPERATIONS[request.operation]
+    unknown_fields = request.data.keys() - operation.input_model.model_fields.keys()
+    if unknown_fields:
+      raise ValueError(
+        f"Operation {operation.id!r} received unknown fields: "
+        f"{', '.join(sorted(unknown_fields))}."
+      )
+    data = operation.input_model.model_validate_json(to_json(request.data))
+    route = _route_key(operation, data)
     for attempt in range(self._max_attempts):
       await self._coordinator.acquire(route)
-      response = await self._http.request(
-        request.method,
-        request.path,
-        headers=dict(request.headers),
-        content=request.body,
-      )
+      response = await self._execute_operation(operation, data)
       result = DiscordHTTPResponse(
         status=response.status_code,
         headers=tuple(response.headers.multi_items()),
@@ -179,6 +174,57 @@ class DiscordHTTPWorker(Microservice):
           await self._coordinator.complete(request.idempotency_key, result)
         return result
     raise AssertionError("Discord HTTP retry loop did not return.")
+
+  async def _execute_operation(
+    self, operation: DiscordHTTPOperation, request: BaseModel
+  ) -> httpx2.Response:
+    values = request.model_dump(mode="json", by_alias=True, exclude_none=True)
+    path = operation.path
+    for field in operation.path_fields:
+      path = path.replace("{" + field + "}", quote(str(values[field]), safe=""))
+    query = {
+      field: values[field] for field in operation.query_fields if field in values
+    }
+    headers = {
+      field: str(values[field]) for field in operation.header_fields if field in values
+    }
+    body = getattr(request, "body", None)
+    content_type = values.get("content_type")
+    if body is None:
+      return await self._http.request(
+        operation.method, path, params=query, headers=headers
+      )
+    if content_type == "application/json":
+      headers["content-type"] = content_type
+      return await self._http.request(
+        operation.method,
+        path,
+        params=query,
+        headers=headers,
+        content=to_json(_body_mapping(body, mode="json")),
+      )
+    if content_type == "application/x-www-form-urlencoded":
+      headers["content-type"] = content_type
+      return await self._http.request(
+        operation.method,
+        path,
+        params=query,
+        headers=headers,
+        content=urlencode(_body_mapping(body, mode="json"), doseq=True),
+      )
+    if content_type == "multipart/form-data":
+      form, files = _multipart(_body_mapping(body, mode="python"))
+      return await self._http.request(
+        operation.method,
+        path,
+        params=query,
+        headers=headers,
+        data=form,
+        files=files,
+      )
+    raise ValueError(
+      f"Operation {operation.id!r} has unsupported content type {content_type!r}."
+    )
 
   async def _consume(self) -> None:
     await self._topology_ready.wait()
@@ -194,8 +240,8 @@ class DiscordHTTPWorker(Microservice):
         await delivery.retry()
 
 
-class DiscordHTTPClient:
-  """Typed conveniences over the raw Discord HTTP queue contract."""
+class DiscordHTTPClient(GeneratedDiscordHTTPClient[DiscordHTTPResponse]):
+  """Generated Discord API methods transported through Micro Queue."""
 
   def __init__(self, queue: QueueClient | None = None) -> None:
     self.queue = queue or QueueClient()
@@ -209,73 +255,13 @@ class DiscordHTTPClient:
     )
     return DiscordHTTPResponse.model_validate_json(payload)
 
-  async def create_message(
-    self, channel_id: int | str, request: MessageCreateRequest
-  ) -> DiscordHTTPResponse:
-    return await self._json("POST", f"/channels/{channel_id}/messages", request)
-
-  async def create_global_command(
-    self, application_id: int | str, request: ApplicationCommandCreateRequest
-  ) -> DiscordHTTPResponse:
-    return await self._json("POST", f"/applications/{application_id}/commands", request)
-
-  async def get_guild(self, guild_id: int | str) -> DiscordHTTPResponse:
-    """Fetch a guild while preserving Discord's exact response representation."""
-    return await self.request(
-      DiscordHTTPRequest(method="GET", path=f"/guilds/{guild_id}")
-    )
-
-  async def interaction_callback(
-    self, interaction_id: int | str, token: str, request: BaseModel
-  ) -> DiscordHTTPResponse:
-    return await self._json(
-      "POST", f"/interactions/{interaction_id}/{token}/callback", request
-    )
-
-  async def multipart(
-    self,
-    method: str,
-    path: str,
-    parts: tuple[DiscordMultipartPart, ...],
-    *,
-    max_size: int = 8 * 1024 * 1024,
-  ) -> DiscordHTTPResponse:
-    boundary = "micro-discord-boundary"
-    body = bytearray()
-    for part in parts:
-      disposition = f'form-data; name="{part.name}"'
-      if part.filename is not None:
-        disposition += f'; filename="{part.filename}"'
-      chunk = (
-        (
-          f"--{boundary}\r\nContent-Disposition: {disposition}\r\n"
-          f"Content-Type: {part.content_type}\r\n\r\n"
-        ).encode()
-        + part.data
-        + b"\r\n"
-      )
-      if len(body) + len(chunk) + len(boundary) + 6 > max_size:
-        raise ValueError("Multipart request exceeds its configured size limit.")
-      body.extend(chunk)
-    body.extend(f"--{boundary}--\r\n".encode())
-    return await self.request(
-      DiscordHTTPRequest(
-        method=method,
-        path=path,
-        headers=(("content-type", f"multipart/form-data; boundary={boundary}"),),
-        body=bytes(body),
-      )
-    )
-
-  async def _json(
-    self, method: str, path: str, request: BaseModel
+  async def _request_operation(
+    self, operation: DiscordOperationId, request: BaseModel
   ) -> DiscordHTTPResponse:
     return await self.request(
       DiscordHTTPRequest(
-        method=method,
-        path=path,
-        headers=(("content-type", "application/json"),),
-        body=request.model_dump_json(exclude_none=True).encode(),
+        operation=operation,
+        data=request.model_dump(mode="json", by_alias=True),
       )
     )
 
@@ -283,10 +269,35 @@ class DiscordHTTPClient:
     await self.queue.aclose()
 
 
-def _route_key(method: str, path: str) -> str:
-  return f"{method}:" + "/".join(
-    part if not part.isdecimal() else ":id" for part in path.strip("/").split("/")
+def _route_key(operation: DiscordHTTPOperation, request: BaseModel) -> str:
+  values = request.model_dump(mode="json", by_alias=True)
+  major = tuple(
+    str(values[field])
+    for field in ("channel_id", "guild_id", "webhook_id", "webhook_token")
+    if field in values and values[field] is not None
   )
+  return ":".join((operation.id, *major))
+
+
+def _multipart(body: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+  if not isinstance(body, dict):
+    raise TypeError("Multipart Discord request bodies must be objects.")
+  form: dict[str, Any] = {}
+  files: dict[str, Any] = {}
+  for name, value in body.items():
+    if isinstance(value, bytes):
+      files[name] = (name, value)
+    else:
+      form[name] = value
+  return form, files
+
+
+def _body_mapping(body: Any, *, mode: Literal["json", "python"]) -> dict[str, Any]:
+  if isinstance(body, BaseModel):
+    return body.model_dump(mode=mode, by_alias=True, exclude_none=True)
+  if isinstance(body, dict):
+    return body
+  raise TypeError("Discord request bodies must be objects.")
 
 
 def _retry_after(response: DiscordHTTPResponse, headers: Mapping[str, str]) -> float:
@@ -309,7 +320,6 @@ __all__ = (
   "DiscordHTTPRequest",
   "DiscordHTTPResponse",
   "DiscordHTTPWorker",
-  "DiscordMultipartPart",
   "MemoryRateLimits",
   "RateLimitCoordinator",
 )

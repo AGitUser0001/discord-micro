@@ -1,0 +1,5 @@
+# Discord API artifacts emitted by generate.sh.
+src/micro/discord/models/gateway.py linguist-generated=true
+src/micro/discord/models/http.py linguist-generated=true
+src/micro/discord/http_operations.py linguist-generated=true
+src/micro/schemas/events.py linguist-generated=true

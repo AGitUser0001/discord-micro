@@ -31,13 +31,21 @@ Payload and response limits are enforced while reading ASGI body chunks.
 
 ## Discord HTTP
 
-`DiscordHTTPClient` sends `DiscordHTTPRequest` through the `discord.http` queue
-channel. `DiscordHTTPWorker` returns status, duplicate-preserving headers, and
-body without translating Discord errors. Typed conveniences cover messages,
-global commands, and interaction callbacks; `request` covers the generated API
-surface. Multipart construction is explicitly bounded. Rate-limit coordinators
-track route buckets and the global limit independently; share or externally
-implement the coordinator when workers live in separate processes.
+Discord's OpenAPI `operationId` values define the queue protocol. Generation
+produces one aggregate Pydantic input model and one physical
+`DiscordHTTPClient` method for every operation, plus `HTTP_OPERATIONS` for
+generic worker dispatch. For example, `create_message` accepts
+`DiscordHTTPCreateMessageInput`; callers never supply an HTTP path or method.
+
+`DiscordHTTPClient` carries the operation ID and validated input data through
+the `discord.http` queue channel. `DiscordHTTPWorker` expands path, query, and
+header parameters, selects the declared JSON, form, or multipart body encoding,
+and returns status, duplicate-preserving headers, and body without translating
+Discord errors. Binary multipart fields use base64 on the JSON queue wire and
+are restored before HTTP encoding. Queue payload limits bound the complete
+request. Rate-limit coordinators track route buckets and the global limit
+independently; share or externally implement the coordinator when workers live
+in separate processes.
 
 ## Overseer
 

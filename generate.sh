@@ -24,6 +24,7 @@ gateway_schema="$temporary/gateway.schema.json"
 http_schema="$temporary/openapi.json"
 gateway_models="$temporary/gateway.py"
 http_models="$temporary/http.py"
+http_operations="$temporary/http_operations.py"
 event_schemas="$repository/src/micro/schemas/events.py"
 
 node -e '
@@ -80,6 +81,10 @@ curl --fail --location --silent --show-error \
   --output "$http_schema" \
   https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json
 
+uv run --project "$repository" python \
+  "$repository/scripts/generate_http_operations.py" \
+  "$http_schema" "$http_schema" "$http_operations"
+
 generate_models() {
   uv run --project "$repository" datamodel-codegen \
     --input "$1" \
@@ -103,6 +108,7 @@ uv run --project "$repository" datamodel-codegen \
   --openapi-scopes schemas \
   --output "$http_models" \
   --output-model-type pydantic_v2.BaseModel \
+  --base-class micro.discord._model.DiscordModel \
   --target-python-version 3.14 \
   --disable-timestamp \
   --use-standard-collections \
@@ -114,10 +120,17 @@ models="$repository/src/micro/discord/models"
 mkdir -p "$models"
 install -m 0644 "$gateway_models" "$models/gateway.py"
 install -m 0644 "$http_models" "$models/http.py"
+install -m 0644 "$http_operations" \
+  "$repository/src/micro/discord/http_operations.py"
+uv run --project "$repository" ruff check --fix \
+  "$repository/src/micro/discord/http_operations.py"
+uv run --project "$repository" ruff format \
+  "$repository/src/micro/discord/http_operations.py"
 uv run --project "$repository" python "$repository/scripts/generate_events.py" \
   "$gateway_models" "$event_schemas"
 
-printf 'Generated %s, %s, and %s\n' \
+printf 'Generated %s, %s, %s, and %s\n' \
   "$models/gateway.py" \
   "$models/http.py" \
+  "$repository/src/micro/discord/http_operations.py" \
   "$event_schemas"
