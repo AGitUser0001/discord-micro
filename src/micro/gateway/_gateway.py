@@ -1,9 +1,6 @@
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import Any, Protocol, cast
-from uuid import uuid7
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import hikari
 from pydantic import BaseModel, JsonValue, SecretStr, ValidationError
@@ -13,6 +10,8 @@ from starlette.responses import JSONResponse, Response
 
 from micro._microservices import (
   DiscordCredential,
+  GatewayAssignment,
+  GatewayIdentify,
   GuildMembersRequest,
   Microservice,
   PresenceUpdate,
@@ -21,66 +20,14 @@ from micro._microservices import (
 )
 from micro.queue import QueueClient
 
+from ._connection import ShardConnection
+from ._events import ConnectionEvent, ConnectionSink, Dispatch, DispatchSink
 from ._runner import event_loop_factory
 
 
-@dataclass(frozen=True, slots=True)
-class Dispatch:
-  name: str
-  payload: Mapping[str, Any]
-  shard_id: int = 0
-  connection_id: str | None = None
-
-
-class ConnectionEventKind(StrEnum):
-  CONNECTED = "connected"
-  DISCONNECTED = "disconnected"
-  READY = "ready"
-  RESUMED = "resumed"
-  INVALIDATED = "invalidated"
-  CLOSED = "closed"
-
-
-@dataclass(frozen=True, slots=True)
-class ConnectionEvent:
-  kind: ConnectionEventKind
-  shard_id: int
-  connection_id: str | None = None
-
-
-type DispatchSink = Callable[[Dispatch], Awaitable[None]]
-type ConnectionSink = Callable[[ConnectionEvent], Awaitable[None]]
-
-
-class _GatewayBot(Protocol):
-  def listen[EventT: hikari.Event](
-    self, *event_types: type[EventT]
-  ) -> Callable[
-    [Callable[[EventT], Awaitable[None]]], Callable[[EventT], Awaitable[None]]
-  ]: ...
-
-  async def start(
-    self,
-    *,
-    check_for_updates: bool = True,
-    shard_ids: Sequence[int] | None = None,
-    shard_count: int | None = None,
-  ) -> None: ...
-
-  async def close(self) -> None: ...
-
-  async def join(self) -> None: ...
-
-  def update_presence(self, **kwargs: Any) -> None: ...
-
-  def request_guild_members(self, guild: int, **kwargs: Any) -> None: ...
-
-  def update_voice_state(
-    self, guild: int, channel: int | None, **kwargs: Any
-  ) -> None: ...
-
-
 class Gateway(Microservice):
+  """ASGI coordinator for independently managed Discord shard connections."""
+
   def __init__(
     self,
     token: str | None = None,
@@ -90,134 +37,97 @@ class Gateway(Microservice):
     connection: ConnectionSink | None = None,
     shard_ids: Sequence[int] | None = None,
     shard_count: int | None = None,
-    bot: _GatewayBot | None = None,
+    _bot_factory: Callable[[str, hikari.Intents], Any] | None = None,
   ) -> None:
     if token == "":
       raise ValueError("token cannot be empty.")
+    initial_shards, initial_count = _validate_shards(shard_ids, shard_count)
+    if token is not None and initial_count is None:
+      initial_count = 1
+      initial_shards = (0,)
+    if initial_count is not None and initial_shards is None:
+      initial_shards = tuple(range(initial_count))
     self.queue = QueueClient()
-    super().__init__("gateway")
-    self._intents = intents
-    self._shard_ids, self._shard_count = _validate_shards(shard_ids, shard_count)
+    self.intents = intents
+    self._bot_factory = _bot_factory
     self._uses_queue_dispatch = dispatch is None
-    self._dispatch_sink = dispatch or self._publish_dispatch
-    self._external_connection_sink = connection
-    self._connection_sink = self._report_connection
-    self._connections: dict[int, str] = {}
-    self._started = False
-    self._topology_ready = asyncio.Event()
-    self._activation: asyncio.Task[None] | None = None
+    self._dispatch_sink = dispatch
+    self._connection_sink = connection
+    self._shards: dict[int, ShardConnection] = {}
+    self._shard_count = initial_count
+    self._assignment_revision = -1
     self._credential_revision = -1
-    self._credential_token: str | None = None
-    self._credential_ready = asyncio.Event()
-    self._bot_lock = asyncio.Lock()
-    self._managed_bot = bot is None
-    self._bot: _GatewayBot | None = bot
+    self._credential: str | None = None
+    self._topology_ready = asyncio.Event()
+    self._standalone = token is not None and initial_count is not None
+    self._startup: asyncio.Task[None] | None = None
+    super().__init__("gateway")
+    for path, endpoint in (
+      ("/gateway/presence", self._update_presence),
+      ("/gateway/guild-members", self._request_guild_members),
+      ("/gateway/voice-state", self._update_voice_state),
+      ("/gateway/assignment", self._assignment_endpoint),
+      ("/discord/credential", self._credential_endpoint),
+    ):
+      self.add_route(path, endpoint, methods=("POST",), name=path[1:].replace("/", ":"))
+    self.add_route(
+      "/gateway/connections/{shard_id}/identify",
+      self._identify_endpoint,
+      methods=("POST",),
+      name="gateway:identify",
+    )
     if token is not None:
       self._set_credential(DiscordCredential(token=SecretStr(token), revision=0))
-      if self._bot is None:
-        self._bot = self._new_bot(token)
-    elif bot is not None:
-      raise ValueError("token is required when injecting a Gateway bot.")
-    if self._bot is not None:
-      self._subscribe()
-    self.add_route(
-      "/gateway/presence",
-      self._update_presence,
-      methods=("POST",),
-      name="gateway:presence",
-    )
-    self.add_route(
-      "/gateway/guild-members",
-      self._request_guild_members,
-      methods=("POST",),
-      name="gateway:guild-members",
-    )
-    self.add_route(
-      "/gateway/voice-state",
-      self._update_voice_state,
-      methods=("POST",),
-      name="gateway:voice-state",
-    )
-    self.add_route(
-      "/discord/credential",
-      self._credential_endpoint,
-      methods=("POST",),
-      name="gateway:credential",
-    )
+    if initial_count is not None:
+      self._reconcile_assignment(
+        GatewayAssignment(
+          revision=0,
+          shard_count=initial_count,
+          shard_ids=initial_shards or (),
+          publish_shard_ids=initial_shards or (),
+        )
+      )
 
   @property
   def service(self) -> Microservice:
     return self
 
   @property
-  def shard_ids(self) -> tuple[int, ...] | None:
-    return self._shard_ids
+  def shard_ids(self) -> tuple[int, ...]:
+    return tuple(self._shards)
 
   @property
   def shard_count(self) -> int | None:
     return self._shard_count
 
   @property
-  def component_ready(self) -> bool:
-    return self._started and self._credential_revision >= 0
+  def credential(self) -> str:
+    if self._credential is None:
+      raise RuntimeError("Discord credential is not configured.")
+    return self._credential
 
-  def _new_bot(self, token: str) -> _GatewayBot:
-    return cast(
-      _GatewayBot,
-      hikari.GatewayBot(
-        token,
-        intents=self._intents,
-        cache_settings=hikari.impl.CacheSettings(
-          components=hikari.api.CacheComponents.NONE
-        ),
-        auto_chunk_members=False,
-        banner=None,
+  def create_bot(self) -> Any:
+    if self._bot_factory is not None:
+      return self._bot_factory(self.credential, self.intents)
+    return hikari.GatewayBot(
+      self.credential,
+      intents=self.intents,
+      cache_settings=hikari.impl.CacheSettings(
+        components=hikari.api.CacheComponents.NONE
       ),
+      auto_chunk_members=False,
+      banner=None,
     )
 
-  def _set_credential(self, credential: DiscordCredential) -> bool:
-    token = credential.token.get_secret_value()
-    if credential.revision < self._credential_revision:
-      raise ValueError("Discord credential revision is stale.")
-    if credential.revision == self._credential_revision:
-      if token != self._credential_token:
-        raise ValueError("A revision cannot identify two Discord credentials.")
-      return False
-    changed = self._credential_token is not None and token != self._credential_token
-    self._credential_token = token
-    self._credential_revision = credential.revision
-    self._credential_ready.set()
-    return changed
-
-  async def _credential_endpoint(self, request: Request) -> Response:
-    credential = await _control_request(request, DiscordCredential)
-    if isinstance(credential, Response):
-      return credential
-    async with self._bot_lock:
-      try:
-        incoming_token = credential.token.get_secret_value()
-        if (
-          self._bot is not None
-          and not self._managed_bot
-          and self._credential_token is not None
-          and incoming_token != self._credential_token
-        ):
-          raise ValueError("An injected Gateway bot cannot rotate credentials.")
-        changed = self._set_credential(credential)
-        if self._bot is None:
-          self._bot = self._new_bot(credential.token.get_secret_value())
-          self._subscribe()
-        elif changed:
-          was_started = self._started
-          if was_started:
-            await self._stop_bot()
-          self._bot = self._new_bot(credential.token.get_secret_value())
-          self._subscribe()
-          if was_started:
-            await self._start_bot_unlocked()
-      except ValueError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=409)
-    return Response(status_code=204)
+  @property
+  def component_ready(self) -> bool:
+    topology_ready = not self._uses_queue_dispatch or self._topology_ready.is_set()
+    return (
+      topology_ready
+      and self._credential is not None
+      and self._assignment_revision >= 0
+      and all(shard.started for shard in self._shards.values())
+    )
 
   def apply_state(self, state: JsonValue) -> None:
     self.queue.apply_state(state)
@@ -225,12 +135,182 @@ class Gateway(Microservice):
 
   def schema_document(self, root_path: str) -> dict[str, JsonValue]:
     document = super().schema_document(root_path)
-    document["service"] = "micro.gateway"
-    document["events"] = []
-    document["requests"] = []
-    document["shard_ids"] = list(self._shard_ids or ())
-    document["shard_count"] = self._shard_count
+    document.update(
+      service="micro.gateway",
+      events=[],
+      requests=[],
+      shard_ids=list(self._shards),
+      shard_count=self.shard_count,
+    )
     return document
+
+  async def start(self) -> None:
+    if self._standalone:
+      self._startup = asyncio.create_task(
+        self._start_standalone(), name="micro.gateway.start"
+      )
+
+  async def _start_standalone(self) -> None:
+    if self._uses_queue_dispatch:
+      await self._topology_ready.wait()
+    await asyncio.gather(*(shard.identify() for shard in self._shards.values()))
+
+  async def close(self) -> None:
+    if self._startup is not None:
+      if not self._startup.done():
+        self._startup.cancel()
+      await asyncio.gather(self._startup, return_exceptions=True)
+      self._startup = None
+    await asyncio.gather(*(shard.stop() for shard in tuple(self._shards.values())))
+    await self.queue.aclose()
+
+  def run(self) -> None:
+    try:
+      with asyncio.Runner(loop_factory=event_loop_factory) as runner:
+        runner.run(self._run_until_closed())
+    except KeyboardInterrupt:
+      pass
+
+  async def _run_until_closed(self) -> None:
+    try:
+      await self.start()
+      if self._startup is not None:
+        await self._startup
+      await asyncio.gather(*(shard.join() for shard in self._shards.values()))
+    finally:
+      await self.close()
+
+  async def _credential_endpoint(self, request: Request) -> Response:
+    credential = await _control_request(request, DiscordCredential)
+    if isinstance(credential, Response):
+      return credential
+    try:
+      changed = self._set_credential(credential)
+      if changed:
+        await asyncio.gather(*(shard.stop() for shard in self._shards.values()))
+    except ValueError as exc:
+      return JSONResponse({"detail": str(exc)}, status_code=409)
+    return Response(status_code=204)
+
+  def _set_credential(self, credential: DiscordCredential) -> bool:
+    token = credential.token.get_secret_value()
+    if credential.revision < self._credential_revision:
+      raise ValueError("Discord credential revision is stale.")
+    if credential.revision == self._credential_revision:
+      if token != self._credential:
+        raise ValueError("A revision cannot identify two Discord credentials.")
+      return False
+    changed = self._credential is not None and token != self._credential
+    self._credential = token
+    self._credential_revision = credential.revision
+    return changed
+
+  async def _assignment_endpoint(self, request: Request) -> Response:
+    assignment = await _control_request(request, GatewayAssignment)
+    if isinstance(assignment, Response):
+      return assignment
+    try:
+      await self._apply_assignment(assignment)
+    except ValueError as exc:
+      return JSONResponse({"detail": str(exc)}, status_code=409)
+    return Response(status_code=204)
+
+  async def _apply_assignment(self, assignment: GatewayAssignment) -> None:
+    if assignment.revision < self._assignment_revision:
+      raise ValueError("Gateway assignment revision is stale.")
+    if assignment.revision == self._assignment_revision:
+      current = GatewayAssignment(
+        revision=assignment.revision,
+        shard_count=self._shard_count or assignment.shard_count,
+        shard_ids=tuple(self._shards),
+        publish_shard_ids=tuple(
+          shard_id for shard_id, shard in self._shards.items() if shard.may_publish
+        ),
+      )
+      if current != assignment:
+        raise ValueError("A revision cannot identify two Gateway assignments.")
+      return
+    await self._reconcile_assignment_async(assignment)
+
+  def _reconcile_assignment(self, assignment: GatewayAssignment) -> None:
+    self._assignment_revision = assignment.revision
+    self._shard_count = assignment.shard_count
+    for shard_id in assignment.shard_ids:
+      self._shards[shard_id] = ShardConnection(self, shard_id, assignment.shard_count)
+    for shard_id in assignment.publish_shard_ids:
+      self._shards[shard_id].may_publish = True
+    if self._credential is not None:
+      for shard in self._shards.values():
+        shard.prepare()
+
+  async def _reconcile_assignment_async(self, assignment: GatewayAssignment) -> None:
+    desired = set(assignment.shard_ids)
+    removed = [
+      shard
+      for shard_id, shard in self._shards.items()
+      if shard_id not in desired or shard.shard_count != assignment.shard_count
+    ]
+    await asyncio.gather(*(shard.stop() for shard in removed))
+    for shard in removed:
+      self._shards.pop(shard.shard_id, None)
+    for shard_id in assignment.shard_ids:
+      self._shards.setdefault(
+        shard_id, ShardConnection(self, shard_id, assignment.shard_count)
+      )
+    publishing = set(assignment.publish_shard_ids)
+    for shard_id, shard in self._shards.items():
+      shard.may_publish = shard_id in publishing
+      if self._credential is not None:
+        shard.prepare()
+    self._shard_count = assignment.shard_count
+    self._assignment_revision = assignment.revision
+
+  async def _identify_endpoint(self, request: Request) -> Response:
+    command = await _control_request(request, GatewayIdentify)
+    if isinstance(command, Response):
+      return command
+    try:
+      path_shard = int(request.path_params["shard_id"])
+      if path_shard != command.shard_id:
+        raise ValueError("Identify path and body shard IDs differ.")
+      if command.assignment_revision != self._assignment_revision:
+        raise ValueError("Identify command targets a stale assignment.")
+      shard = self._shards[command.shard_id]
+      await shard.identify()
+    except (KeyError, ValueError) as exc:
+      return JSONResponse({"detail": str(exc)}, status_code=409)
+    return Response(status_code=204)
+
+  async def publish_dispatch(self, dispatch: Dispatch, *, application: bool) -> None:
+    if application:
+      if self._dispatch_sink is not None:
+        await self._dispatch_sink(dispatch)
+      else:
+        await self.queue.publish(
+          "gateway.events", to_json((dispatch.name, dispatch.payload))
+        )
+    if self._uses_queue_dispatch:
+      await self.queue.publish(
+        "gateway.projection",
+        to_json(
+          (
+            "event",
+            dispatch.connection_id,
+            dispatch.shard_id,
+            dispatch.name,
+            dispatch.payload,
+          )
+        ),
+      )
+
+  async def report_connection(self, event: ConnectionEvent) -> None:
+    if self._uses_queue_dispatch:
+      await self.queue.publish(
+        "gateway.projection",
+        to_json(("connection", event.kind, event.shard_id, event.connection_id)),
+      )
+    if self._connection_sink is not None:
+      await self._connection_sink(event)
 
   async def _update_presence(self, request: Request) -> Response:
     update = await _control_request(request, PresenceUpdate)
@@ -246,11 +326,17 @@ class Gateway(Microservice):
       if update.activity is not None
       else None
     )
-    self._require_bot().update_presence(
-      status=hikari.Status(update.status),
-      idle_since=update.idle_since,
-      activity=activity,
-      afk=update.afk,
+    await asyncio.gather(
+      *(
+        shard.bot.update_presence(
+          status=hikari.Status(update.status),
+          idle_since=update.idle_since,
+          activity=activity,
+          afk=update.afk,
+        )
+        for shard in self._shards.values()
+        if shard.started and shard.bot is not None
+      )
     )
     return Response(status_code=204)
 
@@ -258,6 +344,7 @@ class Gateway(Microservice):
     members = await _control_request(request, GuildMembersRequest)
     if isinstance(members, Response):
       return members
+    shard = self._shard_for_guild(members.guild_id)
     kwargs: dict[str, Any] = {
       "include_presences": members.include_presences,
       "limit": members.limit,
@@ -268,14 +355,17 @@ class Gateway(Microservice):
       kwargs["users"] = members.users
     if members.nonce is not None:
       kwargs["nonce"] = members.nonce
-    self._require_bot().request_guild_members(members.guild_id, **kwargs)
+    assert shard.bot is not None
+    await shard.bot.request_guild_members(members.guild_id, **kwargs)
     return Response(status_code=204)
 
   async def _update_voice_state(self, request: Request) -> Response:
     update = await _control_request(request, VoiceStateUpdate)
     if isinstance(update, Response):
       return update
-    self._require_bot().update_voice_state(
+    shard = self._shard_for_guild(update.guild_id)
+    assert shard.bot is not None
+    await shard.bot.update_voice_state(
       update.guild_id,
       update.channel_id,
       self_mute=update.self_mute,
@@ -283,183 +373,19 @@ class Gateway(Microservice):
     )
     return Response(status_code=204)
 
-  def run(self) -> None:
-    """Run the Gateway until it closes, using an accelerated loop if available."""
+  def _shard_for_guild(self, guild_id: int) -> ShardConnection:
+    candidates = [shard for shard in self._shards.values() if shard.started]
+    if not candidates:
+      raise RuntimeError("No active Gateway shard is available.")
+    shard_count = candidates[0].shard_count
+    shard_id = (guild_id >> 22) % shard_count
     try:
-      with asyncio.Runner(loop_factory=event_loop_factory) as runner:
-        runner.run(self._run_until_closed())
-    except KeyboardInterrupt:
-      pass
-
-  async def start(self) -> None:
-    if self._started or self._activation is not None:
-      raise RuntimeError("Gateway is already running.")
-    self._activation = asyncio.create_task(
-      self._activate(), name="micro.gateway.activate"
-    )
-
-  async def _activate(self) -> None:
-    if self._uses_queue_dispatch:
-      await self._topology_ready.wait()
-    await self._credential_ready.wait()
-    await self._start_bot()
-
-  async def _start_bot(self) -> None:
-    async with self._bot_lock:
-      await self._start_bot_unlocked()
-
-  async def _start_bot_unlocked(self) -> None:
-    self._started = True
-    try:
-      await self._require_bot().start(
-        check_for_updates=False,
-        shard_ids=self._shard_ids,
-        shard_count=self._shard_count,
-      )
-    except BaseException:
-      self._started = False
-      raise
-
-  async def close(self) -> None:
-    if self._activation is not None:
-      if not self._activation.done():
-        self._activation.cancel()
-      await asyncio.gather(self._activation, return_exceptions=True)
-      self._activation = None
-    async with self._bot_lock:
-      await self._stop_bot()
-    await self.queue.aclose()
-
-  async def _stop_bot(self) -> None:
-    try:
-      if self._started:
-        await self._require_bot().close()
-    finally:
-      connections, self._connections = self._connections, {}
-      for shard_id, connection_id in connections.items():
-        await self._connection_sink(
-          ConnectionEvent(ConnectionEventKind.CLOSED, shard_id, connection_id)
-        )
-      self._started = False
-
-  async def _run_until_closed(self) -> None:
-    try:
-      await self.start()
-      if self._activation is not None:
-        await self._activation
-      await self._require_bot().join()
-    finally:
-      await self.close()
-
-  def _subscribe(self) -> None:
-    bot = self._require_bot()
-    bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
-    bot.listen(hikari.ShardConnectedEvent)(self._on_connected)
-    bot.listen(hikari.ShardDisconnectedEvent)(self._on_disconnected)
-
-  def _require_bot(self) -> _GatewayBot:
-    if self._bot is None:
-      raise RuntimeError("Discord credential is not configured.")
-    return self._bot
-
-  async def _on_dispatch(self, event: hikari.ShardPayloadEvent) -> None:
-    shard_id = event.shard.id
-    if event.name == "READY":
-      await self._on_ready(shard_id, event.payload)
-    elif event.name == "RESUMED":
-      await self._on_resumed(shard_id)
-
-    await self._dispatch_sink(
-      Dispatch(
-        name=event.name,
-        payload=event.payload,
-        shard_id=shard_id,
-        connection_id=self._connections.get(shard_id),
-      )
-    )
-
-  async def _publish_dispatch(self, dispatch: Dispatch) -> None:
-    await self.queue.publish(
-      "gateway.events",
-      to_json((dispatch.name, dispatch.payload)),
-    )
-    await self.queue.publish(
-      "gateway.projection",
-      to_json(
-        (
-          "event",
-          dispatch.connection_id,
-          dispatch.shard_id,
-          dispatch.name,
-          dispatch.payload,
-        )
-      ),
-    )
-
-  async def _publish_connection(self, event: ConnectionEvent) -> None:
-    await self.queue.publish(
-      "gateway.projection",
-      to_json(("connection", event.kind, event.shard_id, event.connection_id)),
-    )
-
-  async def _report_connection(self, event: ConnectionEvent) -> None:
-    if self._uses_queue_dispatch:
-      await self._publish_connection(event)
-    if self._external_connection_sink is not None:
-      await self._external_connection_sink(event)
-
-  async def _on_connected(self, event: hikari.ShardConnectedEvent) -> None:
-    await self._connection_sink(
-      ConnectionEvent(
-        ConnectionEventKind.CONNECTED,
-        event.shard.id,
-        self._connections.get(event.shard.id),
-      )
-    )
-
-  async def _on_disconnected(self, event: hikari.ShardDisconnectedEvent) -> None:
-    await self._connection_sink(
-      ConnectionEvent(
-        ConnectionEventKind.DISCONNECTED,
-        event.shard.id,
-        self._connections.get(event.shard.id),
-      )
-    )
-
-  async def _on_ready(self, shard_id: int, payload: Mapping[str, Any]) -> None:
-    if previous := self._connections.get(shard_id):
-      await self._connection_sink(
-        ConnectionEvent(ConnectionEventKind.INVALIDATED, shard_id, previous)
-      )
-    connection_id = str(uuid7())
-    self._connections[shard_id] = connection_id
-    await self._connection_sink(
-      ConnectionEvent(ConnectionEventKind.READY, shard_id, connection_id)
-    )
-    if self._intents & hikari.Intents.GUILD_MEMBERS:
-      guilds = payload.get("guilds")
-      if isinstance(guilds, list):
-        for guild in guilds:
-          if not isinstance(guild, Mapping):
-            continue
-          guild_id = guild.get("id")
-          if isinstance(guild_id, str) and guild_id.isdecimal():
-            self._require_bot().request_guild_members(
-              int(guild_id),
-              include_presences=bool(self._intents & hikari.Intents.GUILD_PRESENCES),
-              query="",
-              limit=0,
-              nonce=f"micro:{connection_id}:{guild_id}",
-            )
-
-  async def _on_resumed(self, shard_id: int) -> None:
-    await self._connection_sink(
-      ConnectionEvent(
-        ConnectionEventKind.RESUMED,
-        shard_id,
-        self._connections.get(shard_id),
-      )
-    )
+      shard = self._shards[shard_id]
+    except KeyError as exc:
+      raise RuntimeError("This Gateway does not own the guild's shard.") from exc
+    if not shard.started or shard.bot is None:
+      raise RuntimeError("The guild's Gateway shard is not active.")
+    return shard
 
 
 def _validate_shards(
@@ -476,7 +402,6 @@ def _validate_shards(
     return None, shard_count
   if shard_count is None:
     raise ValueError("shard_count is required when shard_ids are specified.")
-
   normalized = tuple(dict.fromkeys(shard_ids))
   if any(
     isinstance(shard_id, bool)
@@ -491,8 +416,7 @@ def _validate_shards(
 
 
 async def _control_request[ModelT: BaseModel](
-  request: Request,
-  model: type[ModelT],
+  request: Request, model: type[ModelT]
 ) -> ModelT | Response:
   if request_content_type(request) != "application/json":
     return JSONResponse(

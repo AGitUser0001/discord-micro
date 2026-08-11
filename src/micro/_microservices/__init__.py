@@ -20,6 +20,8 @@ from ._errors import (
 from ._gateway_client import GatewayClient
 from ._gateway_control import (
   ActivityUpdate,
+  GatewayAssignment,
+  GatewayIdentify,
   GuildMembersRequest,
   PresenceUpdate,
   VoiceStateUpdate,
@@ -38,7 +40,9 @@ __all__ = (
   "BackendExecutionError",
   "DiscordCredential",
   "DuplicateEndpointError",
+  "GatewayAssignment",
   "GatewayClient",
+  "GatewayIdentify",
   "GuildMembersRequest",
   "Instance",
   "InvalidMicroserviceSchemaError",

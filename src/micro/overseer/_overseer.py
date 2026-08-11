@@ -23,8 +23,15 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
-from micro._microservices import DiscordCredential, TopologyError, request_content_type
+from micro._microservices import (
+  DiscordCredential,
+  GatewayAssignment,
+  GatewayIdentify,
+  TopologyError,
+  request_content_type,
+)
 from micro.gateway import (
+  AssignmentState,
   ConnectionEvent,
   ConnectionEventKind,
   GatewayState,
@@ -88,6 +95,8 @@ class DiscoveredInstance(BaseModel):
       if self.shard_ids or self.shard_count is not None:
         raise ValueError("only gateway instances may declare shard ownership")
       return self
+    if self.shard_count is None:
+      raise ValueError("gateway instances must declare shard_count")
     if self.shard_ids and self.shard_count is None:
       raise ValueError("gateway shard_count is required with shard_ids")
     if self.shard_count is not None and any(
@@ -497,7 +506,39 @@ class Overseer:
       if instance.role in {"gateway", "discord.http"}:
         if credential is None:
           return instance.id, 503, "Discord credential is not configured."
-        return await post(instance, "/discord/credential", credential.wire_bytes())
+        failure = await post(instance, "/discord/credential", credential.wire_bytes())
+        if failure is not None or instance.role == "discord.http":
+          return failure
+        assert instance.shard_count is not None
+        assigned = tuple(
+          assignment.shard_id
+          for assignment in self._gateway_state.assignments
+          if assignment.instance_id == instance.id
+          and assignment.state is not AssignmentState.ABANDONED
+        )
+        assignment = GatewayAssignment(
+          revision=revision,
+          shard_count=instance.shard_count,
+          shard_ids=assigned,
+          publish_shard_ids=self._gateway_state.active_shards(instance.id),
+        )
+        failure = await post(
+          instance,
+          "/gateway/assignment",
+          assignment.model_dump_json().encode(),
+        )
+        if failure is not None:
+          return failure
+        for shard_id in assigned:
+          identify = GatewayIdentify(assignment_revision=revision, shard_id=shard_id)
+          failure = await post(
+            instance,
+            f"/gateway/connections/{shard_id}/identify",
+            identify.model_dump_json().encode(),
+          )
+          if failure is not None:
+            return failure
+        return None
       return None
 
     results = await asyncio.gather(*(push(instance) for instance in instances))

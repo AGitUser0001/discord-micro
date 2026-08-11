@@ -13,4 +13,5 @@ gateway = Gateway(
   os.environ["DISCORD_TOKEN"],
   intents=hikari.Intents.GUILDS | hikari.Intents.GUILD_MESSAGES,
   connection=connection,
+  shard_count=1,
 )

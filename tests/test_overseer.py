@@ -294,10 +294,10 @@ def test_failed_push_does_not_reuse_its_revision() -> None:
 
 
 def test_overseer_separates_desired_assignments_from_observed_connections() -> None:
-  paths: list[str] = []
+  requests: list[tuple[str, bytes]] = []
 
   def respond(request: httpx2.Request) -> httpx2.Response:
-    paths.append(request.url.path)
+    requests.append((request.url.path, request.read()))
     return httpx2.Response(204)
 
   discovery = NetworkDiscovery(
@@ -332,13 +332,19 @@ def test_overseer_separates_desired_assignments_from_observed_connections() -> N
       ConnectionEvent(ConnectionEventKind.READY, 0, "connection-a"),
     )
     assert overseer.gateway_state.active_shards("gateway-a") == (0,)
+    await overseer.reconcile()
     assert await overseer.declare_gateway_dead("gateway-a") == ("connection-a",)
     await overseer.aclose()
     return overseer
 
   overseer = asyncio.run(exercise())
   assert overseer.gateway_state.active_shards("gateway-a") == ()
-  assert "/projection/connections/connection-a" in paths
+  assert "/projection/connections/connection-a" in [path for path, _ in requests]
+  assignments = [
+    json.loads(body) for path, body in requests if path == "/gateway/assignment"
+  ]
+  assert assignments[0]["publish_shard_ids"] == []
+  assert assignments[-1]["publish_shard_ids"] == [0]
 
 
 def test_overseer_persists_reserved_revisions_across_restart() -> None:

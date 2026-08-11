@@ -12,7 +12,7 @@ from starlette.responses import Response
 from micro._microservices import Microservice, StoreClient, apply_state_atomically
 from micro.queue import QueueClient, QueueDelivery
 
-from ._gateway import ConnectionEventKind
+from ._events import ConnectionEventKind
 
 
 @dataclass(frozen=True, slots=True)

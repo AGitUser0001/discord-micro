@@ -1,11 +1,14 @@
 from micro._microservices import ActivityUpdate, GatewayClient
 
-from ._gateway import (
+from ._connection import ShardConnection
+from ._events import (
   ConnectionEvent,
   ConnectionEventKind,
   ConnectionSink,
   Dispatch,
   DispatchSink,
+)
+from ._gateway import (
   Gateway,
 )
 from ._state import AssignmentState, GatewayState, ObservedConnection, ShardAssignment
@@ -30,4 +33,5 @@ __all__ = (
   "ObservedConnection",
   "ProjectedObject",
   "ShardAssignment",
+  "ShardConnection",
 )

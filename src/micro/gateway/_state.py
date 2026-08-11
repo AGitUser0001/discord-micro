@@ -1,7 +1,7 @@
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
-from ._gateway import ConnectionEvent, ConnectionEventKind
+from ._events import ConnectionEvent, ConnectionEventKind
 
 
 class AssignmentState(StrEnum):
@@ -84,6 +84,39 @@ class GatewayState:
       if competing:
         raise ValueError("A shard already has an active Gateway assignment.")
       self._assignments[key] = replace(assignment, state=AssignmentState.ACTIVE)
+      for competing_key, competing_assignment in tuple(self._assignments.items()):
+        if (
+          competing_key != key
+          and competing_assignment.shard_id == event.shard_id
+          and competing_assignment.shard_count == assignment.shard_count
+          and competing_assignment.state is AssignmentState.DRAINING
+        ):
+          self._assignments[competing_key] = replace(
+            competing_assignment, state=AssignmentState.ABANDONED
+          )
+          competing_connection = self._connections.get(competing_key)
+          if competing_connection is not None:
+            self._connections[competing_key] = replace(
+              competing_connection, active=False
+            )
+      active_generation = {
+        item.shard_id
+        for item in self._assignments.values()
+        if item.shard_count == assignment.shard_count
+        and item.state is AssignmentState.ACTIVE
+      }
+      if active_generation == set(range(assignment.shard_count)):
+        for old_key, old_assignment in tuple(self._assignments.items()):
+          if (
+            old_assignment.shard_count != assignment.shard_count
+            and old_assignment.state is AssignmentState.DRAINING
+          ):
+            self._assignments[old_key] = replace(
+              old_assignment, state=AssignmentState.ABANDONED
+            )
+            old_connection = self._connections.get(old_key)
+            if old_connection is not None:
+              self._connections[old_key] = replace(old_connection, active=False)
     elif event.kind is ConnectionEventKind.DISCONNECTED:
       active, terminal = False, False
       # A transient disconnect deliberately retains the assignment.
@@ -130,7 +163,8 @@ class GatewayState:
       for (owner, shard_id), connection in self._connections.items()
       if owner == instance_id
       and connection.active
-      and self._assignments[(owner, shard_id)].state is AssignmentState.ACTIVE
+      and self._assignments[(owner, shard_id)].state
+      in {AssignmentState.ACTIVE, AssignmentState.DRAINING}
     )
 
   def active_owner(self, shard_id: int, shard_count: int) -> str | None:

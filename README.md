@@ -112,13 +112,20 @@ overseer pushes it over the specialized `/discord/credential` management route
 only to Gateway and Discord HTTP workers; it is never part of `/topology` or
 service state. Gateway workers reconnect and HTTP workers use the new token for
 new requests when its revision changes. A token may still be passed directly to
-`Gateway` for a standalone process or local test.
+`Gateway` for a standalone process or local test. Standalone construction
+defaults to Discord's unsharded representation: shard `0` of a shard count of
+`1`.
 
-The overseer pushes queue topology and the credential to the gateway before it
-opens its Discord connections. Dispatches are published on `gateway.events` as compact
-`[event_name, payload]` records. Connection callbacks separately report connect,
-disconnect, ready, resume, invalidation, and clean-close transitions. The gateway
-starts and closes with ASGI lifespan, so it can run directly under Uvicorn.
+The overseer pushes queue topology, credentials, and revisioned shard assignments
+to the gateway. Each assigned shard has an independent Hikari connection, so an
+assignment change only starts or stops the affected shards. During rolling
+replacement, both Discord connections may coexist,
+but only the designated publishing owner emits compact `[event_name, payload]`
+records to `gateway.events`; the replacement may independently build its
+connection-scoped projection before promotion. Connection callbacks separately
+report connect, disconnect, ready, resume, invalidation, and clean-close
+transitions. The gateway starts and closes with ASGI lifespan, so it can run
+directly under Uvicorn.
 
 Gateway control calls are typed and shard-aware. Guild member requests and voice
 state updates route to the worker that owns the guild's shard; presence updates
