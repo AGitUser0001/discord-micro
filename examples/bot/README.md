@@ -1,6 +1,6 @@
 # Example bot
 
-Created with `micro init bot`, then grown in the recommended layout:
+A packaged project (`uv init --package bot`, then `micro init`), grown into:
 
 - `services/hello.py`: the generated `/hello` with a button.
 - `services/greeter.py`: a request service that emits an event.

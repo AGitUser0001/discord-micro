@@ -5,13 +5,13 @@ microservices on NATS. One process on a small box, or many machines, with the
 same code; scale, roll, or replace any part live.
 
 ```console
-uvx --from micro micro init mybot
-cd mybot
-DISCORD_TOKEN=... uv run micro up
+uv add micro          # or: pip install "micro[all,accel]"
+micro init            # adds micro.toml and services/hello.py
+DISCORD_TOKEN=... micro up
 ```
 
 ```python
-# src/mybot/services/hello.py
+# services/hello.py
 from micro.discord.interactions import Commands, Interaction
 from micro.service import Service
 

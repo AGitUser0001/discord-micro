@@ -19,7 +19,7 @@ micro.toml
    replicas = 2
 
    [processes.app]
-   components = ["mybot.services.*"]
+   components = ["services.*"]
    env = { LOG = "debug" }
 
 Targets: ``package.*`` (every component in the package's modules) or
@@ -30,7 +30,7 @@ CLI
 
 .. code-block:: console
 
-   micro init NAME | add service NAME   # see Projects
+   micro init | add service NAME       # see Projects
    micro run mybot.services.* micro.discord:DiscordHTTPWorker   # one process
    micro up [micro.toml]          # whole deployment; restarts crashes, Ctrl-C drains
    micro ps                       # processes and live components

@@ -10,6 +10,6 @@ components = [
   "micro.discord.interactions:CommandSync",
 ]
 
-# Every service in ${package}/services (add one with `micro add service NAME`).
+# Every service in ${directory} (add one with `micro add service NAME`).
 [processes.app]
-components = ["${package}.services.*"]
+components = ["${target}"]

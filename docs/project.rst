@@ -1,18 +1,23 @@
 Projects
 ========
 
-Micro is a library: your bot is its own project that depends on it.
-``micro init`` creates the recommended layout; its templates ship with Micro,
-so newer Micro versions create newer layouts.
+Micro never manages your Python project; uv, pip, or anything else does.
+``micro init`` only adds Micro's pieces, from templates that ship with Micro.
 
-.. code-block:: text
+.. code-block:: console
 
-   mybot/
-     pyproject.toml            depends on micro[all,accel]
-     micro.toml                processes and their components
-     src/mybot/
-       services/               one module per service
-         hello.py
+   micro init                    # in the project directory
+   micro add service NAME
+
+``micro init`` adds ``micro.toml``, a services package with ``hello.py``, and
+``.micro/`` to ``.gitignore``. It follows your layout:
+
+* ``src/<package>/`` exists: services go in ``src/<package>/services/``
+  (target ``<package>.services.*``).
+* otherwise: ``services/`` at the project root (target ``services.*``).
+
+``micro add service`` writes the module wherever micro.toml's services target
+points.
 
 micro.toml
 ----------
@@ -30,19 +35,11 @@ micro.toml
    ]
 
    [processes.app]                      # your code; roll it freely
-   components = ["mybot.services.*"]
+   components = ["services.*"]
 
-``mybot.services.*`` loads every component defined at module level in each
-module of the package. Other targets: ``module:attribute`` (a component, a
-list, or a class to instantiate).
-
-Commands
---------
-
-.. code-block:: console
-
-   micro init NAME [--directory DIR]
-   micro add service NAME
+``package.*`` loads every component defined at module level in each module of
+the package; adding a service never edits micro.toml. Other targets:
+``module:attribute`` (a component, a list, or a class to instantiate).
 
 A service module:
 
@@ -58,4 +55,4 @@ A service module:
    async def tickets(ctx: Interaction) -> None:
      await ctx.reply("tickets is running.", ephemeral=True)
 
-Share schemas between services from a plain module (``src/mybot/contracts.py``).
+Share schemas between services from a plain module next to ``services``.
