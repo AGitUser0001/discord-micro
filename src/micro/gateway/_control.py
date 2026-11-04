@@ -4,36 +4,24 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class GatewayAssignment(BaseModel):
-  """One revisioned set of shards and event-publication rights for a worker."""
+class GatewayGeneration(BaseModel):
+  """One set of shard connections; a new generation rolls in beside the old one."""
 
   model_config = ConfigDict(extra="forbid", frozen=True)
 
-  revision: int = Field(ge=0)
+  id: int = Field(ge=1)
   shard_count: int = Field(ge=1, le=4096)
-  shard_ids: tuple[int, ...] = ()
-  publish_shard_ids: tuple[int, ...] = ()
-
-  @model_validator(mode="after")
-  def _valid_shards(self) -> GatewayAssignment:
-    if len(set(self.shard_ids)) != len(self.shard_ids):
-      raise ValueError("shard_ids must be unique")
-    if any(shard < 0 or shard >= self.shard_count for shard in self.shard_ids):
-      raise ValueError("shard_ids must be within shard_count")
-    if len(set(self.publish_shard_ids)) != len(self.publish_shard_ids):
-      raise ValueError("publish_shard_ids must be unique")
-    if not set(self.publish_shard_ids) <= set(self.shard_ids):
-      raise ValueError("publish_shard_ids must be assigned to this worker")
-    return self
 
 
-class GatewayIdentify(BaseModel):
-  """An overseer command to start one assigned shard connection."""
+class ShardLease(BaseModel):
+  """Ownership of one shard in one generation, renewed with a TTL."""
 
   model_config = ConfigDict(extra="forbid", frozen=True)
 
-  assignment_revision: int = Field(ge=0)
-  shard_id: int = Field(ge=0)
+  owner: str
+  ready: bool = False
+  releasing: bool = False
+  connection_id: str | None = None
 
 
 class ActivityUpdate(BaseModel):

@@ -1,585 +1,199 @@
 import asyncio
-from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
+import json
+from collections.abc import Callable, Mapping
 from typing import Any
 
-import hikari
 import pytest
-from starlette.testclient import TestClient
 
+from micro import subjects
 from micro.gateway import (
-  AssignmentState,
-  ConnectionEvent,
   ConnectionEventKind,
-  Dispatch,
-  Gateway,
-  GatewayState,
-  ShardAssignment,
+  GatewayControl,
+  GatewayWorker,
+  GuildMembersRequest,
+  PresenceUpdate,
+  ShardHost,
+  VoiceStateUpdate,
+  guild_of,
 )
+from micro.runtime import Runtime
+
+SESSIONS: list[FakeShard] = []
 
 
-class FakeGatewayBot:
-  def __init__(self) -> None:
-    self.listeners: dict[type[Any], Callable[[Any], Awaitable[None]]] = {}
-    self.start_calls: list[dict[str, Any]] = []
-    self.close_calls = 0
-    self.presence_updates: list[dict[str, Any]] = []
-    self.member_requests: list[tuple[int, dict[str, Any]]] = []
-    self.voice_updates: list[tuple[int, int | None, dict[str, Any]]] = []
+class FakeShard:
+  def __init__(self, host: ShardHost, generation: int, shard_id: int, shard_count: int) -> None:
+    self.host = host
+    self.generation = generation
+    self.shard_id = shard_id
+    self.shard_count = shard_count
+    self.connection_id: str | None = None
+    self.started = False
+    self.closed = False
+    self.presence: list[PresenceUpdate] = []
+    self.members: list[GuildMembersRequest] = []
+    self.voice: list[VoiceStateUpdate] = []
+    SESSIONS.append(self)
 
-  def listen(self, *event_types: type[Any]) -> Any:
-    def register(callback: Callable[[Any], Awaitable[None]]) -> Any:
-      for event_type in event_types:
-        self.listeners[event_type] = callback
-      return callback
-
-    return register
-
-  async def start(self, **kwargs: Any) -> None:
-    self.start_calls.append(kwargs)
+  async def start(self) -> None:
+    self.started = True
+    self.connection_id = f"{self.generation}.{self.shard_id}.{id(self)}"
+    await self.host.on_connection(self, ConnectionEventKind.READY)
 
   async def close(self) -> None:
-    self.close_calls += 1
+    self.closed = True
 
-  async def join(self) -> None:
-    pass
+  async def update_presence(self, update: PresenceUpdate) -> None:
+    self.presence.append(update)
 
-  async def update_presence(self, **kwargs: Any) -> None:
-    self.presence_updates.append(kwargs)
+  async def request_guild_members(self, request: GuildMembersRequest) -> None:
+    self.members.append(request)
 
-  async def request_guild_members(self, guild: int, **kwargs: Any) -> None:
-    self.member_requests.append((guild, kwargs))
+  async def update_voice_state(self, update: VoiceStateUpdate) -> None:
+    self.voice.append(update)
 
-  async def update_voice_state(
-    self, guild: int, channel: int | None, **kwargs: Any
-  ) -> None:
-    self.voice_updates.append((guild, channel, kwargs))
-
-  async def emit(self, event_type: type[Any], **values: Any) -> None:
-    await self.listeners[event_type](SimpleNamespace(**values))
-
-
-_NEXT_BOTS: list[FakeGatewayBot] = []
-_CREATED_BOTS: list[FakeGatewayBot] = []
-_BOT_TOKENS: list[str] = []
+  async def dispatch(self, name: str, payload: Mapping[str, Any]) -> None:
+    await self.host.on_dispatch(self, name, payload)
 
 
 @pytest.fixture(autouse=True)
-def _fake_hikari_gateway_bot(monkeypatch: pytest.MonkeyPatch) -> None:
-  _NEXT_BOTS.clear()
-  _CREATED_BOTS.clear()
-  _BOT_TOKENS.clear()
-
-  def create(token: str, **kwargs: Any) -> FakeGatewayBot:
-    bot = _NEXT_BOTS.pop(0) if _NEXT_BOTS else FakeGatewayBot()
-    _CREATED_BOTS.append(bot)
-    _BOT_TOKENS.append(token)
-    return bot
-
-  monkeypatch.setattr(hikari, "GatewayBot", create)
+def _reset() -> None:
+  SESSIONS.clear()
 
 
-def make_gateway(
-  bot: FakeGatewayBot,
-  dispatches: list[Dispatch] | None = None,
-  connections: list[ConnectionEvent] | None = None,
-) -> Gateway:
-  dispatches = dispatches if dispatches is not None else []
-  connections = connections if connections is not None else []
-
-  async def dispatch(event: Dispatch) -> None:
-    dispatches.append(event)
-
-  async def connection(event: ConnectionEvent) -> None:
-    connections.append(event)
-
-  _NEXT_BOTS.append(bot)
-  return Gateway(
-    "test-token",
-    intents=hikari.Intents.GUILDS,
-    dispatch=dispatch,
-    connection=connection,
-    shard_ids=[0],
-    shard_count=1,
+def worker(shards: int = 1) -> GatewayWorker:
+  return GatewayWorker(
+    "token",
+    intents=0,
+    shard_count=shards,
+    lease_ttl=3,
+    max_concurrency=16,
+    session_factory=FakeShard,
   )
 
 
-def test_gateway_lifespan_starts_assigned_shards_and_closes() -> None:
-  bot = FakeGatewayBot()
-  gateway = make_gateway(bot)
+async def eventually(predicate: Callable[[], bool], timeout: float = 20.0) -> None:
+  deadline = asyncio.get_running_loop().time() + timeout
+  while not predicate():
+    if asyncio.get_running_loop().time() > deadline:
+      raise AssertionError("condition was not met in time")
+    await asyncio.sleep(0.05)
 
-  with TestClient(gateway) as client:
-    assert client.get("/health/live").status_code == 204
-    schema = client.get("/schema").json()
 
-  assert schema["service"] == "micro.gateway"
-  assert bot.start_calls == [
-    {
-      "check_for_updates": False,
-      "shard_ids": (0,),
-      "shard_count": 1,
-    }
+def live(generation: int | None = None) -> list[FakeShard]:
+  return [
+    s for s in SESSIONS
+    if s.started and not s.closed and (generation is None or s.generation == generation)
   ]
-  assert bot.close_calls == 1
 
 
-def test_standalone_gateway_defaults_to_one_unsharded_connection() -> None:
-  bot = FakeGatewayBot()
-  _NEXT_BOTS.append(bot)
-  gateway = Gateway(
-    "test-token",
-    intents=hikari.Intents.GUILDS,
-    dispatch=lambda event: asyncio.sleep(0),
-  )
-
-  with TestClient(gateway):
-    pass
-
-  assert gateway.shard_ids == (0,)
-  assert gateway.shard_count == 1
-  assert bot.start_calls[0]["shard_ids"] == (0,)
-  assert bot.start_calls[0]["shard_count"] == 1
-
-
-def test_reassignment_stops_only_the_removed_shard() -> None:
-  gateway = Gateway(
-    "test-token",
-    intents=hikari.Intents.GUILDS,
-    dispatch=lambda event: asyncio.sleep(0),
-    shard_ids=(0, 1),
-    shard_count=2,
-  )
-  bots = _CREATED_BOTS
-
-  with TestClient(gateway) as client:
-    assert [bot.start_calls[0]["shard_ids"] for bot in bots] == [(0,), (1,)]
-    response = client.post(
-      "/gateway/assignment",
-      json={
-        "revision": 1,
-        "shard_count": 2,
-        "shard_ids": [1],
-        "publish_shard_ids": [1],
-      },
-    )
-    assert response.status_code == 204
-    assert bots[0].close_calls == 1
-    assert bots[1].close_calls == 0
-
-  assert bots[1].close_calls == 1
-
-
-def test_managed_gateway_rotates_revisioned_credentials() -> None:
-  dispatches: list[Dispatch] = []
-
-  async def dispatch(event: Dispatch) -> None:
-    dispatches.append(event)
-
-  gateway = Gateway(
-    intents=hikari.Intents.GUILDS,
-    dispatch=dispatch,
-  )
-  with TestClient(gateway) as client:
-    assigned = client.post(
-      "/gateway/assignment",
-      json={
-        "revision": 0,
-        "shard_count": 1,
-        "shard_ids": [0],
-        "publish_shard_ids": [0],
-      },
-    )
-    first = client.post("/discord/credential", json={"token": "first", "revision": 0})
-    identified = client.post(
-      "/gateway/connections/0/identify",
-      json={"assignment_revision": 0, "shard_id": 0},
-    )
-    assert client.get("/health/ready").status_code == 204
-    rotated = client.post(
-      "/discord/credential", json={"token": "second", "revision": 1}
-    )
-    stale = client.post("/discord/credential", json={"token": "stale", "revision": 0})
-    reassigned = client.post(
-      "/gateway/assignment",
-      json={
-        "revision": 1,
-        "shard_count": 2,
-        "shard_ids": [1],
-        "publish_shard_ids": [],
-      },
-    )
-    reidentified = client.post(
-      "/gateway/connections/1/identify",
-      json={"assignment_revision": 1, "shard_id": 1},
-    )
-    asyncio.run(
-      _CREATED_BOTS[-1].emit(
-        hikari.ShardPayloadEvent,
-        name="MESSAGE_CREATE",
-        payload={"id": "suppressed"},
-        shard=SimpleNamespace(id=1),
-      )
-    )
-    promoted = client.post(
-      "/gateway/assignment",
-      json={
-        "revision": 2,
-        "shard_count": 2,
-        "shard_ids": [1],
-        "publish_shard_ids": [1],
-      },
-    )
-    asyncio.run(
-      _CREATED_BOTS[-1].emit(
-        hikari.ShardPayloadEvent,
-        name="MESSAGE_CREATE",
-        payload={"id": "published"},
-        shard=SimpleNamespace(id=1),
-      )
-    )
-
-  assert first.status_code == 204
-  assert assigned.status_code == 204
-  assert identified.status_code == 204
-  assert rotated.status_code == 204
-  assert stale.status_code == 409
-  assert reassigned.status_code == 204
-  assert reidentified.status_code == 204
-  assert promoted.status_code == 204
-  assert _BOT_TOKENS == ["first", "second"]
-  assert _CREATED_BOTS[0].close_calls == 1
-  assert _CREATED_BOTS[1].close_calls == 1
-  assert len(_CREATED_BOTS[1].start_calls) == 1
-  assert [event.payload["id"] for event in dispatches] == ["published"]
-
-
-def test_gateway_run_owns_the_event_loop_and_lifecycle() -> None:
-  bot = FakeGatewayBot()
-  gateway = make_gateway(bot)
-
-  gateway.run()
-
-  assert len(bot.start_calls) == 1
-  assert bot.close_calls == 1
-
-
-def test_gateway_forwards_raw_dispatches() -> None:
-  bot = FakeGatewayBot()
-  dispatches: list[Dispatch] = []
-  gateway = make_gateway(bot, dispatches=dispatches)
-  shard = SimpleNamespace(id=0)
-
+def test_single_worker_owns_every_shard_and_publishes(nats_url: str) -> None:
   async def exercise() -> None:
-    await bot.emit(
-      hikari.ShardPayloadEvent,
-      name="MESSAGE_CREATE",
-      payload={"id": "1", "content": "first"},
-      shard=shard,
-    )
-    await bot.emit(
-      hikari.ShardPayloadEvent,
-      name="MESSAGE_UPDATE",
-      payload={"id": "1", "content": "second"},
-      shard=shard,
-    )
+    gateway = worker(shards=2)
+    async with Runtime(nats_url) as runtime:
+      received: list[tuple[str, dict[str, Any]]] = []
+
+      async def collect(message: Any) -> None:
+        received.append((message.subject, dict(message.headers or {})))
+
+      await runtime.nats.subscribe("micro.discord.>", cb=collect)
+      await runtime.add(gateway)
+      await eventually(lambda: gateway.publishing_shards == (0, 1))
+      session = next(s for s in live() if s.shard_id == 1)
+      await session.dispatch("MESSAGE_CREATE", {"guild_id": "123", "id": "9"})
+      await eventually(lambda: bool(received))
+      subject, headers = received[0]
+      assert subject == subjects.dispatch("MESSAGE_CREATE", 123)
+      assert headers["Micro-Shard"] == "1"
 
   asyncio.run(exercise())
 
-  assert [event.name for event in dispatches] == [
-    "MESSAGE_CREATE",
-    "MESSAGE_UPDATE",
-  ]
-  assert dispatches[0].payload == {"id": "1", "content": "first"}
-  assert gateway.shard_ids == (0,)
 
-
-def test_gateway_publishes_compact_dispatches_to_one_queue_channel() -> None:
-  bot = FakeGatewayBot()
-  _NEXT_BOTS.append(bot)
-  gateway = Gateway(
-    "test-token",
-    intents=hikari.Intents.GUILDS,
-    shard_ids=(0,),
-    shard_count=1,
-  )
-  publications: list[tuple[str, bytes]] = []
-
-  async def publish(channel: str, payload: bytes) -> None:
-    publications.append((channel, payload))
-
-  gateway.queue.publish = publish  # type: ignore[method-assign]
-
-  asyncio.run(
-    bot.emit(
-      hikari.ShardPayloadEvent,
-      name="MESSAGE_CREATE",
-      payload={"id": "1", "content": "hello"},
-      shard=SimpleNamespace(id=0),
-    )
-  )
-
-  assert publications == [
-    (
-      "gateway.events",
-      b'["MESSAGE_CREATE",{"id":"1","content":"hello"}]',
-    ),
-    (
-      "gateway.projection",
-      b'["event",null,0,"MESSAGE_CREATE",{"id":"1","content":"hello"}]',
-    ),
-  ]
-
-
-def test_queue_backed_gateway_waits_for_queue_topology_before_connecting() -> None:
-  bot = FakeGatewayBot()
-  _NEXT_BOTS.append(bot)
-  gateway = Gateway(
-    "test-token",
-    intents=hikari.Intents.GUILDS,
-    shard_ids=(0,),
-    shard_count=1,
-  )
-
+def test_workers_balance_and_reclaim_a_crashed_worker(nats_url: str) -> None:
   async def exercise() -> None:
-    await gateway.start()
-    assert bot.start_calls == []
-    gateway.apply_state(
-      {
-        "revision": 0,
-        "queues": [{"id": "queue-1", "base_url": "http://queue.internal"}],
-      }
+    first, second = worker(shards=4), worker(shards=4)
+    a, b = Runtime(nats_url, presence_ttl=3), Runtime(nats_url, presence_ttl=3)
+    await a.add(first)
+    await eventually(lambda: len(first.publishing_shards) == 4)
+    await b.add(second)
+    await eventually(
+      lambda: len(first.publishing_shards) == 2 and len(second.publishing_shards) == 2
     )
-    startup = gateway._startup  # pyright: ignore[reportPrivateUsage]
-    assert startup is not None
-    await startup
-    await gateway.close()
+    assert set(first.publishing_shards) | set(second.publishing_shards) == {0, 1, 2, 3}
 
-  asyncio.run(exercise())
-  assert len(bot.start_calls) == 1
-  assert bot.close_calls == 1
-
-
-def test_gateway_reports_connection_lifecycle() -> None:
-  bot = FakeGatewayBot()
-  connections: list[ConnectionEvent] = []
-  make_gateway(bot, connections=connections)
-  shard = SimpleNamespace(id=0)
-
-  async def exercise() -> None:
-    await bot.emit(hikari.ShardConnectedEvent, shard=shard)
-    await bot.emit(
-      hikari.ShardPayloadEvent,
-      shard=shard,
-      name="READY",
-      payload={},
-    )
-    await bot.emit(hikari.ShardDisconnectedEvent, shard=shard)
-    await bot.emit(
-      hikari.ShardPayloadEvent,
-      shard=shard,
-      name="RESUMED",
-      payload={},
-    )
+    # Crash: no drain, no lease cleanup.
+    await first._cancel_tasks()  # pyright: ignore[reportPrivateUsage]
+    await a.nats.close()
+    await eventually(lambda: second.publishing_shards == (0, 1, 2, 3))
+    await a.close()
+    await b.drain()
+    await b.close()
 
   asyncio.run(exercise())
 
-  assert connections[0] == ConnectionEvent(ConnectionEventKind.CONNECTED, 0)
-  connection_id = connections[1].connection_id
-  assert connection_id is not None
-  assert connections[1:] == [
-    ConnectionEvent(ConnectionEventKind.READY, 0, connection_id),
-    ConnectionEvent(ConnectionEventKind.DISCONNECTED, 0, connection_id),
-    ConnectionEvent(ConnectionEventKind.RESUMED, 0, connection_id),
-  ]
 
-
-def test_gateway_requests_complete_members_after_ready() -> None:
-  bot = FakeGatewayBot()
-  _NEXT_BOTS.append(bot)
-  gateway = Gateway(
-    "test-token",
-    intents=hikari.Intents.GUILDS | hikari.Intents.GUILD_MEMBERS,
-    dispatch=lambda event: asyncio.sleep(0),
-    shard_ids=[0],
-    shard_count=1,
-  )
-
-  asyncio.run(
-    bot.emit(
-      hikari.ShardPayloadEvent,
-      shard=SimpleNamespace(id=0),
-      name="READY",
-      payload={"guilds": [{"id": "123"}]},
-    )
-  )
-
-  assert gateway.shard_ids == (0,)
-  assert bot.member_requests[0][0] == 123
-  assert bot.member_requests[0][1]["query"] == ""
-  assert bot.member_requests[0][1]["limit"] == 0
-  assert str(bot.member_requests[0][1]["nonce"]).endswith(":123")
-
-
-def test_gateway_state_retains_assignment_during_disconnect_and_abandons_death() -> (
-  None
-):
-  state = GatewayState()
-  state.set_desired((ShardAssignment("gateway-a", 1, 4),))
-  state.observe(
-    "gateway-a", ConnectionEvent(ConnectionEventKind.READY, 1, "connection-a")
-  )
-  assert state.active_shards("gateway-a") == (1,)
-  assert state.assignments[0].state is AssignmentState.ACTIVE
-
-  state.observe(
-    "gateway-a",
-    ConnectionEvent(ConnectionEventKind.DISCONNECTED, 1, "connection-a"),
-  )
-  assert state.active_shards("gateway-a") == ()
-  assert state.assignments[0].state is AssignmentState.ACTIVE
-
-  assert state.declare_dead("gateway-a") == ("connection-a",)
-  assert state.assignments[0].state is AssignmentState.ABANDONED
-
-
-def test_gateway_state_rolls_ownership_only_after_old_assignment_drains() -> None:
-  state = GatewayState()
-  old = ShardAssignment("gateway-old", 0, 1)
-  new = ShardAssignment("gateway-new", 0, 1)
-  state.set_desired((old,))
-  state.observe(
-    "gateway-old", ConnectionEvent(ConnectionEventKind.READY, 0, "connection-old")
-  )
-
-  state.set_desired((old, new))
-  with pytest.raises(ValueError, match="already has an active"):
-    state.observe(
-      "gateway-new", ConnectionEvent(ConnectionEventKind.READY, 0, "connection-new")
-    )
-
-  state.set_desired((new,))
-  state.observe(
-    "gateway-new", ConnectionEvent(ConnectionEventKind.READY, 0, "connection-new")
-  )
-  assert state.active_shards("gateway-old") == ()
-  assert state.active_shards("gateway-new") == (0,)
-  assert state.active_owner(0, 1) == "gateway-new"
-
-
-def test_gateway_state_allows_explicit_shard_count_replacement() -> None:
-  state = GatewayState()
-  state.set_desired((ShardAssignment("old", 0, 1),))
-  state.observe("old", ConnectionEvent(ConnectionEventKind.READY, 0, "old-c"))
-  state.set_desired((ShardAssignment("new-a", 0, 2), ShardAssignment("new-b", 1, 2)))
-  state.observe("new-a", ConnectionEvent(ConnectionEventKind.READY, 0, "new-a-c"))
-  state.observe("new-b", ConnectionEvent(ConnectionEventKind.READY, 1, "new-b-c"))
-
-  assert state.active_shards("old") == ()
-  assert state.active_owner(0, 2) == "new-a"
-  assert state.active_owner(1, 2) == "new-b"
-
-
-def test_gateway_state_keeps_old_publisher_until_replacement_is_ready() -> None:
-  state = GatewayState()
-  state.set_desired((ShardAssignment("old", 0, 1),))
-  state.observe("old", ConnectionEvent(ConnectionEventKind.READY, 0, "old-c"))
-  state.set_desired((ShardAssignment("new", 0, 1),))
-
-  assert state.active_shards("old") == (0,)
-  assert state.active_shards("new") == ()
-
-  state.observe("new", ConnectionEvent(ConnectionEventKind.READY, 0, "new-c"))
-
-  assert state.active_shards("old") == ()
-  assert state.active_shards("new") == (0,)
-
-
-def test_invalid_session_allows_a_fresh_connection_on_the_same_worker() -> None:
-  state = GatewayState()
-  state.set_desired((ShardAssignment("gateway", 0, 1),))
-  state.observe("gateway", ConnectionEvent(ConnectionEventKind.READY, 0, "old"))
-  state.observe("gateway", ConnectionEvent(ConnectionEventKind.INVALIDATED, 0, "old"))
-  state.observe("gateway", ConnectionEvent(ConnectionEventKind.READY, 0, "new"))
-
-  assert state.active_shards("gateway") == (0,)
-  assert state.connections[0].connection_id == "new"
-
-
-def test_gateway_executes_typed_control_requests() -> None:
-  bot = FakeGatewayBot()
-  gateway = make_gateway(bot)
-
-  with TestClient(gateway) as client:
-    presence = client.post(
-      "/gateway/presence",
-      json={"status": "idle", "activity": {"name": "Micro", "type": 3}},
-    )
-    members = client.post(
-      "/gateway/guild-members",
-      json={"guild_id": 42, "query": "A", "limit": 10, "nonce": "request-1"},
-    )
-    voice = client.post(
-      "/gateway/voice-state",
-      json={"guild_id": 42, "channel_id": 99, "self_deaf": True},
-    )
-
-  assert presence.status_code == members.status_code == voice.status_code == 204
-  assert bot.presence_updates[0]["status"] is hikari.Status.IDLE
-  assert bot.presence_updates[0]["activity"].name == "Micro"
-  assert bot.member_requests == [
-    (
-      42,
-      {
-        "include_presences": False,
-        "limit": 10,
-        "query": "A",
-        "nonce": "request-1",
-      },
-    )
-  ]
-  assert bot.voice_updates == [(42, 99, {"self_mute": False, "self_deaf": True})]
-
-
-def test_new_ready_invalidates_the_previous_connection() -> None:
-  bot = FakeGatewayBot()
-  connections: list[ConnectionEvent] = []
-  make_gateway(bot, connections=connections)
-  shard = SimpleNamespace(id=0)
-
+def test_draining_hands_shards_over_before_leaving(nats_url: str) -> None:
   async def exercise() -> None:
-    await bot.emit(hikari.ShardPayloadEvent, shard=shard, name="READY", payload={})
-    await bot.emit(hikari.ShardPayloadEvent, shard=shard, name="READY", payload={})
+    first, second = worker(shards=2), worker(shards=2)
+    a, b = Runtime(nats_url), Runtime(nats_url)
+    await a.add(first)
+    await b.add(second)
+    await eventually(
+      lambda: len(first.publishing_shards) == 1 and len(second.publishing_shards) == 1
+    )
+    await a.drain()
+    # Drain returned only after the peer took the shard over.
+    assert second.publishing_shards == (0, 1)
+    assert first.publishing_shards == ()
+    await a.close()
+    await b.drain()
+    await b.close()
 
   asyncio.run(exercise())
 
-  first_id = connections[0].connection_id
-  second_id = connections[2].connection_id
-  assert first_id is not None
-  assert second_id is not None
-  assert first_id != second_id
-  assert connections == [
-    ConnectionEvent(ConnectionEventKind.READY, 0, first_id),
-    ConnectionEvent(ConnectionEventKind.INVALIDATED, 0, first_id),
-    ConnectionEvent(ConnectionEventKind.READY, 0, second_id),
-  ]
+
+def test_new_generation_rolls_in_then_takes_over_publishing(nats_url: str) -> None:
+  async def exercise() -> None:
+    gateway = worker(shards=1)
+    async with Runtime(nats_url) as runtime:
+      await runtime.add(gateway)
+      await eventually(lambda: gateway.publishing_shards == (0,))
+      control = GatewayControl(runtime)
+      generation = await control.set_shard_count(3)
+      assert (generation.id, generation.shard_count) == (2, 3)
+      await eventually(lambda: gateway.publishing_shards == (0, 1, 2))
+      await eventually(lambda: not live(1))
+      assert all(s.closed for s in SESSIONS if s.generation == 1)
+      status = await control.status()
+      assert status.active == generation
+      assert set(status.leases) == {"2.0", "2.1", "2.2"}
+
+  asyncio.run(exercise())
 
 
-@pytest.mark.parametrize(
-  ("shard_ids", "shard_count"),
-  [([0], None), ([], 1), ([1], 1), ([True], 2), (None, 0)],
-)
-def test_gateway_rejects_invalid_shard_assignments(
-  shard_ids: list[int] | None,
-  shard_count: int | None,
+def test_control_requests_reach_the_owning_shard_and_presence_is_global(
+  nats_url: str,
 ) -> None:
-  async def dispatch(event: Dispatch) -> None:
-    pass
+  async def exercise() -> None:
+    gateway = worker(shards=2)
+    async with Runtime(nats_url) as runtime:
+      await runtime.add(gateway)
+      await eventually(lambda: gateway.publishing_shards == (0, 1))
+      control = GatewayControl(runtime)
+      guild = 1 << 22  # shard 1 of 2
+      await control.request_guild_members(guild, query="", limit=0)
+      await control.update_voice_state(guild, None)
+      owner = next(s for s in live() if s.shard_id == 1)
+      assert owner.members[0].guild_id == guild
+      assert owner.voice[0].guild_id == guild
+      await control.update_presence(status="idle")
+      await eventually(lambda: all(s.presence for s in live()))
 
-  with pytest.raises(ValueError):
-    Gateway(
-      "test-token",
-      intents=hikari.Intents.NONE,
-      dispatch=dispatch,
-      shard_ids=shard_ids,
-      shard_count=shard_count,
-    )
+  asyncio.run(exercise())
+
+
+def test_guild_extraction() -> None:
+  assert guild_of("MESSAGE_CREATE", {"guild_id": "5"}) == "5"
+  assert guild_of("GUILD_CREATE", {"id": "6"}) == "6"
+  assert guild_of("READY", {"id": "7"}) is None
+  assert json.loads(json.dumps({"x": 1})) == {"x": 1}

@@ -1,15 +1,10 @@
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
 
-@dataclass(frozen=True, slots=True)
-class Dispatch:
-  name: str
-  payload: Mapping[str, Any]
-  shard_id: int = 0
-  connection_id: str | None = None
+CONNECTION_HEADER = "Micro-Connection"
+SHARD_HEADER = "Micro-Shard"
+GENERATION_HEADER = "Micro-Generation"
 
 
 class ConnectionEventKind(StrEnum):
@@ -21,12 +16,13 @@ class ConnectionEventKind(StrEnum):
   CLOSED = "closed"
 
 
-@dataclass(frozen=True, slots=True)
-class ConnectionEvent:
+class ConnectionEvent(BaseModel):
+  """A Gateway connection lifecycle transition, published for the projection."""
+
+  model_config = ConfigDict(extra="forbid", frozen=True)
+
   kind: ConnectionEventKind
-  shard_id: int
+  shard_id: int = Field(ge=0)
+  generation: int = Field(ge=1)
   connection_id: str | None = None
-
-
-type DispatchSink = Callable[[Dispatch], Awaitable[None]]
-type ConnectionSink = Callable[[ConnectionEvent], Awaitable[None]]
+  worker: str

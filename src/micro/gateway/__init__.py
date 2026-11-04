@@ -1,37 +1,33 @@
-from micro._microservices import ActivityUpdate, GatewayClient
+"""Self-balancing Discord Gateway workers and their control client."""
 
-from ._connection import ShardConnection
-from ._events import (
-  ConnectionEvent,
-  ConnectionEventKind,
-  ConnectionSink,
-  Dispatch,
-  DispatchSink,
+from ._client import GatewayControl, GatewayStatus
+from ._connection import HikariShard, ShardHost, ShardSession
+from ._control import (
+  ActivityUpdate,
+  GatewayGeneration,
+  GuildMembersRequest,
+  PresenceUpdate,
+  ShardLease,
+  VoiceStateUpdate,
 )
-from ._gateway import (
-  Gateway,
-)
-from ._state import AssignmentState, GatewayState, ObservedConnection, ShardAssignment
-from .event_service import (
-  GatewayEventService,
-)
-from .projection import GatewayProjection, ProjectedObject
+from ._events import ConnectionEvent, ConnectionEventKind
+from ._worker import GatewayWorker, guild_of, lease_key
 
 __all__ = (
   "ActivityUpdate",
-  "AssignmentState",
   "ConnectionEvent",
   "ConnectionEventKind",
-  "ConnectionSink",
-  "Dispatch",
-  "DispatchSink",
-  "Gateway",
-  "GatewayClient",
-  "GatewayEventService",
-  "GatewayProjection",
-  "GatewayState",
-  "ObservedConnection",
-  "ProjectedObject",
-  "ShardAssignment",
-  "ShardConnection",
+  "GatewayControl",
+  "GatewayGeneration",
+  "GatewayStatus",
+  "GatewayWorker",
+  "GuildMembersRequest",
+  "HikariShard",
+  "PresenceUpdate",
+  "ShardHost",
+  "ShardLease",
+  "ShardSession",
+  "VoiceStateUpdate",
+  "guild_of",
+  "lease_key",
 )

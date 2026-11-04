@@ -5,41 +5,75 @@ from uuid import uuid7
 
 import hikari
 
-from ._events import ConnectionEvent, ConnectionEventKind, Dispatch
+from ._control import GuildMembersRequest, PresenceUpdate, VoiceStateUpdate
+from ._events import ConnectionEventKind
 
 
-class ShardOwner(Protocol):
+class ShardHost(Protocol):
+  """What a shard session reports to the worker that owns it."""
+
+  token: str
   intents: hikari.Intents
 
-  @property
-  def credential(self) -> str: ...
-
-  async def publish_dispatch(
-    self, dispatch: Dispatch, *, application: bool
+  async def on_dispatch(
+    self, session: ShardSession, name: str, payload: Mapping[str, Any]
   ) -> None: ...
 
-  async def report_connection(self, event: ConnectionEvent) -> None: ...
+  async def on_connection(
+    self, session: ShardSession, kind: ConnectionEventKind
+  ) -> None: ...
 
 
-class ShardConnection:
-  """One independently replaceable Discord shard connection."""
+class ShardSession(Protocol):
+  """One Discord Gateway connection for one shard of one generation."""
 
-  def __init__(self, gateway: ShardOwner, shard_id: int, shard_count: int) -> None:
-    self.gateway = gateway
+  generation: int
+  shard_id: int
+  shard_count: int
+  connection_id: str | None
+
+  async def start(self) -> None: ...
+
+  async def close(self) -> None: ...
+
+  async def update_presence(self, update: PresenceUpdate) -> None: ...
+
+  async def request_guild_members(self, request: GuildMembersRequest) -> None: ...
+
+  async def update_voice_state(self, update: VoiceStateUpdate) -> None: ...
+
+
+class HikariShard:
+  """A shard session backed by a cache-free Hikari Gateway bot."""
+
+  def __init__(
+    self, host: ShardHost, generation: int, shard_id: int, shard_count: int
+  ) -> None:
+    self.host = host
+    self.generation = generation
     self.shard_id = shard_id
     self.shard_count = shard_count
-    self.bot: hikari.GatewayBot | None = None
-    self.started = False
     self.connection_id: str | None = None
-    self.may_publish = False
+    self.bot: hikari.GatewayBot | None = None
     self._lock = asyncio.Lock()
 
-  async def identify(self) -> None:
+  async def start(self) -> None:
     async with self._lock:
-      if self.started:
+      if self.bot is not None:
         return
-      bot = self.prepare()
-      self.started = True
+      bot = hikari.GatewayBot(
+        self.host.token,
+        intents=self.host.intents,
+        cache_settings=hikari.impl.CacheSettings(
+          components=hikari.api.CacheComponents.NONE
+        ),
+        auto_chunk_members=False,
+        banner=None,
+      )
+      bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
+      bot.listen(hikari.ShardConnectedEvent)(self._on_connected)
+      bot.listen(hikari.ShardDisconnectedEvent)(self._on_disconnected)
+      self.bot = bot
       try:
         await bot.start(
           check_for_updates=False,
@@ -47,84 +81,84 @@ class ShardConnection:
           shard_count=self.shard_count,
         )
       except BaseException:
-        self.started = False
         self.bot = None
         raise
 
-  def prepare(self) -> hikari.GatewayBot:
-    if self.bot is None:
-      self.bot = hikari.GatewayBot(
-        self.gateway.credential,
-        intents=self.gateway.intents,
-        cache_settings=hikari.impl.CacheSettings(
-          components=hikari.api.CacheComponents.NONE
-        ),
-        auto_chunk_members=False,
-        banner=None,
-      )
-      self._subscribe(self.bot)
-    return self.bot
-
-  async def stop(self) -> None:
+  async def close(self) -> None:
     async with self._lock:
       bot, self.bot = self.bot, None
-      was_started, self.started = self.started, False
-      if bot is not None and was_started:
+      if bot is not None:
         await bot.close()
       if self.connection_id is not None:
-        await self.gateway.report_connection(
-          ConnectionEvent(ConnectionEventKind.CLOSED, self.shard_id, self.connection_id)
-        )
+        await self.host.on_connection(self, ConnectionEventKind.CLOSED)
       self.connection_id = None
 
-  async def join(self) -> None:
-    if self.bot is not None:
-      await self.bot.join()
+  async def update_presence(self, update: PresenceUpdate) -> None:
+    activity = (
+      hikari.Activity(
+        name=update.activity.name,
+        type=hikari.ActivityType(update.activity.type),
+        url=update.activity.url,
+        state=update.activity.state,
+      )
+      if update.activity is not None
+      else None
+    )
+    await self._bot().update_presence(
+      status=hikari.Status(update.status),
+      idle_since=update.idle_since,
+      activity=activity,
+      afk=update.afk,
+    )
 
-  def _subscribe(self, bot: hikari.GatewayBot) -> None:
-    bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
-    bot.listen(hikari.ShardConnectedEvent)(self._on_connected)
-    bot.listen(hikari.ShardDisconnectedEvent)(self._on_disconnected)
+  async def request_guild_members(self, request: GuildMembersRequest) -> None:
+    kwargs: dict[str, Any] = {
+      "include_presences": request.include_presences,
+      "limit": request.limit,
+    }
+    if request.query is not None:
+      kwargs["query"] = request.query
+    if request.users is not None:
+      kwargs["users"] = request.users
+    if request.nonce is not None:
+      kwargs["nonce"] = request.nonce
+    await self._bot().request_guild_members(request.guild_id, **kwargs)
+
+  async def update_voice_state(self, update: VoiceStateUpdate) -> None:
+    await self._bot().update_voice_state(
+      update.guild_id,
+      update.channel_id,
+      self_mute=update.self_mute,
+      self_deaf=update.self_deaf,
+    )
+
+  def _bot(self) -> hikari.GatewayBot:
+    if self.bot is None:
+      raise RuntimeError("Shard session is not connected.")
+    return self.bot
 
   async def _on_dispatch(self, event: hikari.ShardPayloadEvent) -> None:
     if event.name == "READY":
       if self.connection_id is not None:
-        await self.gateway.report_connection(
-          ConnectionEvent(
-            ConnectionEventKind.INVALIDATED, self.shard_id, self.connection_id
-          )
-        )
+        await self.host.on_connection(self, ConnectionEventKind.INVALIDATED)
       self.connection_id = str(uuid7())
-      await self.gateway.report_connection(
-        ConnectionEvent(ConnectionEventKind.READY, self.shard_id, self.connection_id)
-      )
+      await self.host.on_connection(self, ConnectionEventKind.READY)
       await self._request_initial_members(event.payload)
     elif event.name == "RESUMED":
-      await self.gateway.report_connection(
-        ConnectionEvent(ConnectionEventKind.RESUMED, self.shard_id, self.connection_id)
-      )
-    await self.gateway.publish_dispatch(
-      Dispatch(event.name, event.payload, self.shard_id, self.connection_id),
-      application=self.may_publish,
-    )
+      await self.host.on_connection(self, ConnectionEventKind.RESUMED)
+    await self.host.on_dispatch(self, event.name, event.payload)
 
   async def _on_connected(self, event: hikari.ShardConnectedEvent) -> None:
-    await self.gateway.report_connection(
-      ConnectionEvent(ConnectionEventKind.CONNECTED, self.shard_id, self.connection_id)
-    )
+    await self.host.on_connection(self, ConnectionEventKind.CONNECTED)
 
   async def _on_disconnected(self, event: hikari.ShardDisconnectedEvent) -> None:
-    await self.gateway.report_connection(
-      ConnectionEvent(
-        ConnectionEventKind.DISCONNECTED, self.shard_id, self.connection_id
-      )
-    )
+    await self.host.on_connection(self, ConnectionEventKind.DISCONNECTED)
 
   async def _request_initial_members(self, payload: Mapping[str, Any]) -> None:
-    if not self.gateway.intents & hikari.Intents.GUILD_MEMBERS:
+    if not self.host.intents & hikari.Intents.GUILD_MEMBERS or self.bot is None:
       return
     guilds = payload.get("guilds")
-    if not isinstance(guilds, list) or self.bot is None:
+    if not isinstance(guilds, list):
       return
     for guild in guilds:
       if not isinstance(guild, Mapping):
@@ -133,8 +167,8 @@ class ShardConnection:
       if isinstance(guild_id, str) and guild_id.isdecimal():
         await self.bot.request_guild_members(
           int(guild_id),
-          include_presences=bool(self.gateway.intents & hikari.Intents.GUILD_PRESENCES),
+          include_presences=bool(self.host.intents & hikari.Intents.GUILD_PRESENCES),
           query="",
           limit=0,
-          nonce=f"micro:{self.connection_id}:{guild_id}",
+          nonce=f"micro:{guild_id}",
         )

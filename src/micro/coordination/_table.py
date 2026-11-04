@@ -1,5 +1,6 @@
 import asyncio
 import math
+from contextlib import suppress
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -68,10 +69,28 @@ class Table[T]:
 
   async def create(self, key: str, value: T, *, ttl: float | None = None) -> int | None:
     """Write a key only if it does not exist; return None if it does."""
-    try:
-      return await self._store.create(key, self._encode(value), msg_ttl=_ttl(ttl))
-    except KeyWrongLastSequenceError:
-      return None
+    encoded = self._encode(value)
+    while True:
+      try:
+        return await self._store._update(  # pyright: ignore[reportPrivateUsage]
+          key, encoded, last=0, msg_ttl=_ttl(ttl)
+        )
+      except KeyWrongLastSequenceError:
+        pass
+      # The key has history; it is free only if its last entry is a deletion.
+      try:
+        await self._store.get(key)
+        return None
+      except KeyDeletedError as deleted:
+        last = deleted.entry.revision if deleted.entry is not None else None
+      except KeyNotFoundError:
+        continue  # Expired between the two calls; try a fresh create.
+      try:
+        return await self._store._update(  # pyright: ignore[reportPrivateUsage]
+          key, encoded, last=last, msg_ttl=_ttl(ttl)
+        )
+      except KeyWrongLastSequenceError:
+        return None
 
   async def update(
     self, key: str, value: T, *, revision: int, ttl: float | None = None
@@ -124,7 +143,8 @@ class Table[T]:
             entry.key, self._adapter.validate_json(entry.value), entry.revision or 0
           )
     finally:
-      await asyncio.shield(watcher.stop())
+      with suppress(Exception):
+        await asyncio.shield(watcher.stop())
 
   def _encode(self, value: T) -> bytes:
     return self._adapter.dump_json(self._adapter.validate_python(value))
