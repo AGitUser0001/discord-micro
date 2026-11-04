@@ -3,10 +3,9 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from starlette.testclient import TestClient
+from conftest import EngineHarness
 
 from micro.schemas.gateway import GATEWAY_PROJECTION
-from micro.store import Store
 
 ApacheAgeExecutor: Any = pytest.importorskip("micro_age").ApacheAgeExecutor
 
@@ -23,9 +22,9 @@ def test_age_executes_projection_writes_relationships_deletes_and_rollbacks() ->
   connection_id = f"connection-{suffix}"
   object_id = f"guild-{suffix}"
   rollback_id = f"rollback-{suffix}"
-  store = Store(executor=ApacheAgeExecutor(AGE_URL))
+  store = EngineHarness(ApacheAgeExecutor(AGE_URL))
 
-  with TestClient(store) as client:
+  with store as client:
     topology = client.post(
       "/topology",
       json={

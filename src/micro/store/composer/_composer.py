@@ -37,7 +37,7 @@ from graphql.language import (
   UnionTypeExtensionNode,
 )
 
-from micro._microservices import TopologyError
+from micro.errors import TopologyError
 
 from .._module import GraphModule
 from ._directive import (

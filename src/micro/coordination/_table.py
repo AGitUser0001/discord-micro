@@ -1,15 +1,11 @@
 import asyncio
 import math
-from contextlib import suppress
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from nats.js.errors import (
-  KeyDeletedError,
-  KeyNotFoundError,
-  KeyWrongLastSequenceError,
-)
+from nats.js.errors import KeyWrongLastSequenceError, NotFoundError
 from nats.js.kv import KeyValue
 from pydantic import TypeAdapter
 
@@ -49,13 +45,30 @@ class Table[T]:
     return self._store._name  # pyright: ignore[reportPrivateUsage]
 
   async def get(self, key: str) -> Versioned[T] | None:
+    latest = await self._latest(key)
+    if latest is None or latest[1] is None:
+      return None
+    return Versioned(self._adapter.validate_json(latest[1]), latest[0])
+
+  async def _latest(self, key: str) -> tuple[int, bytes | None] | None:
+    """The key's last revision and value (None for a deletion or expiry marker)."""
+    js = self._store._js  # pyright: ignore[reportPrivateUsage]
+    subject = f"{self._store._pre}{key}"  # pyright: ignore[reportPrivateUsage]
     try:
-      entry = await self._store.get(key)
-    except KeyNotFoundError, KeyDeletedError:
+      message = await js.get_msg(
+        self._store._stream,  # pyright: ignore[reportPrivateUsage]
+        subject=subject,
+        direct=self._store._direct,  # pyright: ignore[reportPrivateUsage]
+      )
+    except NotFoundError:
       return None
-    if entry.value is None or entry.revision is None:
-      return None
-    return Versioned(self._adapter.validate_json(entry.value), entry.revision)
+    headers = message.headers or {}
+    if (
+      headers.get("KV-Operation") in _PURGE_OPERATIONS
+      or "Nats-Marker-Reason" in headers
+    ):
+      return message.seq or 0, None
+    return message.seq or 0, message.data or b""
 
   async def put(self, key: str, value: T) -> int:
     return await self._store.put(key, self._encode(value))
@@ -78,16 +91,15 @@ class Table[T]:
       except KeyWrongLastSequenceError:
         pass
       # The key has history; it is free only if its last entry is a deletion.
-      try:
-        await self._store.get(key)
+      latest = await self._latest(key)
+      if latest is None:
+        continue  # Expired and removed between the two calls; create afresh.
+      revision, current = latest
+      if current is not None:
         return None
-      except KeyDeletedError as deleted:
-        last = deleted.entry.revision if deleted.entry is not None else None
-      except KeyNotFoundError:
-        continue  # Expired between the two calls; try a fresh create.
       try:
         return await self._store._update(  # pyright: ignore[reportPrivateUsage]
-          key, encoded, last=last, msg_ttl=_ttl(ttl)
+          key, encoded, last=revision, msg_ttl=_ttl(ttl)
         )
       except KeyWrongLastSequenceError:
         return None

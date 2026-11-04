@@ -1,6 +1,8 @@
+import asyncio
+
 import pytest
+from conftest import EngineHarness
 from graphql import GraphQLError
-from starlette.testclient import TestClient
 
 from micro.store import (
   GraphBatch,
@@ -10,6 +12,7 @@ from micro.store import (
   GraphResult,
   GraphStatement,
   Store,
+  StoreClient,
 )
 
 
@@ -48,21 +51,17 @@ PEOPLE = GraphModule(
 )
 
 
-def activate(client: TestClient, module: GraphModule = PEOPLE) -> None:
+def activate(client: EngineHarness, module: GraphModule = PEOPLE) -> None:
   response = client.post(
-    "/topology",
-    json={"revision": 0, "modules": [module.model_dump(by_alias=True)]},
+    "/topology", json={"modules": [module.model_dump(by_alias=True)]}
   )
   assert response.status_code == 204
 
 
-def test_store_executes_compiled_graphql_operation() -> None:
+def test_engine_executes_compiled_graphql_operation() -> None:
   executor = Executor()
-  store = Store(executor=executor)
-
-  with TestClient(store) as client:
+  with EngineHarness(executor) as client:
     activate(client)
-    assert client.get("/health/ready").status_code == 204
     response = client.post(
       "/graphql",
       json={
@@ -70,40 +69,28 @@ def test_store_executes_compiled_graphql_operation() -> None:
         "variables": {"name": "Ada"},
       },
     )
-
-  assert response.status_code == 200
   assert response.json() == {"data": {"person": {"name": "Ada"}}}
-  assert executor.started
-  assert executor.closed
+  assert executor.started and executor.closed
   assert executor.statements[0].columns == ("c0", "c1")
 
 
-def test_store_serves_graphql_introspection_without_using_database() -> None:
+def test_engine_serves_introspection_without_using_database() -> None:
   executor = Executor()
-  store = Store(executor=executor)
-
-  with TestClient(store) as client:
+  with EngineHarness(executor) as client:
     activate(client)
     response = client.post(
-      "/graphql",
-      json={"query": "{ __schema { queryType { name } } }"},
+      "/graphql", json={"query": "{ __schema { queryType { name } } }"}
     )
-
-  assert response.status_code == 200
   assert response.json() == {"data": {"__schema": {"queryType": {"name": "Query"}}}}
   assert executor.statements == []
 
 
-def test_store_rejects_invalid_graphql_before_compilation() -> None:
+def test_engine_rejects_invalid_graphql_before_compilation() -> None:
   executor = Executor()
-  store = Store(executor=executor)
-
-  with TestClient(store) as client:
+  with EngineHarness(executor) as client:
     activate(client)
     response = client.post("/graphql", json={"query": "{ missing }"})
-
-  assert response.status_code == 400
-  assert response.json()["errors"]
+  assert response.json()["errors"]  # type: ignore[index]
   assert executor.statements == []
 
 
@@ -112,92 +99,23 @@ def test_graph_statement_requires_valid_gql() -> None:
     GraphStatement("this is not gql")
 
 
-def test_store_returns_explicit_graphql_errors() -> None:
+def test_engine_returns_explicit_graphql_errors() -> None:
   class FailingExecutor(Executor):
     async def execute(self, batch: GraphBatch) -> GraphBatchResult:
       raise GraphQLError("Operation is unavailable.")
 
-  store = Store(executor=FailingExecutor())
-
-  with TestClient(store) as client:
+  with EngineHarness(FailingExecutor()) as client:
     activate(client)
     response = client.post(
-      "/graphql",
-      json={"query": '{ person(name: "Ada") { name } }'},
+      "/graphql", json={"query": '{ person(name: "Ada") { name } }'}
     )
-
-  assert response.status_code == 200
   assert response.json() == {
     "data": None,
     "errors": [{"message": "Operation is unavailable."}],
   }
 
 
-def test_overseer_topology_activates_distributed_store_module() -> None:
-  module = GraphModule(
-    id="example.status",
-    schema="""
-      type Status @entity(key: ["value"]) { value: String! }
-      type Query {
-        moduleStatus(value: String!): Status @from(key: {value: value})
-      }
-    """,
-  )
-  store = Store(executor=Executor())
-
-  with TestClient(store) as client:
-    assert (
-      client.post("/graphql", json={"query": "{ moduleStatus }"}).status_code == 400
-    )
-    activated = client.post(
-      "/topology",
-      json={"revision": 0, "modules": [module.model_dump(by_alias=True)]},
-    )
-    response = client.post(
-      "/graphql", json={"query": "{ moduleStatus(value: \"Ada\") { value } }"}
-    )
-
-  assert activated.status_code == 204
-  assert response.json() == {"data": {"moduleStatus": {"value": "Ada"}}}
-  assert store.active_modules == ("example.status",)
-  assert store.topology_revision == 0
-
-
-def test_store_becomes_unavailable_for_an_uncomposable_topology() -> None:
-  store = Store(executor=Executor())
-
-  with TestClient(store) as client:
-    response = client.post(
-      "/topology",
-      json={
-        "revision": 0,
-        "modules": [
-          {
-            "id": "example.status",
-            "schema": """
-              type Status @entity(key: [\"id\"]) { id: ID! }
-              type Query { status(id: ID!): Status }
-            """,
-          }
-        ],
-      },
-    )
-    ready = client.get("/health/ready")
-    graphql = client.post(
-      "/graphql", json={"query": "{ person(name: \"Ada\") { name } }"}
-    )
-
-  assert response.status_code == 409
-  assert ready.status_code == 503
-  assert graphql.status_code == 503
-  assert store.active_modules == ()
-  assert store.topology_revision == -1
-  assert store.desired_topology_revision == 0
-  assert store.composition_error is not None
-
-
-def test_store_can_retry_a_failed_desired_revision() -> None:
-  store = Store(executor=Executor())
+def test_engine_is_unavailable_after_an_uncomposable_module_and_recovers() -> None:
   invalid = GraphModule(
     id="people",
     schema="""
@@ -205,27 +123,39 @@ def test_store_can_retry_a_failed_desired_revision() -> None:
       type Query { person(name: String!): Person }
     """,
   )
-  valid = GraphModule(
-    id="people",
-    schema="""
-      type Person @entity(key: ["name"]) { name: String! }
-      type Query {
-        person(name: String!): Person @from(key: {name: name})
-      }
-    """,
-  )
-
-  with TestClient(store) as client:
+  with EngineHarness(Executor()) as client:
     rejected = client.post(
-      "/topology",
-      json={"revision": 0, "modules": [invalid.model_dump(by_alias=True)]},
+      "/topology", json={"modules": [invalid.model_dump(by_alias=True)]}
     )
-    recovered = client.post(
-      "/topology",
-      json={"revision": 0, "modules": [valid.model_dump(by_alias=True)]},
-    )
+    assert rejected.status_code == 409
+    assert not client.engine.available
+    assert client.engine.composition_error is not None
+    unavailable = client.post("/graphql", json={"query": "{ _micro }"})
+    assert unavailable.json()["errors"][0]["message"] == "Store graph is unavailable."  # type: ignore[index]
+    activate(client)
+    assert client.engine.available
+    assert client.engine.active_modules == ("people",)
 
-  assert rejected.status_code == 409
-  assert recovered.status_code == 204
-  assert store.topology_revision == 0
-  assert store.composition_error is None
+
+def test_store_service_composes_modules_declared_by_services(nats_url: str) -> None:
+  from micro.runtime import Runtime
+  from micro.service import Service
+
+  async def exercise() -> None:
+    async with Runtime(nats_url) as runtime:
+      store = Store(Executor())
+      await runtime.add(store)
+      assert store.engine.active_modules == ()
+      people = Service("people")
+      people.uses(PEOPLE)
+      await runtime.add(people)
+      deadline = asyncio.get_running_loop().time() + 10
+      while store.engine.active_modules != ("people",):
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.05)
+      result = await StoreClient(runtime).execute(
+        'query { person(name: "Ada") { name } }'
+      )
+      assert result == {"data": {"person": {"name": "Ada"}}}
+
+  asyncio.run(exercise())

@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict
 from micro import subjects
 from micro.errors import RemoteError, RoutingError
 from micro.runtime import Runtime
-
 from micro.service import (
   DuplicateRequestHandlerError,
   EventSchema,
@@ -215,7 +214,9 @@ def test_discord_dispatch_listeners_can_filter_by_guild(nats_url: str) -> None:
       payload = b'{"channel_id":"1","user_id":"2","timestamp":1}'
       for guild in (41, 42):
         await runtime.jetstream.publish(
-          subjects.dispatch("TYPING_START", guild), payload, stream=subjects.EVENTS_STREAM
+          subjects.dispatch("TYPING_START", guild),
+          payload,
+          stream=subjects.EVENTS_STREAM,
         )
       await eventually(lambda: seen == ["42"])
       await asyncio.sleep(0.3)

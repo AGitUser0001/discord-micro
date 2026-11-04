@@ -428,8 +428,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx2" },
+    { name = "nats-py" },
     { name = "pydantic" },
-    { name = "starlette" },
 ]
 
 [package.optional-dependencies]
@@ -441,13 +441,15 @@ all = [
     { name = "graphglot" },
     { name = "graphql-core" },
     { name = "hikari" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 gateway = [
     { name = "hikari" },
 ]
-overseer = [
-    { name = "graphglot" },
-    { name = "graphql-core" },
+http = [
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 store = [
     { name = "graphglot" },
@@ -466,33 +468,35 @@ dev = [
     { name = "graphglot" },
     { name = "graphql-core" },
     { name = "hikari" },
-    { name = "nats-py" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "starlette" },
     { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "graphglot", marker = "extra == 'all'", specifier = ">=0.14.1,<0.15" },
-    { name = "graphglot", marker = "extra == 'overseer'", specifier = ">=0.14.1,<0.15" },
     { name = "graphglot", marker = "extra == 'store'", specifier = ">=0.14.1,<0.15" },
     { name = "graphql-core", marker = "extra == 'all'", specifier = ">=3.2.11,<3.3" },
-    { name = "graphql-core", marker = "extra == 'overseer'", specifier = ">=3.2.11,<3.3" },
     { name = "graphql-core", marker = "extra == 'store'", specifier = ">=3.2.11,<3.3" },
     { name = "hikari", marker = "extra == 'all'", specifier = ">=2.5.0" },
     { name = "hikari", marker = "extra == 'gateway'", specifier = ">=2.5.0" },
     { name = "httpx2", specifier = ">=2.9.1" },
+    { name = "nats-py", specifier = ">=2.15,<3" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "starlette", specifier = ">=1.4.1" },
+    { name = "starlette", marker = "extra == 'all'", specifier = ">=1.4.1" },
+    { name = "starlette", marker = "extra == 'http'", specifier = ">=1.4.1" },
+    { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.52.1" },
+    { name = "uvicorn", marker = "extra == 'http'", specifier = ">=0.52.1" },
     { name = "uvloop", marker = "(sys_platform == 'darwin' and extra == 'accel') or (sys_platform == 'linux' and extra == 'accel')", specifier = ">=0.22.1" },
     { name = "uvloop", marker = "extra == 'uvloop'", specifier = ">=0.22.1" },
     { name = "winloop", marker = "sys_platform == 'win32' and extra == 'accel'", specifier = ">=0.6.3" },
     { name = "winloop", marker = "extra == 'winloop'", specifier = ">=0.6.3" },
 ]
-provides-extras = ["service", "client", "store", "queue", "overseer", "uvloop", "winloop", "accel", "all", "gateway"]
+provides-extras = ["gateway", "store", "http", "uvloop", "winloop", "accel", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -500,11 +504,11 @@ dev = [
     { name = "graphglot", specifier = ">=0.14.1,<0.15" },
     { name = "graphql-core", specifier = ">=3.2.11,<3.3" },
     { name = "hikari", specifier = ">=2.5.0" },
-    { name = "nats-py", specifier = ">=2.15,<3" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.4,<4" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.1" },
+    { name = "starlette", specifier = ">=1.4.1" },
     { name = "uvicorn", specifier = ">=0.52.1" },
 ]
 

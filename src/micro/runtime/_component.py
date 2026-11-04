@@ -100,7 +100,9 @@ class Component:
   async def on_close(self) -> None:
     pass
 
-  def spawn(self, coroutine: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any]:
+  def spawn(
+    self, coroutine: Coroutine[Any, Any, Any], *, name: str
+  ) -> asyncio.Task[Any]:
     """Run a background task owned by this component; failures are logged."""
     task = asyncio.create_task(coroutine, name=f"micro.{self.name}.{name}")
     self._tasks.add(task)
@@ -132,9 +134,7 @@ class Component:
   def _task_done(self, task: asyncio.Task[Any]) -> None:
     self._tasks.discard(task)
     if not task.cancelled() and (error := task.exception()) is not None:
-      logger.error(
-        "Background task %s failed", task.get_name(), exc_info=error
-      )
+      logger.error("Background task %s failed", task.get_name(), exc_info=error)
 
   async def _cancel_tasks(self) -> None:
     tasks = tuple(self._tasks)

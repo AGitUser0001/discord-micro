@@ -1,5 +1,3 @@
-from micro._microservices import StoreClient
-
 from ._compiler import (
   GraphCompiler,
   entity_identity,
@@ -9,20 +7,21 @@ from ._compiler import (
   physical_type,
 )
 from ._module import GraphModule
+from ._service import STORE_EXECUTE, Store, StoreClient
 from ._store import (
   CompiledOperation,
   GraphBackendError,
   GraphBatch,
   GraphBatchResult,
+  GraphEngine,
   GraphEntityLayout,
   GraphExecutor,
   GraphLayout,
+  GraphQLBody,
   GraphQLRequest,
   GraphResult,
   GraphStatement,
   ResultShaper,
-  Store,
-  StoreTopology,
 )
 from .composer import (
   CONNECT_DIRECTIVE,
@@ -60,6 +59,7 @@ __all__ = (
   "MAX_PAGE_SIZE",
   "MUTATION_DIRECTIVES",
   "SCAN_DIRECTIVE",
+  "STORE_EXECUTE",
   "UPDATE_DIRECTIVE",
   "ActiveOwnedLookup",
   "CompiledOperation",
@@ -76,10 +76,12 @@ __all__ = (
   "GraphBatchResult",
   "GraphCompiler",
   "GraphCompositionError",
+  "GraphEngine",
   "GraphEntityLayout",
   "GraphExecutor",
   "GraphLayout",
   "GraphModule",
+  "GraphQLBody",
   "GraphQLRequest",
   "GraphResult",
   "GraphStatement",
@@ -87,7 +89,6 @@ __all__ = (
   "ResultShaper",
   "Store",
   "StoreClient",
-  "StoreTopology",
   "TypeDirectiveBindContext",
   "TypeDirectiveBinding",
   "TypeDirectiveMetadata",

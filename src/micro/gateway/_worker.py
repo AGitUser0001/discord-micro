@@ -68,11 +68,16 @@ def lease_key(generation: int, shard_id: int) -> str:
 
 def guild_of(name: str, payload: Mapping[str, Any]) -> str | None:
   guild = payload.get("guild_id")
-  if guild is None and name.startswith("GUILD_") and name in {
-    "GUILD_CREATE",
-    "GUILD_UPDATE",
-    "GUILD_DELETE",
-  }:
+  if (
+    guild is None
+    and name.startswith("GUILD_")
+    and name
+    in {
+      "GUILD_CREATE",
+      "GUILD_UPDATE",
+      "GUILD_DELETE",
+    }
+  ):
     guild = payload.get("id")
   return guild if isinstance(guild, str) and guild.isdecimal() else None
 
@@ -144,7 +149,9 @@ class GatewayWorker(Component):
 
   @property
   def publishing_shards(self) -> tuple[int, ...]:
-    return tuple(sorted(h.session.shard_id for h in self._held.values() if h.publishing))
+    return tuple(
+      sorted(h.session.shard_id for h in self._held.values() if h.publishing)
+    )
 
   @property
   def ready(self) -> bool:
@@ -350,13 +357,13 @@ class GatewayWorker(Component):
 
     # Over share while a peer is under: release one shard at a time.
     owned = [held for held in mine if held.owned]
-    if len(owned) > share or (
+    over_share = len(owned) > share or (
       len(owned) > floor and any(owners.get(w, 0) < floor for w in workers)
-    ):
-      if not any(held.releasing for held in owned):
-        victim = max(owned, key=lambda held: held.session.shard_id)
-        victim.releasing = True
-        self._wake.set()
+    )
+    if over_share and not any(held.releasing for held in owned):
+      victim = max(owned, key=lambda held: held.session.shard_id)
+      victim.releasing = True
+      self._wake.set()
 
   async def _take_over(self) -> None:
     """Standby sessions take the lease once READY (gap-free handoff)."""
@@ -412,7 +419,9 @@ class GatewayWorker(Component):
 
   # Sessions --------------------------------------------------------------------
 
-  def _open(self, generation: GatewayGeneration, shard_id: int, revision: int | None) -> _Held:
+  def _open(
+    self, generation: GatewayGeneration, shard_id: int, revision: int | None
+  ) -> _Held:
     session = self._factory(self, generation.id, shard_id, generation.shard_count)
     held = _Held(session, lease_key(generation.id, shard_id), revision)
     self._held[held.key] = held
@@ -528,7 +537,9 @@ class GatewayWorker(Component):
       headers=headers,
     )
 
-  async def on_connection(self, session: ShardSession, kind: ConnectionEventKind) -> None:
+  async def on_connection(
+    self, session: ShardSession, kind: ConnectionEventKind
+  ) -> None:
     held = self._held.get(lease_key(session.generation, session.shard_id))
     if held is not None and held.session is session:
       if kind in (ConnectionEventKind.READY, ConnectionEventKind.RESUMED):
@@ -553,4 +564,3 @@ class GatewayWorker(Component):
       event.model_dump_json().encode(),
       stream=subjects.EVENTS_STREAM,
     )
-

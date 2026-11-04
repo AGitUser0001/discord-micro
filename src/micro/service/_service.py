@@ -82,7 +82,9 @@ class Service(Component):
     self.version = version
     self.concurrency = concurrency
     self._listeners: list[_Listener] = []
-    self._requests: dict[str, tuple[RequestSchema[Any, Any], RequestHandler[Any, Any]]] = {}
+    self._requests: dict[
+      str, tuple[RequestSchema[Any, Any], RequestHandler[Any, Any]]
+    ] = {}
     self._work: dict[str, tuple[WorkQueue[Any], EventHandler[Any]]] = {}
     self._modules: dict[str, GraphModule] = {}
     self._client: Client | None = None
@@ -132,7 +134,9 @@ class Service(Component):
 
     return register
 
-  def work[T](self, queue: WorkQueue[T]) -> Callable[[EventHandler[T]], EventHandler[T]]:
+  def work[T](
+    self, queue: WorkQueue[T]
+  ) -> Callable[[EventHandler[T]], EventHandler[T]]:
     def register(handler: EventHandler[T]) -> EventHandler[T]:
       self._declaring("Work handlers")
       if queue.name in self._work:
@@ -165,18 +169,26 @@ class Service(Component):
 
   def metadata(self) -> dict[str, JsonValue]:
     """What this service advertises in the presence table."""
-    return {
-      "version": self.version,
-      "requests": {
-        request_id: schema.hash for request_id, (schema, _) in sorted(self._requests.items())
-      },
-      "events": sorted({listener.event.id for listener in self._listeners}),
-      "work": sorted(self._work),
-      "modules": [
-        {"id": module.id, "schema": module.graphql_schema}
-        for module in sorted(self._modules.values(), key=lambda item: item.id)
-      ],
+    requests: dict[str, JsonValue] = {
+      request_id: schema.hash
+      for request_id, (schema, _) in sorted(self._requests.items())
     }
+    events: list[JsonValue] = [
+      *sorted({listener.event.id for listener in self._listeners})
+    ]
+    work: list[JsonValue] = [*sorted(self._work)]
+    modules: list[JsonValue] = [
+      {"id": module.id, "schema": module.graphql_schema}
+      for module in sorted(self._modules.values(), key=lambda item: item.id)
+    ]
+    metadata: dict[str, JsonValue] = {
+      "version": self.version,
+      "requests": requests,
+      "events": events,
+      "work": work,
+      "modules": modules,
+    }
+    return metadata
 
   # Lifecycle -------------------------------------------------------------------
 
@@ -322,7 +334,11 @@ class Service(Component):
       ) from exc
 
   async def _dispatch_event(self, message: Msg) -> None:
-    matching = [listener for listener in self._listeners if listener.event.matches(message.subject)]
+    matching = [
+      listener
+      for listener in self._listeners
+      if listener.event.matches(message.subject)
+    ]
     if not matching:
       # A newer replica updated the shared consumer; let it take this event.
       raise Retry(1.0)

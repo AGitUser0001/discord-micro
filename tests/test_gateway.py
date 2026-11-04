@@ -22,7 +22,9 @@ SESSIONS: list[FakeShard] = []
 
 
 class FakeShard:
-  def __init__(self, host: ShardHost, generation: int, shard_id: int, shard_count: int) -> None:
+  def __init__(
+    self, host: ShardHost, generation: int, shard_id: int, shard_count: int
+  ) -> None:
     self.host = host
     self.generation = generation
     self.shard_id = shard_id
@@ -82,7 +84,8 @@ async def eventually(predicate: Callable[[], bool], timeout: float = 20.0) -> No
 
 def live(generation: int | None = None) -> list[FakeShard]:
   return [
-    s for s in SESSIONS
+    s
+    for s in SESSIONS
     if s.started and not s.closed and (generation is None or s.generation == generation)
   ]
 

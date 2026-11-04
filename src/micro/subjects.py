@@ -103,6 +103,11 @@ def work_stream(queue: str) -> str:
   return WORK_STREAM_PREFIX + _safe(queue).upper()
 
 
+def supervisor(deployment: str, operation: str) -> str:
+  """Control subjects of the `micro up` supervisor for one deployment."""
+  return f"micro.supervisor.{token(deployment)}.{token(operation)}"
+
+
 def durable(kind: str, name: str) -> str:
   """A JetStream consumer name for one logical component."""
   return f"{token(kind)}_{_safe(name)}"
@@ -147,6 +152,7 @@ __all__ = (
   "http_worker",
   "request",
   "standby",
+  "supervisor",
   "token",
   "work",
   "work_stream",

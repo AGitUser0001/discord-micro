@@ -30,21 +30,31 @@ class Registration(BaseModel):
 class Presence:
   """A component's renewing registration in the presence table."""
 
-  def __init__(self, table: Table[Registration], registration: Registration, ttl: float) -> None:
+  def __init__(
+    self, table: Table[Registration], registration: Registration, ttl: float
+  ) -> None:
     self._table = table
     self.registration = registration
     self._ttl = ttl
-    self._key = f"{subjects.dotted(registration.kind)}.{subjects.token(registration.id)}"
+    self._key = (
+      f"{subjects.dotted(registration.kind)}.{subjects.token(registration.id)}"
+    )
     self._revision: int | None = None
     self._renewer: asyncio.Task[None] | None = None
 
   async def start(self) -> None:
-    self._revision = await self._table.put_with_ttl(self._key, self.registration, self._ttl)
-    self._renewer = asyncio.create_task(self._renew(), name=f"micro.presence.{self._key}")
+    self._revision = await self._table.put_with_ttl(
+      self._key, self.registration, self._ttl
+    )
+    self._renewer = asyncio.create_task(
+      self._renew(), name=f"micro.presence.{self._key}"
+    )
 
   async def update(self, metadata: dict[str, JsonValue]) -> None:
     self.registration = self.registration.model_copy(update={"metadata": metadata})
-    self._revision = await self._table.put_with_ttl(self._key, self.registration, self._ttl)
+    self._revision = await self._table.put_with_ttl(
+      self._key, self.registration, self._ttl
+    )
 
   async def stop(self) -> None:
     if self._renewer is not None:
@@ -101,9 +111,7 @@ class Directory:
     self._listeners.append(listener)
     return lambda: self._listeners.remove(listener)
 
-  async def wait_for(
-    self, predicate: Callable[[Directory], bool]
-  ) -> None:
+  async def wait_for(self, predicate: Callable[[Directory], bool]) -> None:
     async with self._changed:
       await self._changed.wait_for(lambda: predicate(self))
 

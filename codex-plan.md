@@ -1,3 +1,8 @@
+> **Superseded.** This is the first implementation's design (overseer-centered).
+> The current architecture, its decisions, and progress are in
+> [docs/plan.md](docs/plan.md); the wire contracts are in
+> [docs/operations.md](docs/operations.md).
+
 # Micro
 
 Micro is an extensible library for building applications from independently replaceable microservices.

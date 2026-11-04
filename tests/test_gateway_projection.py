@@ -4,9 +4,16 @@ from typing import Any
 
 from pydantic import JsonValue
 
-from micro.gateway import GatewayProjection
+from micro.gateway import ConnectionEvent, ConnectionEventKind
+from micro.gateway.projection import GatewayProjection
 from micro.schemas.gateway import GATEWAY_PROJECTION
 from micro.store import compose_graph
+
+
+def event(kind: ConnectionEventKind) -> ConnectionEvent:
+  return ConnectionEvent(
+    kind=kind, shard_id=0, generation=1, connection_id="connection-a", worker="w"
+  )
 
 
 def test_gateway_projection_schema_is_composable() -> None:
@@ -39,9 +46,14 @@ def test_gateway_projection_fuses_partial_updates() -> None:
 
   async def exercise() -> None:
     try:
-      await projection.project_event(
-        b'["event","connection-a",0,"MESSAGE_UPDATE",'
-        b'{"id":"10","author":{"username":"after"},"content":"new"}]'
+      await projection.project_events(
+        [
+          (
+            "connection-a",
+            "MESSAGE_UPDATE",
+            {"id": "10", "author": {"username": "after"}, "content": "new"},
+          )
+        ]
       )
     finally:
       await projection.close()
@@ -76,10 +88,19 @@ def test_gateway_projection_ingests_guild_collections_deterministically() -> Non
 
   async def exercise() -> None:
     try:
-      await projection.project_event(
-        b'["event","connection-a",0,"GUILD_CREATE",'
-        b'{"id":"1","channels":[{"id":"2"}],'
-        b'"roles":[{"id":"3"}],"members":[{"user":{"id":"4"}}]}]'
+      await projection.project_events(
+        [
+          (
+            "connection-a",
+            "GUILD_CREATE",
+            {
+              "id": "1",
+              "channels": [{"id": "2"}],
+              "roles": [{"id": "3"}],
+              "members": [{"user": {"id": "4"}}],
+            },
+          )
+        ]
       )
     finally:
       await projection.close()
@@ -116,14 +137,10 @@ def test_projection_connection_state_goes_stale_resumes_and_purges_atomically() 
 
   async def exercise() -> None:
     try:
-      await projection.project_connection(b'["connection","ready",0,"connection-a"]')
-      await projection.project_connection(
-        b'["connection","disconnected",0,"connection-a"]'
-      )
-      await projection.project_connection(b'["connection","resumed",0,"connection-a"]')
-      await projection.project_connection(
-        b'["connection","invalidated",0,"connection-a"]'
-      )
+      await projection.project_connection(event(ConnectionEventKind.READY))
+      await projection.project_connection(event(ConnectionEventKind.DISCONNECTED))
+      await projection.project_connection(event(ConnectionEventKind.RESUMED))
+      await projection.project_connection(event(ConnectionEventKind.INVALIDATED))
     finally:
       await projection.close()
 
@@ -154,13 +171,14 @@ def test_projection_batch_replay_is_deterministic() -> None:
     return {"write0": {"id": "10"}}
 
   projection._execute = execute  # type: ignore[method-assign]
-  events = (
+  events: list[tuple[str, str, dict[str, JsonValue]]] = [
     (
-      b'["event","connection-a",0,"MESSAGE_CREATE",'
-      b'{"id":"10","author":{"id":"20"},"content":"one"}]'
+      "connection-a",
+      "MESSAGE_CREATE",
+      {"id": "10", "author": {"id": "20"}, "content": "one"},
     ),
-    (b'["event","connection-a",0,"MESSAGE_UPDATE",{"id":"10","content":"two"}]'),
-  )
+    ("connection-a", "MESSAGE_UPDATE", {"id": "10", "content": "two"}),
+  ]
 
   async def exercise() -> None:
     try:

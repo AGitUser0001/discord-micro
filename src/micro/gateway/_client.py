@@ -44,7 +44,9 @@ class GatewayControl:
     generations = await self._generations()
     desired = await generations.get(DESIRED_KEY)
     active = await generations.get(ACTIVE_KEY)
-    shards = await self.runtime.table(subjects.SHARDS_BUCKET, ShardLease, ttl_markers=True)
+    shards = await self.runtime.table(
+      subjects.SHARDS_BUCKET, ShardLease, ttl_markers=True
+    )
     leases = {key: value.value for key, value in (await shards.items()).items()}
     return GatewayStatus(
       desired.value if desired else None,

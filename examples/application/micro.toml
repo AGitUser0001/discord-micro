@@ -1,0 +1,14 @@
+# Everything in one process: `DISCORD_TOKEN=... uv run micro up`
+name = "example"
+nats = "nats://127.0.0.1:4222"
+
+[processes.all]
+components = [
+  "micro.gateway:GatewayWorker",
+  "micro.discord:DiscordHTTPWorker",
+  "micro.http:HTTPBridge",
+  "app:greeter",
+  "app:audit",
+  "app:bot",
+  "app:ticker",
+]

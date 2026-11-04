@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import signal
+import socket
 from collections.abc import Sequence
 from contextlib import suppress
 from types import TracebackType
@@ -24,6 +25,7 @@ from ._presence import Directory, Presence, Registration, registration_id
 logger = logging.getLogger("micro")
 
 DEFAULT_NATS_URL = "nats://127.0.0.1:4222"
+RUNTIME_KIND = "runtime"
 
 
 def default_servers() -> tuple[str, ...]:
@@ -184,6 +186,16 @@ class Runtime:
         loop.add_signal_handler(sig, stop.set)
     try:
       await self.add(*components)
+      await self.register(
+        kind=RUNTIME_KIND,
+        name=self.name,
+        id=self.instance,
+        metadata={
+          "pid": os.getpid(),
+          "host": socket.gethostname(),
+          "components": [component.name for component in self._components],
+        },
+      )
       logger.info(
         "Micro runtime %s hosting %s",
         self.instance,
@@ -256,22 +268,31 @@ class Runtime:
     return table
 
   async def locks(self) -> Locks:
-    return Locks(await self.table(subjects.LOCKS_BUCKET, LockHolder, ttl_markers=True), self.instance)
+    return Locks(
+      await self.table(subjects.LOCKS_BUCKET, LockHolder, ttl_markers=True),
+      self.instance,
+    )
 
   async def register(
     self,
-    component: Component,
+    component: Component | None = None,
     *,
+    kind: str | None = None,
+    name: str | None = None,
     metadata: dict[str, JsonValue] | None = None,
     id: str | None = None,
   ) -> Presence:
-    """Advertise a component in the presence table until it closes."""
+    """Advertise a component (or any `kind`/`name`) in the presence table."""
+    kind = kind or (component.kind if component is not None else None)
+    name = name or (component.name if component is not None else None)
+    if kind is None or name is None:
+      raise ValueError("register needs a component or an explicit kind and name.")
     table = await self.table(subjects.PRESENCE_BUCKET, Registration, ttl_markers=True)
     presence = Presence(
       table,
       Registration(
-        kind=component.kind,
-        name=component.name,
+        kind=kind,
+        name=name,
         instance=self.instance,
         id=id or registration_id(),
         metadata=metadata or {},

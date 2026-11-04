@@ -76,7 +76,10 @@ def test_client_routes_generated_methods_and_retries_rate_limits(nats_url: str) 
       result = await DiscordHTTPClient(runtime).create_message(message("123"))
       assert isinstance(result, CreateMessageHTTPResponse)
       assert result.status == 400
-      assert json.loads(result.raw_body) == {"code": 50035, "message": "Invalid form body"}
+      assert json.loads(result.raw_body) == {
+        "code": 50035,
+        "message": "Invalid form body",
+      }
 
   asyncio.run(exercise())
   assert len(calls) == 2
@@ -111,7 +114,9 @@ def test_idempotent_replay_and_binary_bodies(nats_url: str) -> None:
       assert first == second and first.body == b"\x00\xff"
 
       upload = UploadApplicationAttachmentHTTPRequest(
-        path=UploadApplicationAttachmentParametersPath(application_id=SnowflakeType("1")),
+        path=UploadApplicationAttachmentParametersPath(
+          application_id=SnowflakeType("1")
+        ),
         body=UploadApplicationAttachmentRequest(file=b"\x00binary\xff"),
       )
       await client.upload_application_attachment(upload)
@@ -143,7 +148,9 @@ def test_buckets_stay_on_one_worker_and_move_when_workers_change(nats_url: str) 
       channels = [str(1000 + index) for index in range(30)]
       for _ in range(3):
         await asyncio.gather(*(client.create_message(message(c)) for c in channels))
-      owners = {channel: {w for (w, c) in handled if c == channel} for channel in channels}
+      owners = {
+        channel: {w for (w, c) in handled if c == channel} for channel in channels
+      }
       assert all(len(owner) == 1 for owner in owners.values())
       assert len({next(iter(o)) for o in owners.values()}) == 3
 

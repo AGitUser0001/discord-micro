@@ -6,21 +6,21 @@
       "root": "examples/application",
       "extraPaths": [
         "src",
-        "examples/apache_age/src",
-        "examples/jetstream_nats/src"
+        "examples/apache_age/src"
       ]
     },
     {
       "root": "examples/apache_age",
-      "extraPaths": ["src", "examples/apache_age/src"]
-    },
-    {
-      "root": "examples/jetstream_nats",
-      "extraPaths": ["src", "examples/jetstream_nats/src"]
+      "extraPaths": [
+        "src",
+        "examples/apache_age/src"
+      ]
     },
     {
       "root": ".",
-      "extraPaths": ["src"]
+      "extraPaths": [
+        "src"
+      ]
     }
   ],
   "exclude": [

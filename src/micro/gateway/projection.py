@@ -1,18 +1,28 @@
-import asyncio
-from collections.abc import Mapping
+import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-import httpx2
-from pydantic import JsonValue
+from nats.aio.msg import Msg
+from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
+from pydantic import JsonValue, ValidationError
 from pydantic_core import from_json
-from starlette.requests import Request
-from starlette.responses import Response
 
-from micro._microservices import Microservice, StoreClient, apply_state_atomically
-from micro.queue import QueueClient, QueueDelivery
+from micro import subjects
+from micro.schemas.gateway import GATEWAY_PROJECTION
+from micro.service import Service
+from micro.store import StoreClient
 
-from ._events import ConnectionEventKind
+from ._events import CONNECTION_HEADER, ConnectionEvent, ConnectionEventKind
+
+logger = logging.getLogger("micro")
+
+PROJECTION_SUBJECTS = (
+  "micro.discord.dispatch.>",
+  "micro.discord.standby.>",
+  "micro.gateway.connection.>",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,61 +34,96 @@ class ProjectedObject:
   deleted: bool = False
 
 
-class GatewayProjection(Microservice):
-  """Maintains connection-owned Discord state from queued raw dispatches."""
+class GatewayProjection(Service):
+  """Optional service keeping connection-owned Discord state in the store.
+
+  It consumes every connection's dispatches (publishing and standby) plus
+  connection lifecycle events, in stream order, and batches adjacent dispatches
+  into one atomic mutation. Run one replica: projection order matters.
+  """
 
   def __init__(
-    self,
-    *,
-    transport: httpx2.AsyncBaseTransport | None = None,
-    timeout: float = 5.0,
-    batch_size: int = 100,
+    self, *, name: str = "gateway.projection", batch_size: int = 100
   ) -> None:
     if not 1 <= batch_size <= 1000:
       raise ValueError("batch_size must be between 1 and 1000.")
-    self.store = StoreClient(transport=transport, timeout=timeout)
-    self.queue = QueueClient(transport=transport, timeout=timeout)
+    super().__init__(name)
+    self.uses(GATEWAY_PROJECTION)
     self._batch_size = batch_size
-    self._topology_ready = asyncio.Event()
-    self._tasks: list[asyncio.Task[None]] = []
-    self._pending: asyncio.Queue[QueueDelivery] = asyncio.Queue(batch_size * 2)
-    super().__init__("gateway.projection")
-    self.add_route(
-      "/projection/connections/{connection_id}",
-      self._delete_connection,
-      methods=("DELETE",),
-      name="gateway.projection:delete-connection",
-    )
+    self._store: StoreClient | None = None
 
   @property
-  def component_ready(self) -> bool:
-    return self.store.state_revision >= 0 and self.queue.state_revision >= 0
+  def store(self) -> StoreClient:
+    if self._store is None:
+      raise RuntimeError("Gateway projection has not started.")
+    return self._store
 
-  def apply_state(self, state: JsonValue) -> None:
-    apply_state_atomically((self.store, self.queue), state)
-    self._topology_ready.set()
+  async def on_start(self) -> None:
+    await super().on_start()
+    self._store = StoreClient(self.client)
+    js = self.runtime.jetstream
+    durable = subjects.durable("svc", self.name)
+    await js.add_consumer(
+      subjects.EVENTS_STREAM,
+      ConsumerConfig(
+        durable_name=durable,
+        ack_policy=AckPolicy.EXPLICIT,
+        deliver_policy=DeliverPolicy.NEW,
+        filter_subjects=list(PROJECTION_SUBJECTS),
+        max_ack_pending=-1,
+        max_deliver=-1,
+      ),
+    )
+    subscription = await js.pull_subscribe_bind(durable, subjects.EVENTS_STREAM)
+    self.spawn(self._consume(subscription), name="project")
 
-  async def start(self) -> None:
-    self._tasks = [
-      asyncio.create_task(self._consume(), name="micro.gateway.project.consume"),
-      asyncio.create_task(self._project_batches(), name="micro.gateway.project.batch"),
-    ]
+  async def _consume(self, subscription: Any) -> None:
+    while self.active:
+      try:
+        messages: list[Msg] = await subscription.fetch(self._batch_size, timeout=5)
+      except NatsTimeoutError:
+        continue
+      async with self.tracked():
+        try:
+          await self.project_messages(messages)
+        except Exception:
+          logger.exception("Projection batch failed; it will be redelivered")
+          for message in messages:
+            await message.nak(delay=1)
+        else:
+          for message in messages:
+            await message.ack()
 
-  async def close(self) -> None:
-    for task in self._tasks:
-      task.cancel()
-    await asyncio.gather(*self._tasks, return_exceptions=True)
-    self._tasks.clear()
-    await self.store.aclose()
-    await self.queue.aclose()
+  async def project_messages(self, messages: Sequence[Msg]) -> None:
+    """Project stream messages in order, batching adjacent dispatches."""
+    pending: list[tuple[str, str, dict[str, JsonValue]]] = []
+    for message in messages:
+      if message.subject.startswith("micro.gateway.connection."):
+        if pending:
+          await self.project_events(pending)
+          pending = []
+        try:
+          event = ConnectionEvent.model_validate_json(message.data)
+        except ValidationError:
+          logger.error("Ignoring an invalid connection event")
+          continue
+        await self.project_connection(event)
+        continue
+      connection_id = (message.headers or {}).get(CONNECTION_HEADER)
+      name = message.subject.split(".")[3]
+      payload = from_json(message.data)
+      if connection_id is None or not isinstance(payload, dict):
+        continue
+      pending.append((connection_id, name, cast(dict[str, JsonValue], payload)))
+    if pending:
+      await self.project_events(pending)
 
-  async def project_event(self, item: bytes) -> None:
-    await self.project_events((item,))
-
-  async def project_events(self, items: tuple[bytes, ...]) -> None:
+  async def project_events(
+    self, items: Sequence[tuple[str, str, dict[str, JsonValue]]]
+  ) -> None:
+    """Project `(connection_id, dispatch_name, payload)` items as one mutation."""
     projected_by_key: dict[tuple[str, str, str], ProjectedObject] = {}
-    for item in items:
-      connection_id, name, payload = _decode_projection_event(item)
+    for connection_id, name, payload in items:
       for projected in _project_dispatch(name, payload):
         key = (connection_id, projected.kind, projected.id)
         previous = projected_by_key.get(key)
@@ -155,23 +200,10 @@ class GatewayProjection(Microservice):
       variables,
     )
 
-  async def project_connection(self, item: bytes) -> None:
-    decoded = from_json(item)
-    if (
-      not isinstance(decoded, list)
-      or len(decoded) != 4
-      or decoded[0] != "connection"
-      or not isinstance(decoded[1], str)
-      or isinstance(decoded[2], bool)
-      or not isinstance(decoded[2], int)
-      or (decoded[3] is not None and not isinstance(decoded[3], str))
-    ):
-      raise ValueError(
-        "Connection events must be [connection, kind, shard_id, connection_id]."
-      )
-    kind = ConnectionEventKind(decoded[1])
-    shard_id = decoded[2]
-    connection_id = decoded[3]
+  async def project_connection(self, event: ConnectionEvent) -> None:
+    kind = event.kind
+    shard_id = event.shard_id
+    connection_id = event.connection_id
     if connection_id is None:
       return
     if kind is ConnectionEventKind.READY:
@@ -253,18 +285,10 @@ class GatewayProjection(Microservice):
       variables,
     )
 
-  async def _delete_connection(self, request: Request) -> Response:
-    await self.purge_connection(request.path_params["connection_id"])
-    return Response(status_code=204)
-
   async def _execute(
     self, query: str, variables: Mapping[str, JsonValue]
   ) -> dict[str, Any]:
-    response = await self.store.execute(
-      query,
-      variables=variables,
-      module="micro.gateway.projection",
-    )
+    response = await self.store.execute(query, variables=dict(variables))
     if response.get("errors"):
       raise RuntimeError(
         f"Gateway projection store rejected an operation: {response['errors']}"
@@ -273,56 +297,6 @@ class GatewayProjection(Microservice):
     if not isinstance(data, dict):
       raise TypeError("Gateway projection store omitted GraphQL data.")
     return data
-
-  async def _consume(self) -> None:
-    await self._topology_ready.wait()
-    while True:
-      delivery = await self.queue.consume(
-        "gateway.projection", "micro-gateway-projection"
-      )
-      await self._pending.put(delivery)
-
-  async def _project_batches(self) -> None:
-    carry: QueueDelivery | None = None
-    while True:
-      delivery = carry or await self._pending.get()
-      carry = None
-      try:
-        kind = _projection_item_kind(delivery.payload)
-      except ValueError:
-        await delivery.acknowledge()
-        continue
-      if kind == "connection":
-        try:
-          await self.project_connection(delivery.payload)
-        except Exception:
-          await delivery.retry()
-        else:
-          await delivery.acknowledge()
-        continue
-      deliveries = [delivery]
-      while len(deliveries) < self._batch_size:
-        try:
-          following = self._pending.get_nowait()
-        except asyncio.QueueEmpty:
-          break
-        try:
-          following_kind = _projection_item_kind(following.payload)
-        except ValueError:
-          await following.acknowledge()
-          continue
-        if following_kind == "connection":
-          carry = following
-          break
-        deliveries.append(following)
-      try:
-        await self.project_events(tuple(delivery.payload for delivery in deliveries))
-      except Exception:
-        for delivery in deliveries:
-          await delivery.retry()
-      else:
-        for delivery in deliveries:
-          await delivery.acknowledge()
 
 
 def _project_dispatch(
@@ -363,35 +337,6 @@ def _project_dispatch(
       for value in values:
         add(kind, value)
   return tuple({(item.kind, item.id): item for item in objects}.values())
-
-
-def _decode_projection_event(item: bytes) -> tuple[str, str, dict[str, JsonValue]]:
-  decoded = from_json(item)
-  if (
-    not isinstance(decoded, list)
-    or len(decoded) != 5
-    or decoded[0] != "event"
-    or not isinstance(decoded[1], str)
-    or isinstance(decoded[2], bool)
-    or not isinstance(decoded[2], int)
-    or not isinstance(decoded[3], str)
-    or not isinstance(decoded[4], dict)
-  ):
-    raise ValueError(
-      "Projection events must be [event, connection_id, shard_id, name, payload]."
-    )
-  return decoded[1], decoded[3], cast(dict[str, JsonValue], decoded[4])
-
-
-def _projection_item_kind(item: bytes) -> str:
-  decoded = from_json(item)
-  if (
-    not isinstance(decoded, list)
-    or not decoded
-    or decoded[0] not in {"event", "connection"}
-  ):
-    raise ValueError("Projection queue items need an event or connection tag.")
-  return cast(str, decoded[0])
 
 
 def _dispatch_kind(name: str) -> str:

@@ -26,9 +26,12 @@ classifiers = [
 ]
 dependencies = [
     "httpx2>=2.9.1",
+    "nats-py>=2.15,<3",
     "pydantic>=2.13.4",
-    "starlette>=1.4.1",
 ]
+
+[project.scripts]
+micro = "micro.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/AGitUser0001/discord-micro"
@@ -36,16 +39,16 @@ Repository = "https://github.com/AGitUser0001/discord-micro"
 Issues = "https://github.com/AGitUser0001/discord-micro/issues"
 
 [project.optional-dependencies]
-service = []
-client = []
+gateway = [
+    "hikari>=2.5.0",
+]
 store = [
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",
 ]
-queue = []
-overseer = [
-    "graphglot>=0.14.1,<0.15",
-    "graphql-core>=3.2.11,<3.3",
+http = [
+    "starlette>=1.4.1",
+    "uvicorn>=0.52.1",
 ]
 uvloop = [
     "uvloop>=0.22.1",
@@ -61,9 +64,8 @@ all = [
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
-]
-gateway = [
-    "hikari>=2.5.0",
+    "starlette>=1.4.1",
+    "uvicorn>=0.52.1",
 ]
 
 [dependency-groups]
@@ -72,11 +74,11 @@ dev = [
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
-    "nats-py>=2.15,<3",
     "psycopg[binary,pool]>=3.3.4,<4",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
     "ruff>=0.16.1",
+    "starlette>=1.4.1",
     "uvicorn>=0.52.1",
 ]
 

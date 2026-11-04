@@ -167,7 +167,10 @@ class DiscordHTTPWorker(Component):
     self._http = httpx2.AsyncClient(
       base_url=self._api_url,
       transport=self._transport,
-      headers={"user-agent": "DiscordBot (Micro)", "authorization": f"Bot {self._token}"},
+      headers={
+        "user-agent": "DiscordBot (Micro)",
+        "authorization": f"Bot {self._token}",
+      },
     )
     nats = self.runtime.nats
     self._subscriptions = [
@@ -202,7 +205,9 @@ class DiscordHTTPWorker(Component):
 
   async def _on_global_limit(self, message: Msg) -> None:
     try:
-      self.rate_limits.block_globally_until(_GlobalLimit.model_validate_json(message.data).until)
+      self.rate_limits.block_globally_until(
+        _GlobalLimit.model_validate_json(message.data).until
+      )
     except ValueError:
       logger.warning("Ignoring an invalid global rate-limit announcement")
 
@@ -220,7 +225,9 @@ class DiscordHTTPWorker(Component):
       except Exception as exc:
         logger.exception("Discord HTTP request failed")
         code = "invalid_input" if isinstance(exc, ValueError) else "handler_failed"
-        body = json.dumps({"code": code, "message": f"{type(exc).__name__}: {exc}"}).encode()
+        body = json.dumps(
+          {"code": code, "message": f"{type(exc).__name__}: {exc}"}
+        ).encode()
         headers = {_STATUS_HEADER: "error"}
       if message.reply:
         await self.runtime.nats.publish(message.reply, body, headers=headers)
@@ -359,7 +366,9 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
         # The worker left between our directory update and the call.
         continue
       except NatsTimeoutError as exc:
-        raise RequestTimeoutError(f"Discord operation {request.operation!r} timed out.") from exc
+        raise RequestTimeoutError(
+          f"Discord operation {request.operation!r} timed out."
+        ) from exc
       if (reply.headers or {}).get(_STATUS_HEADER) == "error":
         decoded = from_json(reply.data)
         raise RemoteError(
@@ -394,7 +403,13 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
     )
 
 
-_MAJOR_PARAMETERS = ("channel_id", "guild_id", "webhook_id", "webhook_token", "interaction_token")
+_MAJOR_PARAMETERS = (
+  "channel_id",
+  "guild_id",
+  "webhook_id",
+  "webhook_token",
+  "interaction_token",
+)
 
 
 def _major_values(request: BaseModel) -> tuple[str, ...]:

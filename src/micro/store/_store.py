@@ -19,15 +19,9 @@ from graphql import (
 )
 from graphql.error import GraphQLSyntaxError
 from graphql.execution.values import get_variable_values
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
-from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, Response
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from micro._microservices import (
-  BackendExecutionError,
-  Microservice,
-  request_content_type,
-)
+from micro.errors import BackendExecutionError
 
 from ._module import GraphModule
 from .composer import DirectiveMetadata, TypeDirectiveMetadata
@@ -35,16 +29,11 @@ from .composer import DirectiveMetadata, TypeDirectiveMetadata
 type ResultShaper = Callable[[GraphBatchResult], Mapping[str, JsonValue]]
 
 
-class StoreTopology(BaseModel):
-  """The overseer-controlled module set exposed by a store instance."""
+class GraphQLBody(BaseModel):
+  """A GraphQL operation sent to the store."""
 
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(populate_by_name=True)
 
-  revision: int = Field(ge=0)
-  modules: tuple[GraphModule, ...]
-
-
-class _GraphQLBody(BaseModel):
   query: str
   variables: dict[str, JsonValue] | None = None
   operation_name: str | None = Field(None, alias="operationName")
@@ -166,159 +155,69 @@ class GraphExecutor(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class _StoreRuntime:
+class _Composition:
   schema: GraphQLSchema
   compiler: _Compiler
   module_ids: tuple[str, ...]
 
 
-class Store(Microservice):
-  """Database-neutral GraphQL ASGI frontend for a graph store."""
+class GraphEngine:
+  """Composes graph modules and executes GraphQL against a graph executor."""
 
   def __init__(
     self,
-    *,
     executor: GraphExecutor,
+    *,
     directives: Sequence[DirectiveMetadata] = (),
     type_directives: Sequence[TypeDirectiveMetadata] = (),
   ) -> None:
-    super().__init__("store")
-    empty_schema = build_schema("type Query { _micro: Boolean }")
     self.executor = executor
     self._directives = tuple(directives)
     self._type_directives = tuple(type_directives)
-    self._runtime = _StoreRuntime(empty_schema, _UnavailableCompiler(), ())
-    self._topology_revision = -1
-    self._desired_topology_revision = -1
-    self._composition_error: str | None = None
-    self._graph_available = True
-    self.add_route("/graphql", self._graphql, methods=("POST",), name="store:graphql")
-    self.add_route(
-      "/topology", self._topology, methods=("POST",), name="store:topology"
+    self._composition = _Composition(
+      build_schema("type Query { _micro: Boolean }"), _UnavailableCompiler(), ()
     )
+    self._revision = 0
+    self._available = True
+    self._error: str | None = None
 
   @property
-  def component_ready(self) -> bool:
-    return self._graph_available
+  def available(self) -> bool:
+    return self._available
 
-  async def start(self) -> None:
-    await self.executor.start()
+  @property
+  def active_modules(self) -> tuple[str, ...]:
+    return self._composition.module_ids
 
-  async def close(self) -> None:
-    await self.executor.close()
+  @property
+  def revision(self) -> int:
+    return self._revision
 
-  def unavailable_response(self) -> Response:
-    return self._unavailable()
+  @property
+  def composition_error(self) -> str | None:
+    return self._error
 
-  async def _graphql(self, request: Request) -> Response:
-    if not self.ready:
-      return self._unavailable()
-    if request_content_type(request) != "application/json":
-      return self._errors("GraphQL requests require application/json.", status_code=415)
+  @property
+  def schema(self) -> GraphQLSchema:
+    return self._composition.schema
 
-    try:
-      body = _GraphQLBody.model_validate_json(await request.body())
-    except ValidationError as exc:
-      return JSONResponse(
-        {"errors": [{"message": "Invalid GraphQL request.", "detail": str(exc)}]},
-        status_code=400,
-      )
-
-    runtime = self._runtime
-    try:
-      document = parse(body.query)
-    except GraphQLSyntaxError as exc:
-      return JSONResponse({"errors": [exc.formatted]}, status_code=400)
-    if errors := validate(runtime.schema, document):
-      return JSONResponse(
-        {"errors": [error.formatted for error in errors]}, status_code=400
-      )
-    operation = get_operation_ast(document, body.operation_name)
-    if operation is None:
-      return self._errors("GraphQL operation could not be selected.", status_code=400)
-
-    coerced = get_variable_values(
-      runtime.schema,
-      operation.variable_definitions or (),
-      body.variables or {},
-    )
-    if isinstance(coerced, list):
-      return JSONResponse(
-        {"errors": [error.formatted for error in coerced]}, status_code=400
-      )
-
-    if self._is_introspection(operation):
-      result = execute_sync(
-        runtime.schema,
-        document,
-        variable_values=coerced,
-        operation_name=body.operation_name,
-      )
-      response: dict[str, Any] = {"data": result.data}
-      if result.errors:
-        response["errors"] = [error.formatted for error in result.errors]
-      return JSONResponse(response)
-
-    graphql_request = GraphQLRequest(
-      runtime.schema,
-      document,
-      operation,
-      MappingProxyType(coerced),
-      body.operation_name,
-    )
-    try:
-      compiled = runtime.compiler.compile(graphql_request)
-      result = await self.executor.execute(compiled.batch)
-      data = dict(compiled.shape(result))
-    except GraphQLError as exc:
-      return JSONResponse({"data": None, "errors": [exc.formatted]})
-    return JSONResponse({"data": data})
-
-  async def _schema_endpoint(self, request: Request) -> Response:
-    if not self.ready:
-      return self._unavailable()
-    return PlainTextResponse(
-      print_schema(self._runtime.schema), media_type="text/plain"
-    )
-
-  async def _topology(self, request: Request) -> Response:
-    if request_content_type(request) != "application/json":
-      return self._errors("Store topology requires application/json.", status_code=415)
-    try:
-      topology = StoreTopology.model_validate_json(await request.body())
-      await self.apply_topology(topology)
-    except (GraphQLError, TypeError, ValueError) as exc:
-      return JSONResponse(
-        {"errors": [{"message": "Store topology was rejected.", "detail": str(exc)}]},
-        status_code=409,
-      )
-    return Response(status_code=204)
-
-  async def apply_topology(self, topology: StoreTopology) -> None:
-    if topology.revision < self._desired_topology_revision:
-      raise ValueError(
-        f"Topology revision {topology.revision} is older than "
-        f"{self._desired_topology_revision}."
-      )
-    if (
-      topology.revision == self._topology_revision
-      and topology.revision == self._desired_topology_revision
-      and self._graph_available
-    ):
+  async def apply_modules(self, modules: Sequence[GraphModule]) -> None:
+    """Compose a module set and evolve the physical layout additively."""
+    ordered = tuple(sorted(modules, key=lambda module: module.id))
+    module_ids = tuple(module.id for module in ordered)
+    if len(set(module_ids)) != len(module_ids):
+      raise ValueError("Graph modules contain duplicate IDs.")
+    if module_ids == self._composition.module_ids and self._available:
       return
-    self._desired_topology_revision = topology.revision
-    self._graph_available = False
-    self._composition_error = None
-    module_ids = tuple(module.id for module in topology.modules)
+    revision = self._revision + 1
+    self._available = False
     try:
-      if len(set(module_ids)) != len(module_ids):
-        raise ValueError("Store topology contains duplicate module IDs.")
-      if topology.modules:
+      if ordered:
         from ._compiler import GraphCompiler, physical_type
         from .composer import compose_graph
 
         graph = compose_graph(
-          topology.modules,
+          ordered,
           directives=self._directives,
           type_directives=self._type_directives,
         )
@@ -326,7 +225,7 @@ class Store(Microservice):
         compiler: _Compiler = GraphCompiler(graph)
         await self.executor.apply_layout(
           GraphLayout(
-            topology.revision,
+            revision,
             tuple(
               GraphEntityLayout(
                 entity.name,
@@ -342,45 +241,70 @@ class Store(Microservice):
         schema = build_schema("type Query { _micro: Boolean }")
         compiler = _UnavailableCompiler()
     except Exception as exc:
-      self._composition_error = str(exc)
+      self._error = str(exc)
       raise
-    self._runtime = _StoreRuntime(schema, compiler, module_ids)
-    self._topology_revision = topology.revision
-    self._composition_error = None
-    self._graph_available = True
+    self._composition = _Composition(schema, compiler, module_ids)
+    self._revision = revision
+    self._error = None
+    self._available = True
 
-  @property
-  def active_modules(self) -> tuple[str, ...]:
-    return self._runtime.module_ids
-
-  @property
-  def topology_revision(self) -> int:
-    return self._topology_revision
-
-  @property
-  def desired_topology_revision(self) -> int:
-    return self._desired_topology_revision
-
-  @property
-  def composition_error(self) -> str | None:
-    return self._composition_error
-
-  @staticmethod
-  def _is_introspection(operation: OperationDefinitionNode) -> bool:
-    return bool(operation.selection_set.selections) and all(
-      isinstance(selection, FieldNode) and selection.name.value.startswith("__")
-      for selection in operation.selection_set.selections
+  async def execute(self, body: GraphQLBody) -> dict[str, JsonValue]:
+    """Run one operation; failures are GraphQL `errors`, never exceptions."""
+    if not self._available:
+      error: dict[str, JsonValue] = {"message": "Store graph is unavailable."}
+      if self._error is not None:
+        error["detail"] = self._error
+      return {"data": None, "errors": [error]}
+    composition = self._composition
+    try:
+      document = parse(body.query)
+    except GraphQLSyntaxError as exc:
+      return {"data": None, "errors": [exc.formatted]}  # pyright: ignore[reportReturnType]
+    if errors := validate(composition.schema, document):
+      return {"data": None, "errors": [error.formatted for error in errors]}  # pyright: ignore[reportReturnType]
+    operation = get_operation_ast(document, body.operation_name)
+    if operation is None:
+      return {
+        "data": None,
+        "errors": [{"message": "GraphQL operation could not be selected."}],
+      }
+    coerced = get_variable_values(
+      composition.schema, operation.variable_definitions or (), body.variables or {}
     )
+    if isinstance(coerced, list):
+      return {"data": None, "errors": [error.formatted for error in coerced]}  # pyright: ignore[reportReturnType]
+    if _is_introspection(operation):
+      result = execute_sync(
+        composition.schema,
+        document,
+        variable_values=coerced,
+        operation_name=body.operation_name,
+      )
+      response: dict[str, JsonValue] = {"data": result.data}  # pyright: ignore[reportAssignmentType]
+      if result.errors:
+        response["errors"] = [error.formatted for error in result.errors]  # pyright: ignore[reportArgumentType]
+      return response
+    request = GraphQLRequest(
+      composition.schema,
+      document,
+      operation,
+      MappingProxyType(coerced),
+      body.operation_name,
+    )
+    try:
+      compiled = composition.compiler.compile(request)
+      batch_result = await self.executor.execute(compiled.batch)
+      data = dict(compiled.shape(batch_result))
+    except GraphQLError as exc:
+      return {"data": None, "errors": [exc.formatted]}  # pyright: ignore[reportReturnType]
+    return {"data": data}
 
-  @staticmethod
-  def _errors(message: str, *, status_code: int) -> JSONResponse:
-    return JSONResponse({"errors": [{"message": message}]}, status_code=status_code)
+  def print_schema(self) -> str:
+    return print_schema(self._composition.schema)
 
-  def _unavailable(self) -> JSONResponse:
-    error: dict[str, Any] = {
-      "message": "Store graph is unavailable.",
-      "desiredRevision": self._desired_topology_revision,
-    }
-    if self._composition_error is not None:
-      error["detail"] = self._composition_error
-    return JSONResponse({"errors": [error]}, status_code=503)
+
+def _is_introspection(operation: OperationDefinitionNode) -> bool:
+  return bool(operation.selection_set.selections) and all(
+    isinstance(selection, FieldNode) and selection.name.value.startswith("__")
+    for selection in operation.selection_set.selections
+  )

@@ -269,7 +269,9 @@ MESSAGE_REACTION_ADD = DispatchSchema[gateway.GatewayMessageReactionAddDispatchD
   payload=gateway.GatewayMessageReactionAddDispatchData,
 )
 
-MESSAGE_REACTION_REMOVE = DispatchSchema[gateway.GatewayMessageReactionRemoveDispatchData](
+MESSAGE_REACTION_REMOVE = DispatchSchema[
+  gateway.GatewayMessageReactionRemoveDispatchData
+](
   id='MESSAGE_REACTION_REMOVE',
   payload=gateway.GatewayMessageReactionRemoveDispatchData,
 )
@@ -296,7 +298,9 @@ PRESENCE_UPDATE = DispatchSchema[gateway.GatewayPresenceUpdate](
   payload=gateway.GatewayPresenceUpdate,
 )
 
-RATE_LIMITED = DispatchSchema[gateway.GatewayRateLimitedDispatchDataRequestGuildMembers](
+RATE_LIMITED = DispatchSchema[
+  gateway.GatewayRateLimitedDispatchDataRequestGuildMembers
+](
   id='RATE_LIMITED',
   payload=gateway.GatewayRateLimitedDispatchDataRequestGuildMembers,
 )

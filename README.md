@@ -1,160 +1,157 @@
 # Micro
 
-Operational behavior and every internal wire endpoint are documented in
-[docs/operations.md](docs/operations.md). The complete runnable deployment is
-in [examples/application](examples/application/README.md).
+Micro is a library for building Discord bots (and other applications) from
+independently replaceable microservices. One process on a small box runs the
+whole thing; the same code spreads over many processes and machines with only a
+config change, and any part can be scaled, rolled, or replaced live.
 
-Micro is an extensible library for building applications from independently
-replaceable microservices. Its first major use case is a distributed Discord
-bot platform.
+**NATS is the only required infrastructure.** Discovery, request/reply, load
+balancing, durable events, leases, and coordination state all live in NATS
+(JetStream). There is no coordinator process: every component keeps working as
+long as NATS is up. Micro requires Python 3.14 or newer.
 
-Micro currently requires Python 3.14 or newer.
+- [docs/operations.md](docs/operations.md): subjects, streams, buckets, CLI.
+- [docs/plan.md](docs/plan.md): the architecture plan, its decisions, and progress.
+- [examples/application](examples/application/README.md): a runnable bot.
 
-## Service applications
-
-Install the service framework and an ASGI server:
-
-```console
-pip install "Micro[service]" uvicorn
-```
-
-Declare an event schema and its single handler:
-
-```python
-from typing import Annotated
-
-from pydantic import BaseModel, Field
-
-from micro.service import EventSchema, Service
-
-service = Service("hello")
-
-
-class GreetingPayload(BaseModel):
-  name: Annotated[str, Field(min_length=1)]
-
-
-Greeting = EventSchema[GreetingPayload](
-  id="example.greeting",
-  payload=GreetingPayload,
-)
-
-
-@service.listen(Greeting)
-async def greet(event: GreetingPayload) -> None:
-  print(f"Hello, {event.name}!")
-```
-
-The service is an ASGI application and can run directly:
+## Install
 
 ```console
-uvicorn example:service
+pip install "Micro[gateway,http,accel]"
 ```
 
-It can also be mounted inside another ASGI application:
+The core needs only NATS (`nats-py`), Pydantic, and HTTPX. Extras: `gateway`
+(Hikari), `store` (GraphQL store), `http` (Starlette/Uvicorn bridge), `accel`
+(uvloop/winloop). You need a `nats-server` binary; `micro up` starts one for you.
+
+## Services
 
 ```python
-from fastapi import FastAPI
+from pydantic import BaseModel
 
-app = FastAPI()
-app.mount("/micro", service)
+from micro.service import EventSchema, RequestSchema, Service, ServiceError
+
+
+class Greeting(BaseModel):
+  name: str
+
+
+class Reply(BaseModel):
+  message: str
+
+
+GREET = RequestSchema[Greeting, Reply](id="example.greet", input=Greeting, output=Reply)
+GREETED = EventSchema[Greeting](id="example.greeted", payload=Greeting)
+
+service = Service("greeter")
+
+
+@service.handle(GREET)
+async def greet(request: Greeting) -> Reply:
+  if not request.name:
+    raise ServiceError("empty_name", "Say who to greet.")
+  await service.client.emit(GREETED, request)
+  return Reply(message=f"Hello, {request.name}!")
+
+
+@service.listen(GREETED)
+async def log(event: Greeting) -> None:
+  print("greeted", event.name)
 ```
 
-`listen()` generates the event endpoint from its schema. Every service also
-provides `/schema`, `/health/live`, `/health/ready`, and `/health/drained`.
-The schema endpoint accounts for its ASGI mount path without changing the
-implementation hash.
+- **Requests** (`@service.handle`): exactly one replica answers; replicas
+  load-balance through a NATS queue group. Callers get typed results or a
+  `RemoteError` carrying the handler's `ServiceError` code. Input/output schema
+  hashes are compared on every call, so a mismatched rolling update fails loudly.
+- **Events** (`@service.listen`): every listening *service* gets each event once,
+  load-balanced across its replicas, through one durable JetStream consumer.
+  A service may have any number of handlers per event, with `when=` predicates
+  and (for Discord dispatches) `guild_id=` filters pushed down to NATS. Delivery
+  is at least once; a failing handler is logged and the event is redelivered.
+- **Work** (`@service.work(queue)`): `WorkQueue` jobs are kept until exactly one
+  worker finishes them, even if no worker is running yet.
+- `service.uses(module)` declares graph modules an optional store must serve.
 
-Pydantic validates and decodes inbound values. Its generated JSON Schemas remain
-the wire format used for discovery and compatibility. For request/response
-operations, declare a `RequestSchema[Input, Output]` using input and output
-models and register its handler with `@service.handle(...)`.
+Call from anywhere with `Client(runtime)` (or `service.client`):
+`request`, `emit`, `enqueue`.
 
-## Calling services
+## Running it
 
-Every `Service` owns three clients populated by overseer state: `service.client`
-for events and typed requests, `service.store` for GraphQL stores, and
-`service.gateway` for Gateway control operations. `ServiceClient` routes calls
-across every compatible service instance currently known to it. During rolling
-updates it compares the advertised operation contract, not only its ID.
+A **runtime** is one process's NATS connection; it hosts any number of
+**components** (services, Gateway workers, HTTP workers, the HTTP bridge, your
+own `Component` subclasses). Each has a `start → drain → close` lifecycle and
+SIGTERM drains before closing, so replacing a process is "start the new one, stop
+the old one".
 
-```python
-payload = GreetingPayload(name="World")
-await service.client.emit(Greeting, payload)
-reply = await service.client.request(GreetingRequest, payload)
+```console
+micro run example:service micro.discord:DiscordHTTPWorker   # one process
+micro up                                                    # micro.toml
 ```
 
-`POST /state` atomically replaces the clients' directory snapshot. Snapshots
-contain a non-negative revision plus service, store, and Gateway routes; older
-revisions are rejected rather than overwriting newer topology.
-Identical service schemas are transmitted once in a hash-indexed table, while
-each instance route carries only its schema hash.
+`micro.toml` describes a whole deployment:
 
-## Gateway workers
+```toml
+name = "bot"
+nats = "nats://127.0.0.1:4222"
 
-Install the Gateway component with `Micro[gateway]`. `Gateway` is an ASGI
-application backed by Hikari's shard/session implementation. Hikari's resource
-cache and automatic member chunking are disabled: Micro receives raw dispatch
-payloads, while its connection-scoped graph projection will control complete
-guild/member ingestion separately.
+[processes.gateway]
+components = ["micro.gateway:GatewayWorker"]
 
-```python
-gateway = Gateway(
-  intents=hikari.Intents.GUILDS | hikari.Intents.GUILD_MESSAGES,
-  connection=update_connection_graph,
-  shard_ids=[0, 2],
-  shard_count=4,
-)
+[processes.app]
+components = ["app:greeter", "app:bot", "micro.discord:DiscordHTTPWorker"]
+replicas = 2
 ```
 
-Discovery owns one revisioned Discord credential for the entire deployment. The
-overseer pushes it over the specialized `/discord/credential` management route
-only to Gateway and Discord HTTP workers; it is never part of `/topology` or
-service state. Gateway workers reconnect and HTTP workers use the new token for
-new requests when its revision changes. A token may still be passed directly to
-`Gateway` for a standalone process or local test. Standalone construction
-defaults to Discord's unsharded representation: shard `0` of a shard count of
-`1`.
+`micro up` starts a local `nats-server -js` if none is reachable, runs every
+process group, restarts crashes, and drains everything on Ctrl-C. While it runs:
 
-The overseer pushes queue topology, credentials, and revisioned shard assignments
-to the gateway. Each assigned shard has an independent Hikari connection, so an
-assignment change only starts or stops the affected shards. During rolling
-replacement, both Discord connections may coexist,
-but only the designated publishing owner emits compact `[event_name, payload]`
-records to `gateway.events`; the replacement may independently build its
-connection-scoped projection before promotion. Connection callbacks separately
-report connect, disconnect, ready, resume, invalidation, and clean-close
-transitions. The gateway starts and closes with ASGI lifespan, so it can run
-directly under Uvicorn.
-
-Gateway control calls are typed and shard-aware. Guild member requests and voice
-state updates route to the worker that owns the guild's shard; presence updates
-are broadcast to every Gateway worker:
-
-```python
-await service.gateway.request_guild_members(guild_id, query="", limit=0)
-await service.gateway.update_voice_state(guild_id, channel_id)
-await service.gateway.update_presence(status="idle")
+```console
+micro ps                  # processes and live components
+micro scale app 4         # change replicas
+micro roll app            # start new replicas, wait until ready, drain old ones
+micro gateway status      # shard leases and generations
+micro gateway shards 4    # roll in a generation with 4 shards
+micro gateway presence idle --activity "maintenance"
 ```
 
-`GatewayEventService` instances share one durable queue consumer. The active
-instance routes each dispatch once per listening service name and chooses one
-replica of that service; implementation hashes do not create duplicate consumer
-groups during rolling updates.
+Because components never know how they were launched, the same objects also run
+under systemd, Docker, or Kubernetes, one component per container or all in one.
 
-Application services listen with the generated builtin schemas and receive the
-typed Discord dispatch data (`d`) directly:
+## Discord
+
+- `GatewayWorker` (extra `gateway`) keeps Hikari Gateway connections without a
+  cache. Workers balance shards among themselves through TTL leases, reclaim a
+  crashed worker's shards, hand shards over without gaps when draining, respect
+  identify concurrency, and roll new generations (shard count changes) in beside
+  the active one before flipping publishing. Only the owner of a shard publishes
+  its dispatches.
+- `DiscordHTTPWorker` executes the generated Discord API operations with
+  in-memory rate-limit buckets. `DiscordHTTPClient(runtime)` routes each call by
+  rendezvous hashing over live workers so every request sharing a bucket reaches
+  the same worker; global limits are broadcast to all workers.
+- `GatewayControl(runtime)` requests guild members, updates voice state, sets the
+  global presence, and manages generations.
+- Listen to dispatches with the generated schemas in `micro.schemas.events`:
 
 ```python
 from micro.discord.models.gateway import GatewayMessageCreateDispatchData
 from micro.schemas import events
 
 
-@service.listen(events.MESSAGE_CREATE)
+@service.listen(events.MESSAGE_CREATE, guild_id=1234)
 async def message_create(event: GatewayMessageCreateDispatchData) -> None: ...
 ```
 
-## Local graph store
+The Discord token comes from the host (`DISCORD_TOKEN`); Micro never stores it
+in NATS. Rotate it by rolling the processes with the new environment.
+
+## HTTP bridge
+
+`micro.http.HTTPBridge` (extra `http`) is a template component: health probes,
+`/components`, `POST /requests/{id}`, `POST /events/{id}`, and Gateway admin
+routes. Subclass it or add routes to `bridge.app`. Put it behind your own auth.
+
+## Optional graph store
 
 The local development database is PostgreSQL with Apache AGE. Start it with:
 

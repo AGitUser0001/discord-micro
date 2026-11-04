@@ -2,6 +2,7 @@ from types import MappingProxyType
 from typing import cast
 
 import pytest
+from conftest import EngineHarness
 from graphql import (
   GraphQLEnumType,
   GraphQLError,
@@ -12,7 +13,6 @@ from graphql import (
   parse,
 )
 from pydantic import JsonValue
-from starlette.testclient import TestClient
 
 from micro.store import (
   DirectiveBindContext,
@@ -27,7 +27,6 @@ from micro.store import (
   GraphModule,
   GraphQLRequest,
   GraphResult,
-  Store,
   compose_graph,
   entity_identity,
   physical_field,
@@ -247,8 +246,8 @@ def test_store_uses_graph_compiler_without_application_compiler() -> None:
     async def close(self) -> None:
       pass
 
-  store = Store(executor=Executor())
-  with TestClient(store) as client:
+  store = EngineHarness(Executor())
+  with store as client:
     topology = client.post(
       "/topology",
       json={"revision": 0, "modules": [GUILDS.model_dump(by_alias=True)]},
