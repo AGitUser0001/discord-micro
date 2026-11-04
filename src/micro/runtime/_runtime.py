@@ -1,0 +1,294 @@
+import asyncio
+import logging
+import os
+import signal
+from collections.abc import Sequence
+from contextlib import suppress
+from types import TracebackType
+from typing import Any, Self
+from uuid import uuid4
+
+import nats
+from nats.aio.client import Client as NATS
+from nats.js.api import RetentionPolicy, StorageType, StreamConfig
+from nats.js.client import JetStreamContext
+from nats.js.errors import BadRequestError
+from pydantic import JsonValue
+
+from micro import subjects
+from micro.coordination import LockHolder, Locks, Table
+
+from ._component import Component, ComponentState
+from ._presence import Directory, Presence, Registration, registration_id
+
+logger = logging.getLogger("micro")
+
+DEFAULT_NATS_URL = "nats://127.0.0.1:4222"
+
+
+def default_servers() -> tuple[str, ...]:
+  value = os.environ.get("MICRO_NATS_URL", DEFAULT_NATS_URL)
+  return tuple(server.strip() for server in value.split(",") if server.strip())
+
+
+class Runtime:
+  """One process's connection to a Micro deployment.
+
+  A runtime owns a single NATS connection, its JetStream context, and the shared
+  tables, and hosts any number of components. The same components run in one
+  runtime or spread across many processes; only configuration changes.
+  """
+
+  def __init__(
+    self,
+    servers: str | Sequence[str] | None = None,
+    *,
+    name: str = "micro",
+    replicas: int = 1,
+    presence_ttl: float = 10.0,
+    storage: StorageType = StorageType.FILE,
+    **connect_options: Any,
+  ) -> None:
+    if isinstance(servers, str):
+      servers = (servers,)
+    self.servers = tuple(servers) if servers is not None else default_servers()
+    if not self.servers:
+      raise ValueError("A runtime needs at least one NATS server.")
+    if replicas < 1:
+      raise ValueError("replicas must be at least 1.")
+    if presence_ttl < 3:
+      raise ValueError("presence_ttl must be at least 3 seconds.")
+    self.name = name
+    self.instance = uuid4().hex
+    self.replicas = replicas
+    self.presence_ttl = presence_ttl
+    self.storage = storage
+    self._connect_options = connect_options
+    self._nats: NATS | None = None
+    self._jetstream: JetStreamContext | None = None
+    self._tables: dict[str, Table[Any]] = {}
+    self._directory: Directory | None = None
+    self._components: list[Component] = []
+    self._presences: dict[int, Presence] = {}
+    self._started = False
+
+  @property
+  def nats(self) -> NATS:
+    if self._nats is None:
+      raise RuntimeError("Runtime has not started.")
+    return self._nats
+
+  @property
+  def jetstream(self) -> JetStreamContext:
+    if self._jetstream is None:
+      raise RuntimeError("Runtime has not started.")
+    return self._jetstream
+
+  @property
+  def directory(self) -> Directory:
+    if self._directory is None:
+      raise RuntimeError("Runtime has not started.")
+    return self._directory
+
+  @property
+  def components(self) -> tuple[Component, ...]:
+    return tuple(self._components)
+
+  @property
+  def ready(self) -> bool:
+    return (
+      self._started
+      and self._nats is not None
+      and self._nats.is_connected
+      and all(component.ready for component in self._components)
+    )
+
+  async def start(self) -> None:
+    if self._started:
+      return
+    self._nats = await nats.connect(
+      list(self.servers), name=self.name, **self._connect_options
+    )
+    self._jetstream = self._nats.jetstream()
+    await self.ensure_stream(
+      subjects.EVENTS_STREAM,
+      subjects.EVENT_STREAM_SUBJECTS,
+      retention=RetentionPolicy.INTEREST,
+    )
+    presence = await self.table(
+      subjects.PRESENCE_BUCKET, Registration, ttl_markers=True
+    )
+    self._directory = Directory(presence)
+    await self._directory.start()
+    self._started = True
+
+  async def add(self, *components: Component) -> None:
+    """Start components in this runtime (starting the runtime if needed)."""
+    await self.start()
+    for component in components:
+      await component.start(self)
+      self._components.append(component)
+
+  async def drain(self) -> None:
+    """Drain components in reverse start order; each finishes in-flight work."""
+    for component in reversed(self._components):
+      try:
+        await component.drain()
+      except Exception:
+        logger.exception("Draining %s failed", component.name)
+
+  async def close(self) -> None:
+    for component in reversed(self._components):
+      try:
+        await component.close()
+      except Exception:
+        logger.exception("Closing %s failed", component.name)
+    self._components.clear()
+    for presence in tuple(self._presences.values()):
+      await presence.stop()
+    self._presences.clear()
+    if self._directory is not None:
+      await self._directory.close()
+      self._directory = None
+    if self._nats is not None and not self._nats.is_closed:
+      with suppress(Exception):
+        await self._nats.drain()
+    self._nats = None
+    self._jetstream = None
+    self._tables.clear()
+    self._started = False
+
+  async def __aenter__(self) -> Self:
+    await self.start()
+    return self
+
+  async def __aexit__(
+    self,
+    exc_type: type[BaseException] | None,
+    exc: BaseException | None,
+    traceback: TracebackType | None,
+  ) -> None:
+    await self.drain()
+    await self.close()
+
+  async def serve(self, *components: Component) -> None:
+    """Host components until SIGINT/SIGTERM, then drain and close.
+
+    A second signal skips the remaining drain.
+    """
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    signals = (signal.SIGINT, signal.SIGTERM)
+    for sig in signals:
+      with suppress(NotImplementedError, RuntimeError):
+        loop.add_signal_handler(sig, stop.set)
+    try:
+      await self.add(*components)
+      logger.info(
+        "Micro runtime %s hosting %s",
+        self.instance,
+        ", ".join(component.name for component in self._components),
+      )
+      await stop.wait()
+      stop.clear()
+      draining = asyncio.create_task(self.drain())
+      interrupted = asyncio.create_task(stop.wait())
+      await asyncio.wait((draining, interrupted), return_when=asyncio.FIRST_COMPLETED)
+      for task in (draining, interrupted):
+        task.cancel()
+      await asyncio.gather(draining, interrupted, return_exceptions=True)
+    finally:
+      for sig in signals:
+        with suppress(NotImplementedError, RuntimeError):
+          loop.remove_signal_handler(sig)
+      await self.close()
+
+  async def ensure_stream(
+    self,
+    name: str,
+    stream_subjects: Sequence[str],
+    *,
+    retention: RetentionPolicy,
+  ) -> None:
+    config = StreamConfig(
+      name=name,
+      subjects=list(stream_subjects),
+      retention=retention,
+      storage=self.storage,
+      num_replicas=self.replicas,
+    )
+    try:
+      await self.jetstream.add_stream(config)
+    except BadRequestError:
+      # A stream with this name exists with other settings; keep it running and
+      # widen its subjects if this version needs more.
+      info = await self.jetstream.stream_info(name)
+      existing = set(info.config.subjects or ())
+      if not set(stream_subjects) <= existing:
+        info.config.subjects = sorted(existing | set(stream_subjects))
+        await self.jetstream.update_stream(info.config)
+
+  async def table[T](
+    self,
+    bucket: str,
+    value_type: type[T] | Any,
+    *,
+    ttl_markers: bool = False,
+  ) -> Table[T]:
+    """Open (creating if needed) a typed table.
+
+    `ttl_markers` makes per-key TTL expiry visible to watchers.
+    """
+    if bucket in self._tables:
+      return Table(self._tables[bucket]._store, value_type)  # pyright: ignore[reportPrivateUsage]
+    try:
+      store = await self.jetstream.create_key_value(
+        bucket=bucket,
+        storage=self.storage,
+        replicas=self.replicas,
+        limit_marker_ttl=1.0 if ttl_markers else None,
+      )
+    except BadRequestError:
+      # The bucket already exists with other settings (for example replicas).
+      store = await self.jetstream.key_value(bucket)
+    table = Table[T](store, value_type)
+    self._tables[bucket] = table
+    return table
+
+  async def locks(self) -> Locks:
+    return Locks(await self.table(subjects.LOCKS_BUCKET, LockHolder, ttl_markers=True), self.instance)
+
+  async def register(
+    self,
+    component: Component,
+    *,
+    metadata: dict[str, JsonValue] | None = None,
+    id: str | None = None,
+  ) -> Presence:
+    """Advertise a component in the presence table until it closes."""
+    table = await self.table(subjects.PRESENCE_BUCKET, Registration, ttl_markers=True)
+    presence = Presence(
+      table,
+      Registration(
+        kind=component.kind,
+        name=component.name,
+        instance=self.instance,
+        id=id or registration_id(),
+        metadata=metadata or {},
+      ),
+      self.presence_ttl,
+    )
+    await presence.start()
+    self._presences[id_of(presence)] = presence
+    return presence
+
+  async def unregister(self, presence: Presence) -> None:
+    self._presences.pop(id_of(presence), None)
+    await presence.stop()
+
+  def component_states(self) -> dict[str, ComponentState]:
+    return {component.name: component.state for component in self._components}
+
+
+def id_of(value: object) -> int:
+  return id(value)

@@ -1,4 +1,4 @@
-"""Discord API data models."""
+"""Discord API models, the HTTP worker, and its client."""
 
 from micro.discord import models
 from micro.discord.http_operations import (
@@ -11,9 +11,10 @@ from micro.discord.http_service import (
   DiscordHTTPRequest,
   DiscordHTTPResponse,
   DiscordHTTPWorker,
-  MemoryRateLimits,
-  RateLimitCoordinator,
-  StoreRateLimits,
+  RateLimits,
+  partition_key,
+  rank_workers,
+  route_key,
 )
 
 __all__ = [
@@ -24,8 +25,9 @@ __all__ = [
   "DiscordHTTPResponse",
   "DiscordHTTPWorker",
   "DiscordOperationId",
-  "MemoryRateLimits",
-  "RateLimitCoordinator",
-  "StoreRateLimits",
+  "RateLimits",
   "models",
+  "partition_key",
+  "rank_workers",
+  "route_key",
 ]

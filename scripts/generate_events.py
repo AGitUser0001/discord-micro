@@ -11,11 +11,11 @@ from typing import Any, get_args
 _HEADER = '''"""Generated Discord Gateway event schemas. Do not edit by hand."""
 
 from micro.discord.models import gateway
-from micro.service import EventSchema
+from micro.service import DispatchSchema
 
 '''
 
-_LONG_EVENT = '''{event} = EventSchema[
+_LONG_EVENT = '''{event} = DispatchSchema[
   {payload}
 ](
   id={event!r},
@@ -23,7 +23,7 @@ _LONG_EVENT = '''{event} = EventSchema[
 )
 '''
 
-_SHORT_EVENT = '''{event} = EventSchema[{payload}](
+_SHORT_EVENT = '''{event} = DispatchSchema[{payload}](
   id={event!r},
   payload={payload},
 )
@@ -83,7 +83,7 @@ def generate(source: Path, output: Path) -> None:
   events = "\n".join(
     (
       _SHORT_EVENT
-      if len(f"{item.event} = EventSchema[{item.payload}](") <= 88
+      if len(f"{item.event} = DispatchSchema[{item.payload}](") <= 88
       else _LONG_EVENT
     ).format(event=item.event, payload=item.payload)
     for item in dispatches

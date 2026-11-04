@@ -1,12 +1,5 @@
-from ._client import QueueClient, QueueDelivery
-from ._queue import Queue, QueueBackend
-from ._source import QueueBackendDelivery, QueueObservation
+"""Durable typed work queues: each job is processed by exactly one worker."""
 
-__all__ = (
-  "Queue",
-  "QueueBackend",
-  "QueueBackendDelivery",
-  "QueueClient",
-  "QueueDelivery",
-  "QueueObservation",
-)
+from ._work import WorkQueue
+
+__all__ = ("WorkQueue",)

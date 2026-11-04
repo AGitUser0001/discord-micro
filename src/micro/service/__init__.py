@@ -1,24 +1,32 @@
-from micro._microservices import DuplicateEndpointError
+"""The framework for writing Micro services."""
 
-from ._client import ServiceClient
-from ._event import EventSchema
+from micro.errors import RemoteError, ServiceError
+from micro.queue import WorkQueue
+
+from ._client import Client
+from ._event import DispatchSchema, EventSchema
 from ._request import RequestSchema
 from ._service import (
-  DuplicateEventHandlerError,
   DuplicateRequestHandlerError,
+  DuplicateWorkHandlerError,
   EventHandler,
+  EventPredicate,
   RequestHandler,
   Service,
 )
 
 __all__ = (
-  "DuplicateEndpointError",
-  "DuplicateEventHandlerError",
+  "Client",
+  "DispatchSchema",
   "DuplicateRequestHandlerError",
+  "DuplicateWorkHandlerError",
   "EventHandler",
+  "EventPredicate",
   "EventSchema",
+  "RemoteError",
   "RequestHandler",
   "RequestSchema",
   "Service",
-  "ServiceClient",
+  "ServiceError",
+  "WorkQueue",
 )

@@ -1,19 +1,18 @@
 import asyncio
 import json
-from typing import Any
+from collections import Counter
+from collections.abc import Callable
 
 import httpx2
-from starlette.testclient import TestClient
 
-from micro._microservices import StoreClient
 from micro.discord import (
   DiscordHTTPClient,
   DiscordHTTPRequest,
-  DiscordHTTPResponse,
   DiscordHTTPWorker,
-  MemoryRateLimits,
-  StoreRateLimits,
+  partition_key,
+  rank_workers,
 )
+from micro.discord.http_operations import HTTP_OPERATIONS
 from micro.discord.models.http import (
   CreateMessageParametersPath,
   CreateMessageRequest,
@@ -28,38 +27,32 @@ from micro.discord.models.http_requests import (
   GetGuildHTTPRequest,
   UploadApplicationAttachmentHTTPRequest,
 )
-from micro.queue import QueueClient
+from micro.runtime import Registration, Runtime
+
+type Responder = Callable[[httpx2.Request], httpx2.Response]
 
 
-class _RateLimitStore(StoreClient):
-  def __init__(self) -> None:
-    self.calls: list[tuple[str, dict[str, Any]]] = []
-    self.route: dict[str, Any] | None = None
-    self.global_limit: dict[str, Any] | None = {"blockedUntil": 0.0}
-    self.acquire_result: dict[str, Any] | None = {"id": "bucket"}
-
-  async def execute(
-    self,
-    query: str,
-    *,
-    variables=None,
-    operation_name=None,
-    module=None,
-  ) -> dict[str, Any]:
-    values = dict(variables or {})
-    self.calls.append((query, values))
-    if "RateLimitState" in query:
-      return {"data": {"route": self.route, "global": self.global_limit}}
-    if "Acquire(" in query:
-      return {"data": {"bucket": self.acquire_result}}
-    if "CreateRoute" in query:
-      self.route = {"bucketId": None}
-    if "Map(" in query:
-      self.route = {"bucketId": values["bucket"]}
-    return {"data": {}}
+def message(channel: str, content: str = "hello") -> CreateMessageHTTPRequest:
+  return CreateMessageHTTPRequest(
+    path=CreateMessageParametersPath(channel_id=SnowflakeType(channel)),
+    body=CreateMessageRequest(content=content),
+  )
 
 
-def test_discord_http_retries_rate_limits_and_preserves_response() -> None:
+def worker(respond: Responder, name: str = "discord.http") -> DiscordHTTPWorker:
+  return DiscordHTTPWorker(
+    "token",
+    name=name,
+    transport=httpx2.MockTransport(respond),
+    api_url="https://discord.test",
+  )
+
+
+async def wait_for_workers(runtime: Runtime, count: int) -> None:
+  await runtime.directory.wait_for(lambda d: len(d.entries("discord.http")) == count)
+
+
+def test_client_routes_generated_methods_and_retries_rate_limits(nats_url: str) -> None:
   calls: list[httpx2.Request] = []
 
   def respond(request: httpx2.Request) -> httpx2.Response:
@@ -77,30 +70,13 @@ def test_discord_http_retries_rate_limits_and_preserves_response() -> None:
     )
 
   async def exercise() -> None:
-    worker = DiscordHTTPWorker(
-      "token",
-      transport=httpx2.MockTransport(respond),
-      api_url="https://discord.test",
-      coordinator=MemoryRateLimits(),
-    )
-    try:
-      response = await worker.execute(
-        DiscordHTTPRequest(
-          operation="create_message",
-          data=CreateMessageHTTPRequest(
-            path=CreateMessageParametersPath(channel_id=SnowflakeType("123")),
-            body=CreateMessageRequest(content="hello"),
-          ).model_dump(mode="json", by_alias=True),
-          idempotency_key="message-1",
-        )
-      )
-    finally:
-      await worker.close()
-    assert response.status == 400
-    assert json.loads(response.body) == {
-      "code": 50035,
-      "message": "Invalid form body",
-    }
+    async with Runtime(nats_url) as runtime:
+      await runtime.add(worker(respond))
+      await wait_for_workers(runtime, 1)
+      result = await DiscordHTTPClient(runtime).create_message(message("123"))
+      assert isinstance(result, CreateMessageHTTPResponse)
+      assert result.status == 400
+      assert json.loads(result.raw_body) == {"code": 50035, "message": "Invalid form body"}
 
   asyncio.run(exercise())
   assert len(calls) == 2
@@ -108,184 +84,98 @@ def test_discord_http_retries_rate_limits_and_preserves_response() -> None:
   assert calls[0].content == b'{"content":"hello"}'
 
 
-def test_discord_http_credential_endpoint_rotates_new_requests() -> None:
-  calls: list[httpx2.Request] = []
-
-  def respond(request: httpx2.Request) -> httpx2.Response:
-    calls.append(request)
-    return httpx2.Response(200, json={"id": "123", "name": "guild"})
-
-  worker = DiscordHTTPWorker(
-    "old",
-    transport=httpx2.MockTransport(respond),
-    api_url="https://discord.test",
-    coordinator=MemoryRateLimits(),
-  )
-  with TestClient(worker) as client:
-    rotated = client.post("/discord/credential", json={"token": "new", "revision": 1})
-    stale = client.post("/discord/credential", json={"token": "stale", "revision": 0})
-    response = asyncio.run(
-      worker.execute(
-        DiscordHTTPRequest(
-          operation="get_guild",
-          data=GetGuildHTTPRequest(
-            path=GetGuildParametersPath(guild_id=SnowflakeType("123"))
-          ).model_dump(mode="json", by_alias=True),
-        )
-      )
-    )
-
-  assert rotated.status_code == 204
-  assert stale.status_code == 409
-  assert response.status == 200
-  assert calls[-1].headers["authorization"] == "Bot new"
-
-
-def test_discord_http_binary_wire_format_and_idempotent_replay() -> None:
+def test_idempotent_replay_and_binary_bodies(nats_url: str) -> None:
   calls = 0
+  sent: list[httpx2.Request] = []
 
   def respond(request: httpx2.Request) -> httpx2.Response:
     nonlocal calls
     calls += 1
+    sent.append(request)
     return httpx2.Response(200, content=b"\x00\xff")
 
   async def exercise() -> None:
-    worker = DiscordHTTPWorker(
-      "token", transport=httpx2.MockTransport(respond), coordinator=MemoryRateLimits()
-    )
-    request = DiscordHTTPRequest(
-      operation="get_guild",
-      data=GetGuildHTTPRequest(
-        path=GetGuildParametersPath(guild_id=SnowflakeType("1"))
-      ).model_dump(mode="json"),
-      idempotency_key="x",
-    )
-    encoded = request.model_dump_json()
-    decoded = DiscordHTTPRequest.model_validate_json(encoded)
-    assert decoded == request
-    try:
-      first = await worker.execute(decoded)
-      second = await worker.execute(decoded)
-    finally:
-      await worker.close()
-    assert first == second
+    async with Runtime(nats_url) as runtime:
+      await runtime.add(worker(respond))
+      await wait_for_workers(runtime, 1)
+      client = DiscordHTTPClient(runtime)
+      request = DiscordHTTPRequest(
+        operation="get_guild",
+        data=GetGuildHTTPRequest(
+          path=GetGuildParametersPath(guild_id=SnowflakeType("1"))
+        ).model_dump(mode="json"),
+        idempotency_key="x",
+      )
+      first = await client.request(request)
+      second = await client.request(request)
+      assert first == second and first.body == b"\x00\xff"
+
+      upload = UploadApplicationAttachmentHTTPRequest(
+        path=UploadApplicationAttachmentParametersPath(application_id=SnowflakeType("1")),
+        body=UploadApplicationAttachmentRequest(file=b"\x00binary\xff"),
+      )
+      await client.upload_application_attachment(upload)
 
   asyncio.run(exercise())
-  assert calls == 1
+  assert calls == 2
+  assert "multipart/form-data" in sent[-1].headers["content-type"]
+  assert b"\x00binary\xff" in sent[-1].content
 
 
-def test_generated_physical_method_uses_the_operation_registry() -> None:
-  received: DiscordHTTPRequest | None = None
+def test_buckets_stay_on_one_worker_and_move_when_workers_change(nats_url: str) -> None:
+  handled: Counter[tuple[str, str]] = Counter()
 
-  def respond(request: httpx2.Request) -> httpx2.Response:
-    nonlocal received
-    received = DiscordHTTPRequest.model_validate_json(request.read())
-    response = DiscordHTTPResponse(status=200, headers=(), body=b"{}")
-    return httpx2.Response(200, content=response.model_dump_json().encode())
+  def responder(name: str) -> Responder:
+    def respond(request: httpx2.Request) -> httpx2.Response:
+      channel = request.url.path.split("/")[2]
+      handled[(name, channel)] += 1
+      return httpx2.Response(200, json={})
 
-  async def exercise() -> CreateMessageHTTPResponse:
-    queue = QueueClient(transport=httpx2.MockTransport(respond))
-    queue.apply_state(
-      {
-        "revision": 0,
-        "queues": [{"id": "queue", "base_url": "https://queue.test"}],
-      }
-    )
-    client = DiscordHTTPClient(queue)
-    try:
-      return await client.create_message(
-        CreateMessageHTTPRequest(
-          path=CreateMessageParametersPath(channel_id=SnowflakeType("123")),
-          body=CreateMessageRequest(content="hello"),
-        )
-      )
-    finally:
-      await client.aclose()
-
-  result = asyncio.run(exercise())
-  assert isinstance(result, CreateMessageHTTPResponse)
-  assert result.status == 200
-  assert result.raw_body == b"{}"
-  assert received is not None
-  assert received.operation == "create_message"
-  assert received.data["path"] == {"channel_id": "123"}
-
-
-def test_generated_multipart_operation_preserves_binary_files() -> None:
-  sent: httpx2.Request | None = None
-
-  def respond(request: httpx2.Request) -> httpx2.Response:
-    nonlocal sent
-    sent = request
-    return httpx2.Response(200, json={})
+    return respond
 
   async def exercise() -> None:
-    worker = DiscordHTTPWorker(
-      "token", transport=httpx2.MockTransport(respond), coordinator=MemoryRateLimits()
-    )
-    data = UploadApplicationAttachmentHTTPRequest(
-      path=UploadApplicationAttachmentParametersPath(application_id=SnowflakeType("1")),
-      body=UploadApplicationAttachmentRequest(file=b"\x00binary\xff"),
-    )
-    try:
-      await worker.execute(
-        DiscordHTTPRequest(
-          operation="upload_application_attachment",
-          data=data.model_dump(mode="json", by_alias=True),
-        )
-      )
-    finally:
-      await worker.close()
+    runtimes = [Runtime(nats_url) for _ in range(3)]
+    for index, runtime in enumerate(runtimes):
+      await runtime.add(worker(responder(f"w{index}"), name=f"w{index}"))
+    async with Runtime(nats_url) as caller:
+      await wait_for_workers(caller, 3)
+      client = DiscordHTTPClient(caller)
+      channels = [str(1000 + index) for index in range(30)]
+      for _ in range(3):
+        await asyncio.gather(*(client.create_message(message(c)) for c in channels))
+      owners = {channel: {w for (w, c) in handled if c == channel} for channel in channels}
+      assert all(len(owner) == 1 for owner in owners.values())
+      assert len({next(iter(o)) for o in owners.values()}) == 3
+
+      # Remove one worker: only its channels move, and nothing fails.
+      await runtimes[0].drain()
+      await runtimes[0].close()
+      await wait_for_workers(caller, 2)
+      handled.clear()
+      await asyncio.gather(*(client.create_message(message(c)) for c in channels))
+      moved = {channel for channel, owner in owners.items() if owner == {"w0"}}
+      for channel in channels:
+        (now,) = {w for (w, c) in handled if c == channel}
+        if channel not in moved:
+          assert {now} == owners[channel]
+        else:
+          assert now != "w0"
+    for runtime in runtimes[1:]:
+      await runtime.drain()
+      await runtime.close()
 
   asyncio.run(exercise())
-  assert sent is not None
-  assert "multipart/form-data" in sent.headers["content-type"]
-  assert b"\x00binary\xff" in sent.content
 
 
-def test_store_rate_limits_map_discovered_buckets_and_acquire_capacity() -> None:
-  async def exercise() -> _RateLimitStore:
-    store = _RateLimitStore()
-    coordinator = StoreRateLimits(store)
-    response = DiscordHTTPResponse(
-      status=200,
-      headers=(
-        ("x-ratelimit-bucket", "messages"),
-        ("x-ratelimit-limit", "5"),
-        ("x-ratelimit-remaining", "4"),
-        ("x-ratelimit-reset", "2000000000"),
-      ),
-      body=b"{}",
-    )
-    await coordinator.observe("create_message:123", response)
-    assert store.route is not None
-    assert isinstance(store.route["bucketId"], str)
-    await coordinator.acquire("create_message:123")
-    return store
-
-  store = asyncio.run(exercise())
-  queries = "\n".join(query for query, _ in store.calls)
-  assert "CreateBucket" in queries
-  assert "Map(" in queries
-  assert "Acquire(" in queries
-
-
-def test_store_rate_limits_extend_the_shared_global_gate() -> None:
-  async def exercise() -> _RateLimitStore:
-    store = _RateLimitStore()
-    coordinator = StoreRateLimits(store)
-    await coordinator.observe(
-      "create_message:123",
-      DiscordHTTPResponse(
-        status=429,
-        headers=(("via", "1.1"), ("retry-after", "2")),
-        body=b'{"retry_after":2,"global":true}',
-      ),
-    )
-    return store
-
-  store = asyncio.run(exercise())
-  extend = next(
-    variables for query, variables in store.calls if "ExtendGlobal" in query
-  )
-  assert isinstance(extend["until"], float)
+def test_partitions_follow_major_parameters() -> None:
+  operation = HTTP_OPERATIONS["create_message"]
+  key = partition_key(operation, message("55"))
+  assert key == "55"
+  workers = [
+    Registration(kind="discord.http", name="w", instance="i", id=str(index))
+    for index in range(5)
+  ]
+  ranked = rank_workers(key, workers)
+  assert rank_workers(key, list(reversed(workers))) == ranked
+  survivors = [w for w in workers if w.id != ranked[0].id]
+  assert rank_workers(key, survivors)[0] == ranked[1]

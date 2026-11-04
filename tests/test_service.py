@@ -1,270 +1,278 @@
-from typing import Annotated, Any, cast
+import asyncio
+from collections import Counter
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field
-from starlette.applications import Starlette
-from starlette.routing import Mount
-from starlette.testclient import TestClient
+from pydantic import BaseModel, ConfigDict
+
+from micro import subjects
+from micro.errors import RemoteError, RoutingError
+from micro.runtime import Runtime
 
 from micro.service import (
-  DuplicateEndpointError,
-  DuplicateEventHandlerError,
   DuplicateRequestHandlerError,
   EventSchema,
   RequestSchema,
   Service,
+  ServiceError,
+  WorkQueue,
 )
-
-
-class Message(BaseModel):
-  model_config = ConfigDict(extra="forbid")
-
-  guild_id: str
-  content: str
 
 
 class Greeting(BaseModel):
   model_config = ConfigDict(extra="forbid")
-
   name: str
 
 
 class GreetingResponse(BaseModel):
   model_config = ConfigDict(extra="forbid")
-
   message: str
 
 
-type PositiveInt = Annotated[int, Field(gt=0)]
+class Note(BaseModel):
+  text: str
 
 
-MESSAGE = EventSchema[Message](
-  id="discord.message-create",
-  payload=Message,
+GREET = RequestSchema[Greeting, GreetingResponse](
+  id="example.greet", input=Greeting, output=GreetingResponse
 )
-
-GREETING = RequestSchema[Greeting, GreetingResponse](
-  id="example.greeting",
-  input=Greeting,
-  output=GreetingResponse,
-)
+NOTED = EventSchema[Note](id="example.noted", payload=Note)
+JOBS = WorkQueue[Note]("example.jobs", Note)
 
 
-def test_event_endpoint_invokes_handler() -> None:
-  service = Service("messages")
-  received: list[Message] = []
-
-  @service.listen(MESSAGE)
-  async def message(event: Message) -> None:
-    received.append(event)
-
-  with TestClient(service) as client:
-    response = client.post(
-      "/events/discord.message-create",
-      json={"guild_id": "123", "content": "hello"},
-    )
-
-  assert response.status_code == 204
-  assert received == [Message(guild_id="123", content="hello")]
+async def eventually(predicate, *, timeout: float = 10.0) -> None:
+  deadline = asyncio.get_running_loop().time() + timeout
+  while not predicate():
+    if asyncio.get_running_loop().time() > deadline:
+      raise AssertionError("condition was not met in time")
+    await asyncio.sleep(0.02)
 
 
-def test_service_name_identifies_the_logical_consumer() -> None:
-  service = Service("messages")
+def greeter(name: str = "greeter", tag: str = "") -> Service:
+  service = Service(name)
 
-  @service.listen(MESSAGE)
-  async def message(event: Message) -> None:
-    pass
-
-  schema = service.dynamic_schema()
-  events = cast(list[dict[str, Any]], schema["events"])
-
-  assert schema["kind"] == "service"
-  assert schema["service"] == "messages"
-  assert events[0]["id"] == MESSAGE.id
-
-
-def test_event_payload_is_validated() -> None:
-  service = Service("messages")
-
-  @service.listen(MESSAGE)
-  async def message(event: Message) -> None:
-    raise AssertionError("Invalid events must not reach handlers.")
-
-  with TestClient(service) as client:
-    response = client.post(
-      "/events/discord.message-create",
-      json={"guild_id": "123"},
-    )
-
-  assert response.status_code == 422
-  assert response.json()["detail"] == "Event payload does not match its schema."
-
-
-def test_duplicate_event_fails_during_declaration() -> None:
-  service = Service("messages")
-
-  @service.listen(MESSAGE)
-  async def first(event: Message) -> None:
-    pass
-
-  with pytest.raises(DuplicateEventHandlerError):
-
-    @service.listen(MESSAGE)
-    async def second(event: Message) -> None:
-      pass
-
-
-def test_duplicate_path_fails_during_declaration() -> None:
-  service = Service("messages")
-  custom = EventSchema[Any](
-    id="custom.health",
-    path="/health/ready",
-    payload=Any,
-  )
-
-  with pytest.raises(DuplicateEndpointError):
-
-    @service.listen(custom)
-    async def health(event: Any) -> None:
-      pass
-
-
-def test_schema_accounts_for_mount_path_without_changing_hash() -> None:
-  service = Service("messages")
-
-  @service.listen(MESSAGE)
-  async def message(event: Message) -> None:
-    pass
-
-  direct_schema = service.dynamic_schema()
-  mounted = Starlette(routes=[Mount("/micro", service)])
-
-  with TestClient(mounted) as client:
-    response = client.get("/micro/schema")
-
-  assert response.status_code == 200
-  mounted_schema = response.json()
-  assert mounted_schema["asgi"]["root_path"] == "/micro"
-  assert mounted_schema["events"][0]["path"] == ("/micro/events/discord.message-create")
-  assert mounted_schema["implementation_hash"] == direct_schema["implementation_hash"]
-
-
-def test_drain_updates_health_and_rejects_events() -> None:
-  service = Service("messages")
-
-  @service.listen(MESSAGE)
-  async def message(event: Message) -> None:
-    pass
-
-  service.drain()
-  with TestClient(service) as client:
-    assert client.get("/health/ready").status_code == 503
-    assert client.get("/health/drained").status_code == 204
-    response = client.post(
-      "/events/discord.message-create",
-      json={"guild_id": "123", "content": "hello"},
-    )
-
-  assert response.status_code == 503
-
-
-def test_pydantic_adapter_supplies_typed_event() -> None:
-  service = Service("numbers")
-  number = EventSchema[int](
-    id="example.number",
-    payload=PositiveInt,
-  )
-  received: list[int] = []
-
-  @service.listen(number)
-  async def receive_number(event: int) -> None:
-    received.append(event)
-
-  with TestClient(service) as client:
-    response = client.post("/events/example.number", json=42)
-
-  assert response.status_code == 204
-  assert received == [42]
-
-
-def test_event_endpoint_requires_json_content_type() -> None:
-  service = Service("messages")
-
-  @service.listen(MESSAGE)
-  async def message(event: Message) -> None:
-    raise AssertionError("Non-JSON requests must not reach handlers.")
-
-  with TestClient(service) as client:
-    response = client.post(
-      "/events/discord.message-create",
-      content=b"not json",
-      headers={"content-type": "application/octet-stream"},
-    )
-
-  assert response.status_code == 415
-
-
-def test_handlers_cannot_be_added_after_start() -> None:
-  service = Service("messages")
-  later = EventSchema[Any](id="example.later", payload=Any)
-
-  with TestClient(service) as client:
-    assert client.get("/health/live").status_code == 204
-
-  with pytest.raises(RuntimeError):
-
-    @service.listen(later)
-    async def handler(event: Any) -> None:
-      pass
-
-
-def test_request_handler_returns_validated_json() -> None:
-  service = Service("greetings")
-
-  @service.handle(GREETING)
+  @service.handle(GREET)
   async def greet(request: Greeting) -> GreetingResponse:
-    return GreetingResponse(message=f"Hello, {request.name}!")
+    if request.name == "nobody":
+      raise ServiceError("unknown_person", "Nobody is not a person.", detail={"x": 1})
+    if request.name == "crash":
+      raise RuntimeError("boom")
+    return GreetingResponse(message=f"Hello, {request.name}!{tag}")
 
-  with TestClient(service) as client:
-    response = client.post("/requests/example.greeting", json={"name": "World"})
-
-  assert response.status_code == 200
-  assert response.json() == {"message": "Hello, World!"}
-
-
-def test_request_input_and_output_are_validated() -> None:
-  invalid_input_service = Service("invalid-input")
-
-  @invalid_input_service.handle(GREETING)
-  async def input_handler(request: Greeting) -> GreetingResponse:
-    raise AssertionError("Invalid input must not reach the handler.")
-
-  with TestClient(invalid_input_service) as client:
-    invalid_input = client.post("/requests/example.greeting", json={})
-
-  assert invalid_input.status_code == 422
-
-  invalid_output_service = Service("invalid-output")
-
-  @invalid_output_service.handle(GREETING)
-  async def output_handler(request: Greeting) -> GreetingResponse:
-    return cast(Any, {"wrong": "shape"})
-
-  with TestClient(invalid_output_service) as client:
-    invalid_output = client.post("/requests/example.greeting", json={"name": "World"})
-
-  assert invalid_output.status_code == 500
+  return service
 
 
-def test_duplicate_request_fails_during_declaration() -> None:
-  service = Service("greetings")
+def test_requests_are_typed_and_errors_carry_codes(nats_url: str) -> None:
+  async def exercise() -> None:
+    async with Runtime(nats_url) as runtime:
+      service = greeter()
+      await runtime.add(service)
+      client = service.client
+      reply = await client.request(GREET, Greeting(name="Ada"))
+      assert reply == GreetingResponse(message="Hello, Ada!")
 
-  @service.handle(GREETING)
-  async def first(request: Greeting) -> GreetingResponse:
-    return GreetingResponse(message=request.name)
+      with pytest.raises(RemoteError) as error:
+        await client.request(GREET, Greeting(name="nobody"))
+      assert (error.value.code, error.value.detail) == ("unknown_person", {"x": 1})
 
+      with pytest.raises(RemoteError) as error:
+        await client.request(GREET, Greeting(name="crash"))
+      assert error.value.code == "handler_failed"
+
+      other = RequestSchema[Note, GreetingResponse](
+        id="example.greet", input=Note, output=GreetingResponse
+      )
+      with pytest.raises(RemoteError) as error:
+        await client.request(other, Note(text="hi"))
+      assert error.value.code == "incompatible_schema"
+
+      missing = RequestSchema[Note, Note](id="example.missing", input=Note, output=Note)
+      with pytest.raises(RoutingError):
+        await client.request(missing, Note(text="hi"))
+
+  asyncio.run(exercise())
+
+
+def test_replicas_share_requests_and_drain_loses_nothing(nats_url: str) -> None:
+  async def exercise() -> None:
+    first_runtime = Runtime(nats_url)
+    second_runtime = Runtime(nats_url)
+    await first_runtime.add(greeter(tag="1"))
+    await second_runtime.add(greeter(tag="2"))
+    async with Runtime(nats_url) as caller:
+      from micro.service import Client
+
+      client = Client(caller)
+      replies = await asyncio.gather(
+        *(client.request(GREET, Greeting(name=str(i))) for i in range(40))
+      )
+      assert {reply.message[-1] for reply in replies} == {"1", "2"}
+
+      async def load() -> list[GreetingResponse]:
+        return list(
+          await asyncio.gather(
+            *(client.request(GREET, Greeting(name=str(i))) for i in range(200))
+          )
+        )
+
+      running = asyncio.create_task(load())
+      await asyncio.sleep(0)
+      await first_runtime.drain()
+      results = await running
+      assert len(results) == 200
+      await first_runtime.close()
+      after = await client.request(GREET, Greeting(name="x"))
+      assert after.message.endswith("2")
+    await second_runtime.drain()
+    await second_runtime.close()
+
+  asyncio.run(exercise())
+
+
+def test_events_reach_each_service_once_with_many_handlers(nats_url: str) -> None:
+  async def exercise() -> None:
+    received: Counter[str] = Counter()
+
+    def listener(name: str) -> Service:
+      service = Service(name)
+
+      @service.listen(NOTED)
+      async def first(note: Note) -> None:
+        received[f"{name}:first:{note.text}"] += 1
+
+      @service.listen(NOTED, when=lambda note: note.text.startswith("a"))
+      async def second(note: Note) -> None:
+        received[f"{name}:second:{note.text}"] += 1
+
+      return service
+
+    runtimes = [Runtime(nats_url) for _ in range(3)]
+    await runtimes[0].add(listener("audit"))
+    await runtimes[1].add(listener("audit"))
+    await runtimes[2].add(listener("search"))
+    async with Runtime(nats_url) as caller:
+      from micro.service import Client
+
+      client = Client(caller)
+      for text in ("apple", "banana"):
+        await client.emit(NOTED, Note(text=text))
+      await eventually(lambda: sum(received.values()) == 6)
+      await asyncio.sleep(0.3)
+      assert received == Counter(
+        {
+          "audit:first:apple": 1,
+          "audit:second:apple": 1,
+          "audit:first:banana": 1,
+          "search:first:apple": 1,
+          "search:second:apple": 1,
+          "search:first:banana": 1,
+        }
+      )
+    for runtime in runtimes:
+      await runtime.drain()
+      await runtime.close()
+
+  asyncio.run(exercise())
+
+
+def test_failing_handler_is_isolated_and_event_redelivered(nats_url: str) -> None:
+  async def exercise() -> None:
+    attempts: Counter[str] = Counter()
+    service = Service("flaky")
+
+    @service.listen(NOTED)
+    async def steady(note: Note) -> None:
+      attempts["steady"] += 1
+
+    @service.listen(NOTED)
+    async def flaky(note: Note) -> None:
+      attempts["flaky"] += 1
+      if attempts["flaky"] == 1:
+        raise RuntimeError("first try fails")
+
+    async with Runtime(nats_url) as runtime:
+      await runtime.add(service)
+      await service.client.emit(NOTED, Note(text="x"))
+      await eventually(lambda: attempts["flaky"] == 2)
+      # At-least-once: the whole event is redelivered, so steady ran twice too.
+      assert attempts["steady"] == 2
+
+  asyncio.run(exercise())
+
+
+def test_discord_dispatch_listeners_can_filter_by_guild(nats_url: str) -> None:
+  async def exercise() -> None:
+    from micro.schemas import events as discord_events
+
+    seen: list[str] = []
+    service = Service("guild-only")
+
+    @service.listen(discord_events.TYPING_START, guild_id=42)
+    async def typing(event: object) -> None:
+      seen.append("42")
+
+    async with Runtime(nats_url) as runtime:
+      await runtime.add(service)
+      payload = b'{"channel_id":"1","user_id":"2","timestamp":1}'
+      for guild in (41, 42):
+        await runtime.jetstream.publish(
+          subjects.dispatch("TYPING_START", guild), payload, stream=subjects.EVENTS_STREAM
+        )
+      await eventually(lambda: seen == ["42"])
+      await asyncio.sleep(0.3)
+      assert seen == ["42"]
+
+  asyncio.run(exercise())
+
+
+def test_work_queue_keeps_jobs_until_one_worker_takes_them(nats_url: str) -> None:
+  async def exercise() -> None:
+    done: list[str] = []
+    async with Runtime(nats_url) as producer:
+      from micro.service import Client
+
+      client = Client(producer)
+      for index in range(10):
+        await client.enqueue(JOBS, Note(text=str(index)))
+
+      workers = []
+      for _ in range(2):
+        worker = Service("worker")
+
+        @worker.work(JOBS)
+        async def process(job: Note) -> None:
+          done.append(job.text)
+
+        workers.append(worker)
+      runtimes = [Runtime(nats_url), Runtime(nats_url)]
+      for runtime, worker in zip(runtimes, workers):
+        await runtime.add(worker)
+      await eventually(lambda: len(done) == 10)
+      await asyncio.sleep(0.3)
+      assert sorted(done, key=int) == [str(index) for index in range(10)]
+      for runtime in runtimes:
+        await runtime.drain()
+        await runtime.close()
+
+  asyncio.run(exercise())
+
+
+def test_presence_advertises_contracts_and_declaration_rules() -> None:
+  service = greeter()
+
+  @service.listen(NOTED)
+  async def noted(note: Note) -> None:
+    pass
+
+  metadata = service.metadata()
+  assert metadata["requests"] == {"example.greet": GREET.hash}
+  assert metadata["events"] == ["example.noted"]
   with pytest.raises(DuplicateRequestHandlerError):
 
-    @service.handle(GREETING)
-    async def second(request: Greeting) -> GreetingResponse:
-      return GreetingResponse(message=request.name)
+    @service.handle(GREET)
+    async def again(request: Greeting) -> GreetingResponse:
+      raise AssertionError
+
+  with pytest.raises(TypeError):
+    service.listen(NOTED)(lambda note: None)  # type: ignore[arg-type]
+  with pytest.raises(ValueError):
+    service.listen(NOTED, guild_id=1)
