@@ -1,0 +1,14 @@
+# Generated from Discord's API specification. Do not edit directly.
+
+from enum import IntEnum, StrEnum
+from typing import Annotated, Any, Union
+from micro.discord._model import DiscordModel
+from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
+from typing_extensions import TypeAliasType
+
+
+
+class ApplicationCommandPermissionType(IntEnum):
+    ROLE = 1
+    USER = 2
+    CHANNEL = 3

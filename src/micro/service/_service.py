@@ -4,13 +4,14 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from re import fullmatch
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Never, Protocol
 
 from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
 from pydantic import JsonValue, ValidationError
 
 from micro import subjects
+from micro.coordination import DECLARATIONS_KEY, Declarations
 from micro.errors import ServiceError
 from micro.queue import WorkQueue
 from micro.runtime import Component, Presence, Reject, Retry, StreamConsumer
@@ -37,6 +38,20 @@ class DuplicateRequestHandlerError(ValueError):
 
 class DuplicateWorkHandlerError(ValueError):
   pass
+
+
+class ServiceExtension(Protocol):
+  """A template that adds behavior to a service (commands, components, ...).
+
+  Extensions start after the service's own sources and before it registers in
+  presence; their metadata is advertised with the service's.
+  """
+
+  async def start(self, service: Service) -> None: ...
+
+  async def stop(self) -> None: ...
+
+  def metadata(self) -> dict[str, JsonValue]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +85,7 @@ class Service(Component):
     *,
     version: str = "0",
     concurrency: int = 64,
+    ordered_by_guild: bool = False,
   ) -> None:
     if fullmatch(_SERVICE_NAME_PATTERN, name) is None:
       raise ValueError(
@@ -86,12 +102,17 @@ class Service(Component):
       str, tuple[RequestSchema[Any, Any], RequestHandler[Any, Any]]
     ] = {}
     self._work: dict[str, tuple[WorkQueue[Any], EventHandler[Any]]] = {}
-    self._modules: dict[str, GraphModule] = {}
+    self._declarations: dict[str, dict[str, JsonValue]] = {}
+    self._declared: dict[str, dict[str, str]] = {}
+    self._extensions: list[ServiceExtension] = []
     self._client: Client | None = None
     self._subscriptions: list[Subscription] = []
     self._consumers: list[StreamConsumer] = []
     self._request_slots = asyncio.Semaphore(concurrency)
     self._presence: Presence | None = None
+    self.ordered_by_guild = ordered_by_guild
+    self._guild_locks: dict[int | None, asyncio.Lock] = {}
+    self._succeeded: dict[int, set[int]] = {}
 
   # Declaration -----------------------------------------------------------------
 
@@ -151,12 +172,28 @@ class Service(Component):
 
   def uses(self, *modules: GraphModule) -> None:
     """Declare graph modules a running store must serve for this service."""
-    self._declaring("Graph modules")
     for module in modules:
-      self._modules[module.id] = module
+      self.declare(
+        "modules", module.id, {"id": module.id, "schema": module.graphql_schema}
+      )
+
+  def declare(self, kind: str, key: str, document: JsonValue) -> None:
+    """Declare a versioned document (a command, a graph module, ...).
+
+    Declarations converge: consumers apply a new version only when every live
+    replica declaring the key agrees on it (see `micro.coordination.Declarations`).
+    """
+    if self.phase.value not in ("created", "starting"):
+      raise RuntimeError("Declarations cannot be added after the service starts.")
+    self._declarations.setdefault(subjects.token(kind), {})[key] = document
+
+  def extend(self, extension: ServiceExtension) -> None:
+    """Attach a template such as `Commands(service)` (they call this themselves)."""
+    self._declaring("Extensions")
+    self._extensions.append(extension)
 
   def _declaring(self, what: str) -> None:
-    if self.state.value != "created":
+    if self.phase.value != "created":
       raise RuntimeError(f"{what} cannot be added after the service starts.")
 
   # Introspection ---------------------------------------------------------------
@@ -173,21 +210,32 @@ class Service(Component):
       request_id: schema.hash
       for request_id, (schema, _) in sorted(self._requests.items())
     }
-    events: list[JsonValue] = [
-      *sorted({listener.event.id for listener in self._listeners})
-    ]
-    work: list[JsonValue] = [*sorted(self._work)]
-    modules: list[JsonValue] = [
-      {"id": module.id, "schema": module.graphql_schema}
-      for module in sorted(self._modules.values(), key=lambda item: item.id)
-    ]
+    events: dict[str, JsonValue] = {
+      listener.event.id: listener.event.hash for listener in self._listeners
+    }
+    work: dict[str, JsonValue] = {
+      name: queue.hash for name, (queue, _) in sorted(self._work.items())
+    }
+    declared: dict[str, JsonValue] = {
+      kind: dict(values) for kind, values in sorted(self._declared.items())
+    }
     metadata: dict[str, JsonValue] = {
       "version": self.version,
       "requests": requests,
       "events": events,
       "work": work,
-      "modules": modules,
+      DECLARATIONS_KEY: declared,
     }
+    for extension in self._extensions:
+      for key, value in extension.metadata().items():
+        current = metadata.get(key)
+        if isinstance(current, list) and isinstance(value, list):
+          merged: list[JsonValue] = [*sorted({*map(str, current), *map(str, value)})]
+          metadata[key] = merged
+        elif isinstance(current, dict) and isinstance(value, dict):
+          metadata[key] = {**current, **value}
+        else:
+          metadata[key] = value
     return metadata
 
   # Lifecycle -------------------------------------------------------------------
@@ -230,6 +278,11 @@ class Service(Component):
       )
       await consumer.start()
       self._consumers.append(consumer)
+    for extension in self._extensions:
+      await extension.start(self)
+    # Store declaration documents before advertising their hashes.
+    for kind, documents in self._declarations.items():
+      self._declared[kind] = await Declarations(runtime, kind).store(documents)
     self._presence = await runtime.register(self, metadata=self.metadata())
     self._report_conflicts()
 
@@ -251,6 +304,11 @@ class Service(Component):
         logger.debug("Subscription drain failed", exc_info=True)
     consumers, self._consumers = self._consumers, []
     await asyncio.gather(*(consumer.stop() for consumer in consumers))
+    for extension in reversed(self._extensions):
+      try:
+        await extension.stop()
+      except Exception:
+        logger.exception("Stopping an extension of %s failed", self.name)
 
   def _report_conflicts(self) -> None:
     mine = set(self._requests)
@@ -302,16 +360,18 @@ class Service(Component):
     schema: RequestSchema[InputT, OutputT],
     handler: RequestHandler[InputT, OutputT],
   ) -> bytes:
+    # Compatibility is decided by validation, not by hash equality, so a
+    # rolling update that adds an optional field keeps working both ways.
     expected = (message.headers or {}).get(SCHEMA_HEADER)
-    if expected is not None and expected != schema.hash:
-      raise ServiceError(
-        "incompatible_schema",
-        f"Caller and handler disagree on request {schema.id!r}.",
-        detail={"caller": expected, "handler": schema.hash},
-      )
     try:
       payload = schema.decode_input_json(message.data)
     except ValidationError as exc:
+      if expected is not None and expected != schema.hash:
+        raise ServiceError(
+          "incompatible_schema",
+          f"Caller and handler versions of {schema.id!r} are incompatible.",
+          detail={"caller": expected, "handler": schema.hash, "errors": _errors(exc)},
+        ) from exc
       raise ServiceError(
         "invalid_input",
         f"Input does not match request {schema.id!r}.",
@@ -334,6 +394,20 @@ class Service(Component):
       ) from exc
 
   async def _dispatch_event(self, message: Msg) -> None:
+    if not self.ordered_by_guild:
+      await self._run_listeners(message)
+      return
+    # In-order per guild within this replica: handlers for one guild never overlap.
+    guild = _guild_of(message.subject)
+    lock = self._guild_locks.setdefault(guild, asyncio.Lock())
+    try:
+      async with lock:
+        await self._run_listeners(message)
+    finally:
+      if not lock.locked() and not lock._waiters:  # pyright: ignore[reportPrivateUsage]
+        self._guild_locks.pop(guild, None)
+
+  async def _run_listeners(self, message: Msg) -> None:
     matching = [
       listener
       for listener in self._listeners
@@ -343,9 +417,13 @@ class Service(Component):
       # A newer replica updated the shared consumer; let it take this event.
       raise Retry(1.0)
     guild = _guild_of(message.subject)
+    sequence = message.metadata.sequence.stream if message.metadata.sequence else 0
+    done = self._succeeded.get(sequence, set())
     decoded: dict[str, Any] = {}
-    runs: list[tuple[_Listener, Awaitable[None]]] = []
-    for listener in matching:
+    runs: list[tuple[int, _Listener, Awaitable[None]]] = []
+    for index, listener in enumerate(self._listeners):
+      if listener not in matching or index in done:
+        continue
       if listener.guild_id is not None and guild != listener.guild_id:
         continue
       event = listener.event
@@ -353,18 +431,18 @@ class Service(Component):
         try:
           decoded[event.id] = event.decode_json(message.data)
         except ValidationError as exc:
-          logger.error("Event %s does not match its schema: %s", event.id, exc)
-          raise Reject from exc
+          self._undecodable("events", event.id, event.hash, exc)
       payload = decoded[event.id]
       if listener.when is not None and not listener.when(payload):
         continue
-      runs.append((listener, listener.handler(payload)))
-    results = await asyncio.gather(*(run for _, run in runs), return_exceptions=True)
-    failures = [
-      (listener, result)
-      for (listener, _), result in zip(runs, results)
-      if isinstance(result, BaseException)
-    ]
+      runs.append((index, listener, listener.handler(payload)))
+    results = await asyncio.gather(*(run for *_, run in runs), return_exceptions=True)
+    failures: list[tuple[_Listener, BaseException]] = []
+    for (index, listener, _), result in zip(runs, results):
+      if isinstance(result, BaseException):
+        failures.append((listener, result))
+      else:
+        done.add(index)
     for listener, error in failures:
       logger.error(
         "Handler %s failed for event %s",
@@ -373,7 +451,29 @@ class Service(Component):
         exc_info=error,
       )
     if failures:
+      # Remember who succeeded so a redelivery to this replica re-runs only failures.
+      self._succeeded[sequence] = done
       raise Retry(min(2.0 ** ((message.metadata.num_delivered or 1) - 1), 60.0))
+    self._succeeded.pop(sequence, None)
+
+  def _undecodable(
+    self, kind: str, key: str, mine: str, error: ValidationError
+  ) -> Never:
+    """Retry while replicas run other schema versions; reject once they agree."""
+    versions: set[str] = set()
+    for entry in self.runtime.directory.entries(self.kind):
+      declared = entry.metadata.get(kind)
+      if entry.name == self.name and isinstance(declared, dict):
+        versions.add(str(declared.get(key)))
+    if versions - {mine}:
+      logger.warning(
+        "%s %s does not match this replica's schema; leaving it for another version",
+        kind,
+        key,
+      )
+      raise Retry(1.0) from error
+    logger.error("%s %s does not match its schema: %s", kind, key, error)
+    raise Reject from error
 
   def _work_callback[T](
     self, queue: WorkQueue[T], handler: EventHandler[T]
@@ -382,8 +482,7 @@ class Service(Component):
       try:
         job = queue.decode_json(message.data)
       except ValidationError as exc:
-        logger.error("Job in %s does not match its schema: %s", queue.name, exc)
-        raise Reject from exc
+        self._undecodable("work", queue.name, queue.hash, exc)
       await handler(job)
 
     return callback

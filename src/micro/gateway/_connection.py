@@ -1,9 +1,10 @@
 import asyncio
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid7
 
-import hikari
+if TYPE_CHECKING:
+  import hikari
 
 from ._control import GuildMembersRequest, PresenceUpdate, VoiceStateUpdate
 from ._events import ConnectionEventKind
@@ -58,6 +59,8 @@ class HikariShard:
     self._lock = asyncio.Lock()
 
   async def start(self) -> None:
+    import hikari
+
     async with self._lock:
       if self.bot is not None:
         return
@@ -94,6 +97,8 @@ class HikariShard:
       self.connection_id = None
 
   async def update_presence(self, update: PresenceUpdate) -> None:
+    import hikari
+
     activity = (
       hikari.Activity(
         name=update.activity.name,
@@ -155,6 +160,8 @@ class HikariShard:
     await self.host.on_connection(self, ConnectionEventKind.DISCONNECTED)
 
   async def _request_initial_members(self, payload: Mapping[str, Any]) -> None:
+    import hikari
+
     if not self.host.intents & hikari.Intents.GUILD_MEMBERS or self.bot is None:
       return
     guilds = payload.get("guilds")

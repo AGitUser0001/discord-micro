@@ -6,9 +6,8 @@ import os
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import hikari
 from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
 from pydantic import BaseModel, ValidationError
@@ -32,6 +31,9 @@ from ._events import (
   ConnectionEvent,
   ConnectionEventKind,
 )
+
+if TYPE_CHECKING:
+  import hikari
 
 logger = logging.getLogger("micro")
 
@@ -107,6 +109,8 @@ class GatewayWorker(Component):
     name: str = "gateway",
     session_factory: SessionFactory = HikariShard,
   ) -> None:
+    import hikari
+
     token = token if token is not None else os.environ.get("DISCORD_TOKEN")
     if not token:
       raise ValueError("A Discord token is required (argument or DISCORD_TOKEN).")
@@ -530,11 +534,9 @@ class GatewayWorker(Component):
     }
     if session.connection_id is not None:
       headers[CONNECTION_HEADER] = session.connection_id
+    body = json.dumps(payload, separators=(",", ":")).encode()
     await self.runtime.jetstream.publish(
-      subject,
-      json.dumps(payload, separators=(",", ":")).encode(),
-      stream=subjects.EVENTS_STREAM,
-      headers=headers,
+      subject, body, stream=subjects.EVENTS_STREAM, headers=headers
     )
 
   async def on_connection(

@@ -1,8 +1,11 @@
 # Example bot
 
 `app.py` defines a few components: a `greeter` request service, an `audit`
-service (event listener plus a durable work queue), a Discord `bot` service
-answering `!ping` and `!greet NAME`, and a `ticker` background component.
+service (event listener plus a durable work queue), a Discord `bot` service with
+`Commands`, `Components`, and `Modals` templates (`/greet` with autocomplete,
+`/poll start` with vote buttons, `/feedback` with a modal, a "Say hi" user
+command, and `!ping`), and a `ticker` background component. The configs also run
+the builtin `InteractionRouter` and `CommandSync` templates.
 
 ## One process
 
@@ -29,6 +32,7 @@ uv run micro ps
 uv run micro scale greeter 3
 uv run micro roll bot
 uv run micro gateway shards 2
+uv run micro commands list
 ```
 
 Same code, different config. Two Gateway workers split the shards, two HTTP

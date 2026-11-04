@@ -43,7 +43,7 @@ def test_runtime_hosts_components_and_publishes_presence(nats_url: str) -> None:
         await runtime.close()
         await observer.directory.wait_for(lambda d: not d.entries("probe"))
     assert probe.events == ["start", "drain", "close"]
-    assert probe.state is ComponentState.CLOSED
+    assert probe.phase is ComponentState.CLOSED
 
   asyncio.run(exercise())
 

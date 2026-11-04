@@ -108,6 +108,10 @@ class Runtime:
   async def start(self) -> None:
     if self._started:
       return
+    if any(server.startswith(("ws://", "wss://")) for server in self.servers):
+      from micro._slim import restore_websocket_transport
+
+      restore_websocket_transport()
     self._nats = await nats.connect(
       list(self.servers), name=self.name, **self._connect_options
     )
@@ -116,6 +120,7 @@ class Runtime:
       subjects.EVENTS_STREAM,
       subjects.EVENT_STREAM_SUBJECTS,
       retention=RetentionPolicy.INTEREST,
+      retire=subjects.RETIRED_EVENT_STREAM_SUBJECTS,
     )
     presence = await self.table(
       subjects.PRESENCE_BUCKET, Registration, ttl_markers=True
@@ -221,24 +226,39 @@ class Runtime:
     stream_subjects: Sequence[str],
     *,
     retention: RetentionPolicy,
+    retire: Sequence[str] = (),
+    allow_msg_ttl: bool = False,
+    duplicate_window: float | None = None,
   ) -> None:
+    """Create a stream, or bring an existing one up to date without losing data.
+
+    Missing subjects are added and `retire`d subjects removed, so a rolling
+    upgrade of Micro can move subjects between streams.
+    """
     config = StreamConfig(
       name=name,
       subjects=list(stream_subjects),
       retention=retention,
       storage=self.storage,
       num_replicas=self.replicas,
+      allow_msg_ttl=allow_msg_ttl or None,
+      duplicate_window=duplicate_window or 0,
     )
     try:
       await self.jetstream.add_stream(config)
+      return
     except BadRequestError:
-      # A stream with this name exists with other settings; keep it running and
-      # widen its subjects if this version needs more.
-      info = await self.jetstream.stream_info(name)
-      existing = set(info.config.subjects or ())
-      if not set(stream_subjects) <= existing:
-        info.config.subjects = sorted(existing | set(stream_subjects))
-        await self.jetstream.update_stream(info.config)
+      pass
+    info = await self.jetstream.stream_info(name)
+    existing = set(info.config.subjects or ())
+    wanted = (existing | set(stream_subjects)) - set(retire)
+    changed = wanted != existing
+    if allow_msg_ttl and not info.config.allow_msg_ttl:
+      info.config.allow_msg_ttl = True
+      changed = True
+    if changed:
+      info.config.subjects = sorted(wanted)
+      await self.jetstream.update_stream(info.config)
 
   async def table[T](
     self,
@@ -308,7 +328,7 @@ class Runtime:
     await presence.stop()
 
   def component_states(self) -> dict[str, ComponentState]:
-    return {component.name: component.state for component in self._components}
+    return {component.name: component.phase for component in self._components}
 
 
 def id_of(value: object) -> int:

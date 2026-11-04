@@ -45,6 +45,13 @@ class WorkQueue[T]:
       self.stream, (self.subject,), retention=RetentionPolicy.WORK_QUEUE
     )
 
+  @property
+  def hash(self) -> str:
+    """Identifies the job schema; replicas compare it during rolling updates."""
+    from micro.coordination import digest
+
+    return digest(self._adapter.json_schema(mode="validation"))  # type: ignore[arg-type]
+
   def encode_json(self, value: T) -> bytes:
     return self._adapter.dump_json(self._adapter.validate_python(value))
 

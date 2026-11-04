@@ -1,0 +1,23 @@
+# Generated from Discord's API specification. Do not edit directly.
+
+from enum import IntEnum, StrEnum
+from typing import Annotated, Any, Union
+from micro.discord._model import DiscordModel
+from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
+from typing_extensions import TypeAliasType
+
+from ._snowflake_type import SnowflakeType
+from ._team_member_roles import TeamMemberRoles
+from ._team_membership_states import TeamMembershipStates
+from ._user_response import UserResponse
+
+
+class TeamMemberResponse(DiscordModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    user: UserResponse
+    team_id: SnowflakeType
+    membership_state: TeamMembershipStates
+    role: TeamMemberRoles
+    permissions: list[str]

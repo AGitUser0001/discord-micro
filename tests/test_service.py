@@ -1,5 +1,6 @@
 import asyncio
 from collections import Counter
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict
@@ -192,8 +193,9 @@ def test_failing_handler_is_isolated_and_event_redelivered(nats_url: str) -> Non
       await runtime.add(service)
       await service.client.emit(NOTED, Note(text="x"))
       await eventually(lambda: attempts["flaky"] == 2)
-      # At-least-once: the whole event is redelivered, so steady ran twice too.
-      assert attempts["steady"] == 2
+      await asyncio.sleep(0.2)
+      # Redelivered to the same replica, only the failed handler runs again.
+      assert attempts["steady"] == 1
 
   asyncio.run(exercise())
 
@@ -266,7 +268,7 @@ def test_presence_advertises_contracts_and_declaration_rules() -> None:
 
   metadata = service.metadata()
   assert metadata["requests"] == {"example.greet": GREET.hash}
-  assert metadata["events"] == ["example.noted"]
+  assert metadata["events"] == {"example.noted": NOTED.hash}
   with pytest.raises(DuplicateRequestHandlerError):
 
     @service.handle(GREET)
@@ -277,3 +279,40 @@ def test_presence_advertises_contracts_and_declaration_rules() -> None:
     service.listen(NOTED)(lambda note: None)  # type: ignore[arg-type]
   with pytest.raises(ValueError):
     service.listen(NOTED, guild_id=1)
+
+
+def test_ordered_services_handle_one_guild_at_a_time(nats_url: str) -> None:
+  async def exercise() -> None:
+    from micro.schemas import events as discord_events
+
+    order: list[tuple[int, str]] = []
+    active: Counter[int] = Counter()
+    overlap = False
+    service = Service("ordered", ordered_by_guild=True)
+
+    @service.listen(discord_events.TYPING_START)
+    async def typing(event: Any) -> None:
+      nonlocal overlap
+      guild = int(event.guild_id)  # type: ignore[attr-defined]
+      active[guild] += 1
+      overlap = overlap or active[guild] > 1
+      await asyncio.sleep(0.02)
+      order.append((guild, str(event.user_id)))  # type: ignore[attr-defined]
+      active[guild] -= 1
+
+    async with Runtime(nats_url) as runtime:
+      await runtime.add(service)
+      for index in range(10):
+        for guild in (1, 2):
+          body = f'{{"channel_id":"1","guild_id":"{guild}","user_id":"{index}","timestamp":1}}'
+          await runtime.jetstream.publish(
+            subjects.dispatch("TYPING_START", guild),
+            body.encode(),
+            stream=subjects.EVENTS_STREAM,
+          )
+      await eventually(lambda: len(order) == 20)
+      assert not overlap
+      for guild in (1, 2):
+        assert [user for g, user in order if g == guild] == [str(i) for i in range(10)]
+
+  asyncio.run(exercise())

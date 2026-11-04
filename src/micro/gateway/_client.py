@@ -19,7 +19,7 @@ from ._control import (
   ShardLease,
   VoiceStateUpdate,
 )
-from ._worker import ACTIVE_KEY, DESIRED_KEY, PRESENCE_KEY, WORKER_KIND
+from ._worker import ACTIVE_KEY, DESIRED_KEY, PRESENCE_KEY, WORKER_KIND, lease_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +136,20 @@ class GatewayControl:
     if active is None:
       raise RoutingError("No Gateway generation is active.")
     return (guild_id >> 22) % active.value.shard_count
+
+  async def connection_for(self, guild_id: int) -> str | None:
+    """The READY connection publishing the guild's shard, if any."""
+    active = await (await self._generations()).get(ACTIVE_KEY)
+    if active is None:
+      return None
+    shards = await self.runtime.table(
+      subjects.SHARDS_BUCKET, ShardLease, ttl_markers=True
+    )
+    shard_id = (guild_id >> 22) % active.value.shard_count
+    lease = await shards.get(lease_key(active.value.id, shard_id))
+    if lease is None or not lease.value.ready:
+      return None
+    return lease.value.connection_id
 
   async def _send(self, guild_id: int, operation: str, command: BaseModel) -> None:
     shard_id = await self.shard_for(guild_id)

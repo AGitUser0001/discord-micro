@@ -35,7 +35,7 @@ def test_gateway_event_schema_generation_is_reproducible(tmp_path: Path) -> None
     (
       sys.executable,
       "scripts/generate_events.py",
-      "src/micro/discord/models/gateway.py",
+      "micro.discord.models.gateway",
       str(generated),
     ),
     check=True,

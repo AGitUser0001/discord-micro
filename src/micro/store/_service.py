@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import JsonValue
 
+from micro.coordination import Declarations
 from micro.runtime import Runtime
 from micro.service import Client, RequestSchema, Service
 
@@ -24,9 +25,11 @@ STORE_EXECUTE = RequestSchema[GraphQLBody, dict[str, JsonValue]](
 class Store(Service):
   """An optional graph store, run as an ordinary service.
 
-  It serves the union of the graph modules that live services declare with
-  `Service.uses`, plus any passed here, and recomposes as services come and go.
-  No builtin requires it.
+  It serves the graph modules services declare with `Service.uses` (plus any
+  passed here). Modules converge: a new version is composed only when every
+  live declarer agrees on it, modules of stopped services are retained, and a
+  module set that fails to compose leaves the last good graph serving. No
+  builtin requires it.
   """
 
   def __init__(
@@ -44,6 +47,7 @@ class Store(Service):
     )
     self._static = {module.id: module for module in modules}
     self._compose_requested = asyncio.Event()
+    self._pending: dict[str, str] = {}
     self.handle(STORE_EXECUTE)(self._execute)
 
   @property
@@ -62,28 +66,27 @@ class Store(Service):
     await super().on_close()
     await self.engine.executor.close()
 
-  def declared_modules(self) -> tuple[GraphModule, ...]:
-    """The module set live services currently declare."""
+  async def declared_modules(self) -> tuple[GraphModule, ...]:
+    """The converged module set: each module at the version every live declarer
+    agrees on, the applied version during a rollout, and retained modules whose
+    services are not running right now."""
+    view = await Declarations(self.runtime, "modules").view()
     modules: dict[str, GraphModule] = dict(self._static)
-    for entry in self.runtime.directory.entries("service"):
-      declared = entry.metadata.get("modules")
-      if not isinstance(declared, list):
-        continue
-      for item in declared:
-        module = GraphModule.model_validate(item)
-        existing = modules.get(module.id)
-        if existing is not None and existing.graphql_schema != module.graphql_schema:
-          raise ValueError(
-            f"Services declare different schemas for graph module {module.id!r}."
-          )
-        modules[module.id] = module
+    for key, declared in view.items():
+      modules[key] = GraphModule.model_validate(declared.document)
+    self._pending = {key: declared.hash for key, declared in view.items()}
     return tuple(modules.values())
 
   async def _compose(self) -> None:
     try:
-      await self.engine.apply_modules(self.declared_modules())
+      modules = await self.declared_modules()
+      await self.engine.apply_modules(modules)
     except Exception:
-      logger.exception("Store could not compose the declared graph modules")
+      logger.exception("Store keeps its last good graph; the new module set failed")
+      return
+    declarations = Declarations(self.runtime, "modules")
+    for key, value in self._pending.items():
+      await declarations.mark_applied(key, value)
 
   async def _compose_loop(self) -> None:
     while True:

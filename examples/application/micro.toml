@@ -7,6 +7,8 @@ components = [
   "micro.gateway:GatewayWorker",
   "micro.discord:DiscordHTTPWorker",
   "micro.http:HTTPBridge",
+  "micro.discord.interactions:InteractionRouter",
+  "micro.discord.interactions:CommandSync",
   "app:greeter",
   "app:audit",
   "app:bot",

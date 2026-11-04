@@ -60,6 +60,7 @@ class StreamConsumer:
     ack_wait: float = 30.0,
     deliver_new: bool = True,
     backoff: Callable[[int], float] = default_backoff,
+    ack_first: bool = False,
   ) -> None:
     if concurrency <= 0:
       raise ValueError("concurrency must be positive.")
@@ -75,6 +76,7 @@ class StreamConsumer:
     self._ack_wait = ack_wait
     self._deliver_new = deliver_new
     self._backoff = backoff
+    self._ack_first = ack_first
     self._loop: asyncio.Task[None] | None = None
     self._handlers: set[asyncio.Task[None]] = set()
 
@@ -142,6 +144,9 @@ class StreamConsumer:
         await subscription.unsubscribe()
 
   async def _handle(self, message: Msg) -> None:
+    if self._ack_first:
+      await self._handle_acknowledged(message)
+      return
     keepalive = asyncio.create_task(self._keepalive(message))
     try:
       async with self._component.tracked():
@@ -166,6 +171,17 @@ class StreamConsumer:
       await _settle(message.ack())
     finally:
       keepalive.cancel()
+      self._slots.release()
+
+  async def _handle_acknowledged(self, message: Msg) -> None:
+    """At-most-once: acknowledge first, so a failure is never redelivered."""
+    try:
+      await _settle(message.ack())
+      async with self._component.tracked():
+        await self._handler(message)
+    except Exception:
+      logger.exception("Handler for %s in %s failed", message.subject, self.durable)
+    finally:
       self._slots.release()
 
   async def _keepalive(self, message: Msg) -> None:

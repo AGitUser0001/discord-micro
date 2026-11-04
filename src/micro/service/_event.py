@@ -31,13 +31,26 @@ class EventSchema[T]:
         "Event schema IDs must contain only letters, numbers, dots, underscores, "
         "and hyphens, and must start and end with a letter or number."
       ) from exc
-    adapter = TypeAdapter[T](self.payload)
-    object.__setattr__(self, "_adapter", adapter)
-    object.__setattr__(
-      self,
-      "_payload_schema",
-      cast(dict[str, JsonValue], adapter.json_schema(mode="validation")),
-    )
+
+  def _adapter_(self) -> TypeAdapter[T]:
+    # Built on first use: creating validators for every Discord event up front
+    # costs seconds and megabytes no listener asked for.
+    try:
+      return self._adapter
+    except AttributeError:
+      adapter = TypeAdapter[T](self.payload)
+      object.__setattr__(self, "_adapter", adapter)
+      return adapter
+
+  def _schema(self) -> dict[str, JsonValue]:
+    try:
+      return self._payload_schema
+    except AttributeError:
+      schema = cast(
+        dict[str, JsonValue], self._adapter_().json_schema(mode="validation")
+      )
+      object.__setattr__(self, "_payload_schema", schema)
+      return schema
 
   def _validate_id(self) -> None:
     subjects.dotted(self.id)
@@ -57,18 +70,18 @@ class EventSchema[T]:
     return subject == subjects.event(self.id)
 
   def decode_json(self, value: bytes) -> T:
-    return self._adapter.validate_json(value)
+    return self._adapter_().validate_json(value)
 
   def encode_json(self, value: T) -> bytes:
-    validated = self._adapter.validate_python(value)
-    return self._adapter.dump_json(validated)
+    adapter = self._adapter_()
+    return adapter.dump_json(adapter.validate_python(value))
 
   @property
   def hash(self) -> str:
-    return schema_hash(self._payload_schema)
+    return schema_hash(self._schema())
 
   def document(self) -> dict[str, JsonValue]:
-    return {"id": self.id, "payload": deepcopy(self._payload_schema)}
+    return {"id": self.id, "payload": deepcopy(self._schema())}
 
 
 @dataclass(frozen=True, slots=True)

@@ -125,24 +125,26 @@ uv run --project "$repository" python \
   "$normalized_http_schema" "$http_models" "$http_requests" "$http_operations"
 
 models="$repository/src/micro/discord/models"
+uv run --project "$repository" ruff check --fix "$http_requests" "$http_operations"
+uv run --project "$repository" ruff format "$http_requests" "$http_operations"
+# Split each generated module into small modules behind a lazy index, so a
+# process imports only the models it uses.
 mkdir -p "$models"
-install -m 0644 "$gateway_models" "$models/gateway.py"
-install -m 0644 "$http_models" "$models/http.py"
-install -m 0644 "$http_requests" "$models/http_requests.py"
+uv run --project "$repository" python "$repository/scripts/split_models.py" \
+  "$gateway_models" "$models/gateway" --package micro.discord.models.gateway
+uv run --project "$repository" python "$repository/scripts/split_models.py" \
+  "$http_models" "$models/http" --package micro.discord.models.http
+uv run --project "$repository" python "$repository/scripts/split_models.py" \
+  "$http_requests" "$models/http_requests" --package micro.discord.models.http_requests \
+  --rewrite "from . import http=>from micro.discord.models import http"
 install -m 0644 "$http_operations" \
-  "$repository/src/micro/discord/http_operations.py"
-uv run --project "$repository" ruff check --fix \
-  "$models/http_requests.py" \
-  "$repository/src/micro/discord/http_operations.py"
-uv run --project "$repository" ruff format \
-  "$models/http_requests.py" \
   "$repository/src/micro/discord/http_operations.py"
 uv run --project "$repository" python "$repository/scripts/generate_events.py" \
   "$gateway_models" "$event_schemas"
 
 printf 'Generated %s, %s, %s, %s, and %s\n' \
-  "$models/gateway.py" \
-  "$models/http.py" \
-  "$models/http_requests.py" \
+  "$models/gateway/" \
+  "$models/http/" \
+  "$models/http_requests/" \
   "$repository/src/micro/discord/http_operations.py" \
   "$event_schemas"

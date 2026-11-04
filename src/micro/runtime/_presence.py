@@ -16,7 +16,7 @@ logger = logging.getLogger("micro")
 class Registration(BaseModel):
   """What one live component advertises to the rest of the deployment."""
 
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   kind: str = Field(min_length=1)
   name: str = Field(min_length=1)

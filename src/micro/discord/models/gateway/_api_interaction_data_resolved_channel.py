@@ -1,0 +1,20 @@
+# Generated from Discord's API specification. Do not edit directly.
+
+from enum import IntEnum, StrEnum
+from typing import Annotated, Any, Literal
+from pydantic import BaseModel, ConfigDict, Field, RootModel
+
+from ._api_interaction_data_resolved_channel_base_guild_text_dm_guild_voice_group_dm_guild_category_guild_announcement_guild_stage_voice_guild_directory_guild_forum_guild_media import APIInteractionDataResolvedChannelBaseGuildTextDMGuildVoiceGroupDMGuildCategoryGuildAnnouncementGuildStageVoiceGuildDirectoryGuildForumGuildMedia
+from ._api_interaction_data_resolved_channel_base_thread_channel_type_pick_api_thread_channel_thread_channel_typeparent_idthread_metadata import APIInteractionDataResolvedChannelBaseThreadChannelTypePickAPIThreadChannelThreadChannelTypeparentIdthreadMetadata
+
+
+class APIInteractionDataResolvedChannel(
+    RootModel[
+        APIInteractionDataResolvedChannelBaseGuildTextDMGuildVoiceGroupDMGuildCategoryGuildAnnouncementGuildStageVoiceGuildDirectoryGuildForumGuildMedia
+        | APIInteractionDataResolvedChannelBaseThreadChannelTypePickAPIThreadChannelThreadChannelTypeparentIdthreadMetadata
+    ]
+):
+    root: (
+        APIInteractionDataResolvedChannelBaseGuildTextDMGuildVoiceGroupDMGuildCategoryGuildAnnouncementGuildStageVoiceGuildDirectoryGuildForumGuildMedia
+        | APIInteractionDataResolvedChannelBaseThreadChannelTypePickAPIThreadChannelThreadChannelTypeparentIdthreadMetadata
+    )

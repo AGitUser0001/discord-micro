@@ -61,6 +61,23 @@ def _parser() -> argparse.ArgumentParser:
       command.add_argument("replicas", type=int)
     command.set_defaults(handler=_control, operation=name)
 
+  slash = commands.add_parser(
+    "commands", help="inspect and sync Discord application commands"
+  )
+  slash.add_argument("--config", default=DEFAULT_CONFIG)
+  slash_actions = slash.add_subparsers(required=True, metavar="action")
+  slash_actions.add_parser(
+    "list", help="commands, their state, and live versions"
+  ).set_defaults(handler=_commands, action="list")
+  slash_actions.add_parser("sync", help="sync changed scopes now").set_defaults(
+    handler=_commands, action="sync"
+  )
+  forget = slash_actions.add_parser(
+    "forget", help="drop a retired service's commands, then sync"
+  )
+  forget.add_argument("service")
+  forget.set_defaults(handler=_commands, action="forget")
+
   gateway = commands.add_parser("gateway", help="operate the Discord Gateway")
   gateway.add_argument("--config", default=DEFAULT_CONFIG)
   actions = gateway.add_subparsers(required=True, metavar="action")
@@ -176,4 +193,42 @@ async def _gateway(args: argparse.Namespace) -> int:
     else:
       activity = ActivityUpdate(name=args.activity) if args.activity else None
       await control.update_presence(status=args.status, activity=activity)
+  return 0
+
+
+async def _commands(args: argparse.Namespace) -> int:
+  from micro.coordination import Declarations
+  from micro.discord import DiscordHTTPClient
+  from micro.discord.interactions import SYNC_LOCK, sync_commands
+
+  _, servers = _deployment(args.config)
+  async with Runtime(servers, name="micro.cli") as runtime:
+    declarations = Declarations(runtime, "commands")
+    if args.action == "list":
+      view = await declarations.view()
+      print(
+        json.dumps(
+          {
+            key: {
+              "state": declared.state.value,
+              "applied": declared.hash,
+              "live_versions": sorted(declared.live_hashes),
+            }
+            for key, declared in view.items()
+          },
+          indent=2,
+        )
+      )
+      return 0
+    if args.action == "forget" and not await declarations.forget(args.command):
+      print(f"No applied command {args.command!r}.")
+      return 1
+    http = DiscordHTTPClient(runtime)
+    application = await http.call("get_my_application")
+    locks = await runtime.locks()
+    async with locks.hold(SYNC_LOCK, ttl=30):
+      changed = await sync_commands(runtime, http, str(application["id"]))
+    print(
+      "Synced changed command scopes." if changed else "Commands were already in sync."
+    )
   return 0

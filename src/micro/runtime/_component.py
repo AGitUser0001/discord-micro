@@ -35,7 +35,7 @@ class Component:
     if not name:
       raise ValueError("Component names cannot be empty.")
     self.name = name
-    self.state = ComponentState.CREATED
+    self.phase = ComponentState.CREATED
     self._runtime: Runtime | None = None
     self._tasks: set[asyncio.Task[Any]] = set()
     self._in_flight = 0
@@ -50,12 +50,12 @@ class Component:
 
   @property
   def accepting(self) -> bool:
-    return self.state is ComponentState.RUNNING
+    return self.phase is ComponentState.RUNNING
 
   @property
   def active(self) -> bool:
     """Whether work sources should keep handing out new work."""
-    return self.state in (ComponentState.STARTING, ComponentState.RUNNING)
+    return self.phase in (ComponentState.STARTING, ComponentState.RUNNING)
 
   @property
   def ready(self) -> bool:
@@ -63,29 +63,29 @@ class Component:
     return self.accepting
 
   async def start(self, runtime: Runtime) -> None:
-    if self.state is not ComponentState.CREATED:
+    if self.phase is not ComponentState.CREATED:
       raise RuntimeError(f"Component {self.name!r} cannot start twice.")
     self._runtime = runtime
-    self.state = ComponentState.STARTING
+    self.phase = ComponentState.STARTING
     try:
       await self.on_start()
     except BaseException:
-      self.state = ComponentState.CLOSED
+      self.phase = ComponentState.CLOSED
       await self._cancel_tasks()
       raise
-    self.state = ComponentState.RUNNING
+    self.phase = ComponentState.RUNNING
 
   async def drain(self) -> None:
-    if self.state is not ComponentState.RUNNING:
+    if self.phase is not ComponentState.RUNNING:
       return
-    self.state = ComponentState.DRAINING
+    self.phase = ComponentState.DRAINING
     await self.on_drain()
     await self._idle.wait()
 
   async def close(self) -> None:
-    if self.state is ComponentState.CLOSED:
+    if self.phase is ComponentState.CLOSED:
       return
-    self.state = ComponentState.CLOSED
+    self.phase = ComponentState.CLOSED
     try:
       await self.on_close()
     finally:
@@ -116,7 +116,7 @@ class Component:
     Work already received while draining still runs; sources stop handing out
     new work when `accepting` turns false.
     """
-    if self.state in (ComponentState.CREATED, ComponentState.CLOSED):
+    if self.phase in (ComponentState.CREATED, ComponentState.CLOSED):
       raise DrainingError(f"Component {self.name!r} is not accepting work.")
     self._in_flight += 1
     self._idle.clear()

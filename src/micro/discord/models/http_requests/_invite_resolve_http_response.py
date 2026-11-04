@@ -1,0 +1,14 @@
+# Generated from Discord's API specification. Do not edit directly.
+
+from pydantic import RootModel
+from micro.discord._model import DiscordModel
+from micro.discord.models import http
+
+from ._invite_resolve_http_response_body import InviteResolveHTTPResponseBody
+
+
+class InviteResolveHTTPResponse(DiscordModel):
+  status: int
+  headers: tuple[tuple[str, str], ...]
+  body: InviteResolveHTTPResponseBody | None = None
+  raw_body: bytes

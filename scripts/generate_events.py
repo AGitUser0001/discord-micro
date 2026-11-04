@@ -1,4 +1,8 @@
-"""Generate builtin EventSchema objects from Discord dispatch models."""
+"""Generate the lazily created builtin dispatch schemas.
+
+`source` is a generated gateway model file, or the dotted name of the split
+model package (for example `micro.discord.models.gateway`).
+"""
 
 import argparse
 import importlib.util
@@ -8,28 +12,40 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, get_args
 
-_HEADER = '''"""Generated Discord Gateway event schemas. Do not edit by hand."""
+_HEADER = '''"""Generated Discord Gateway event schemas. Do not edit by hand.
 
-from micro.discord.models import gateway
+Each schema, and the payload model it validates, is created on first use.
+"""
+
+from typing import TYPE_CHECKING, Any
+
 from micro.service import DispatchSchema
 
-'''
+if TYPE_CHECKING:
+  from micro.discord.models import gateway
 
-_LONG_EVENT = '''{event} = DispatchSchema[
-  {payload}
-](
-  id={event!r},
-  payload={payload},
-)
-'''
-
-_SHORT_EVENT = '''{event} = DispatchSchema[{payload}](
-  id={event!r},
-  payload={payload},
-)
 '''
 
 _FOOTER = '''
+
+def __getattr__(name: str) -> Any:
+  try:
+    payload = _PAYLOADS[name]
+  except KeyError:
+    raise AttributeError(f"module {{__name__!r}} has no attribute {{name!r}}") from None
+  from micro.discord.models import gateway
+
+  schema = DispatchSchema[Any](
+    id=name, payload=None if payload is None else getattr(gateway, payload)
+  )
+  globals()[name] = schema
+  return schema
+
+
+def __dir__() -> list[str]:
+  return sorted(_PAYLOADS)
+
+
 __all__ = (
 {exports}
 )
@@ -43,6 +59,8 @@ class Dispatch:
 
 
 def _load(source: Path) -> ModuleType:
+  if not source.exists():
+    return importlib.import_module(str(source))
   name = "_micro_generated_gateway_models"
   specification = importlib.util.spec_from_file_location(name, source)
   if specification is None or specification.loader is None:
@@ -80,17 +98,27 @@ def _dispatches(source: Path) -> tuple[Dispatch, ...]:
 
 def generate(source: Path, output: Path) -> None:
   dispatches = _dispatches(source)
-  events = "\n".join(
-    (
-      _SHORT_EVENT
-      if len(f"{item.event} = DispatchSchema[{item.payload}](") <= 88
-      else _LONG_EVENT
-    ).format(event=item.event, payload=item.payload)
+  annotations = "\n".join(
+    f"  {item.event}: DispatchSchema[{item.payload}]" for item in dispatches
+  )
+  payloads = "\n".join(
+    f"  {item.event!r}: "
+    + (
+      "None" if item.payload == "None" else repr(item.payload.removeprefix("gateway."))
+    )
+    + ","
     for item in dispatches
   )
   exports = "\n".join(f"  {item.event!r}," for item in dispatches)
   output.parent.mkdir(parents=True, exist_ok=True)
-  output.write_text(_HEADER + events + _FOOTER.format(exports=exports))
+  output.write_text(
+    _HEADER
+    + annotations
+    + "\n\n_PAYLOADS: dict[str, str | None] = {\n"
+    + payloads
+    + "\n}\n"
+    + _FOOTER.format(exports=exports)
+  )
 
 
 def main() -> None:

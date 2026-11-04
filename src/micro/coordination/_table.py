@@ -121,8 +121,9 @@ class Table[T]:
     except KeyWrongLastSequenceError:
       return False
 
-  async def items(self) -> dict[str, Versioned[T]]:
-    watcher = await self._store.watchall()
+  async def items(self, keys: str = ">") -> dict[str, Versioned[T]]:
+    """Current values of keys matching `keys` (NATS wildcards allowed)."""
+    watcher = await self._store.watch(keys)
     items: dict[str, Versioned[T]] = {}
     try:
       async for entry in watcher:

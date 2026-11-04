@@ -1,7 +1,7 @@
 > **Superseded.** This is the first implementation's design (overseer-centered).
 > The current architecture, its decisions, and progress are in
-> [docs/plan.md](docs/plan.md); the wire contracts are in
-> [docs/operations.md](docs/operations.md).
+> [docs/design.rst](docs/design.rst) and [docs/index.rst](docs/index.rst); the wire contracts are in
+> [docs/reference.rst](docs/reference.rst).
 
 # Micro
 

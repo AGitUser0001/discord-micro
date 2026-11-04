@@ -6,10 +6,9 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic, time
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import quote, urlencode
 
-import httpx2
 from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
 from nats.errors import NoRespondersError
@@ -18,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from pydantic_core import from_json, to_json
 
 from micro import subjects
-from micro.errors import RemoteError, RequestTimeoutError, RoutingError
+from micro.errors import MicroError, RemoteError, RequestTimeoutError, RoutingError
 from micro.runtime import Component, Presence, Registration, Runtime
 
 from .http_operations import (
@@ -27,6 +26,9 @@ from .http_operations import (
   DiscordOperationId,
   GeneratedDiscordHTTPClient,
 )
+
+if TYPE_CHECKING:
+  import httpx2  # Loaded at runtime only by the worker.
 
 logger = logging.getLogger("micro")
 
@@ -37,7 +39,7 @@ _STATUS_HEADER = "Micro-Status"
 class DiscordHTTPRequest(BaseModel):
   """One generated Discord OpenAPI operation invocation."""
 
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
   operation: DiscordOperationId
   data: dict[str, JsonValue]
   idempotency_key: str | None = None
@@ -47,7 +49,7 @@ class DiscordHTTPResponse(BaseModel):
   """Unmodified Discord response status, headers, and body."""
 
   model_config = ConfigDict(
-    extra="forbid", frozen=True, ser_json_bytes="base64", val_json_bytes="base64"
+    extra="ignore", frozen=True, ser_json_bytes="base64", val_json_bytes="base64"
   )
   status: int = Field(ge=100, le=599)
   headers: tuple[tuple[str, str], ...]
@@ -164,6 +166,8 @@ class DiscordHTTPWorker(Component):
     self.address = subjects.token(os.urandom(8).hex())
 
   async def on_start(self) -> None:
+    import httpx2
+
     self._http = httpx2.AsyncClient(
       base_url=self._api_url,
       transport=self._transport,
@@ -339,6 +343,22 @@ class DiscordHTTPWorker(Component):
     return self._http
 
 
+class DiscordAPIError(MicroError):
+  """Discord answered an operation with an error status."""
+
+  def __init__(self, operation: str, response: DiscordHTTPResponse) -> None:
+    self.operation = operation
+    self.status = response.status
+    self.response = response
+    try:
+      self.body: Any = from_json(response.body) if response.body else None
+    except ValueError:
+      self.body = response.body.decode(errors="replace")
+    super().__init__(
+      f"Discord rejected {operation} with HTTP {response.status}: {self.body}"
+    )
+
+
 class DiscordHTTPClient(GeneratedDiscordHTTPClient):
   """Generated Discord API methods, sent to the worker owning each bucket."""
 
@@ -378,6 +398,31 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
         )
       return DiscordHTTPResponse.model_validate_json(reply.data)
     raise RoutingError("Every Discord HTTP worker left while routing the request.")
+
+  async def call(
+    self,
+    operation: DiscordOperationId,
+    *,
+    path: dict[str, JsonValue] | None = None,
+    query: dict[str, JsonValue] | None = None,
+    body: JsonValue = None,
+  ) -> Any:
+    """Run an operation from plain JSON parts; return the decoded body.
+
+    Raises `DiscordAPIError` for error statuses. The worker validates the parts
+    against the generated request model.
+    """
+    data: dict[str, JsonValue] = {}
+    if path is not None:
+      data["path"] = path
+    if query is not None:
+      data["query"] = query
+    if body is not None:
+      data["body"] = body
+    response = await self.request(DiscordHTTPRequest(operation=operation, data=data))
+    if response.status >= 400:
+      raise DiscordAPIError(operation, response)
+    return from_json(response.body) if response.body else None
 
   async def _request_operation(
     self, operation: DiscordOperationId, request: BaseModel
@@ -505,6 +550,7 @@ def _is_global_rate_limit(
 
 
 __all__ = (
+  "DiscordAPIError",
   "DiscordHTTPClient",
   "DiscordHTTPRequest",
   "DiscordHTTPResponse",

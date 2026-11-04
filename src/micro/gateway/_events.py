@@ -19,7 +19,7 @@ class ConnectionEventKind(StrEnum):
 class ConnectionEvent(BaseModel):
   """A Gateway connection lifecycle transition, published for the projection."""
 
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   kind: ConnectionEventKind
   shard_id: int = Field(ge=0)

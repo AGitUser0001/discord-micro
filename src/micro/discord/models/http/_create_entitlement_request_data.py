@@ -1,0 +1,27 @@
+# Generated from Discord's API specification. Do not edit directly.
+
+from enum import IntEnum, StrEnum
+from typing import Annotated, Any, Union
+from micro.discord._model import DiscordModel
+from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
+from typing_extensions import TypeAliasType
+
+from ._entitlement_owner_types import EntitlementOwnerTypes
+from ._snowflake_type import SnowflakeType
+
+
+class CreateEntitlementRequestData(DiscordModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    sku_id: Annotated[
+        SnowflakeType, Field(description='ID of the SKU to grant the entitlement to')
+    ]
+    owner_id: Annotated[
+        SnowflakeType,
+        Field(description='ID of the guild or user to grant the entitlement to'),
+    ]
+    owner_type: Annotated[
+        EntitlementOwnerTypes,
+        Field(description='1 for a guild subscription, 2 for a user subscription'),
+    ]

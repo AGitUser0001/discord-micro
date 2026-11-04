@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class GraphModule(BaseModel):
   """A serializable contribution to a Micro graph schema."""
 
-  model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+  model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
 
   id: str = Field(min_length=1)
   graphql_schema: str = Field(alias="schema", min_length=1)

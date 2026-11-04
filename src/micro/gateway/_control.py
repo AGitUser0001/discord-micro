@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class GatewayGeneration(BaseModel):
   """One set of shard connections; a new generation rolls in beside the old one."""
 
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   id: int = Field(ge=1)
   shard_count: int = Field(ge=1, le=4096)
@@ -16,7 +16,7 @@ class GatewayGeneration(BaseModel):
 class ShardLease(BaseModel):
   """Ownership of one shard in one generation, renewed with a TTL."""
 
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   owner: str
   ready: bool = False
@@ -25,7 +25,7 @@ class ShardLease(BaseModel):
 
 
 class ActivityUpdate(BaseModel):
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   name: str = Field(min_length=1)
   type: Literal[0, 1, 2, 3, 4, 5] = 0
@@ -34,7 +34,7 @@ class ActivityUpdate(BaseModel):
 
 
 class PresenceUpdate(BaseModel):
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   status: Literal["online", "idle", "dnd", "offline"] = "online"
   idle_since: datetime | None = None
@@ -43,7 +43,7 @@ class PresenceUpdate(BaseModel):
 
 
 class GuildMembersRequest(BaseModel):
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   guild_id: int = Field(gt=0)
   include_presences: bool = False
@@ -62,7 +62,7 @@ class GuildMembersRequest(BaseModel):
 
 
 class VoiceStateUpdate(BaseModel):
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   guild_id: int = Field(gt=0)
   channel_id: int | None = Field(default=None, gt=0)

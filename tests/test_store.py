@@ -115,7 +115,7 @@ def test_engine_returns_explicit_graphql_errors() -> None:
   }
 
 
-def test_engine_is_unavailable_after_an_uncomposable_module_and_recovers() -> None:
+def test_engine_keeps_its_last_good_graph_when_a_new_module_set_fails() -> None:
   invalid = GraphModule(
     id="people",
     schema="""
@@ -124,17 +124,17 @@ def test_engine_is_unavailable_after_an_uncomposable_module_and_recovers() -> No
     """,
   )
   with EngineHarness(Executor()) as client:
+    activate(client)
     rejected = client.post(
       "/topology", json={"modules": [invalid.model_dump(by_alias=True)]}
     )
     assert rejected.status_code == 409
-    assert not client.engine.available
-    assert client.engine.composition_error is not None
-    unavailable = client.post("/graphql", json={"query": "{ _micro }"})
-    assert unavailable.json()["errors"][0]["message"] == "Store graph is unavailable."  # type: ignore[index]
-    activate(client)
     assert client.engine.available
-    assert client.engine.active_modules == ("people",)
+    assert client.engine.composition_error is not None
+    still = client.post("/graphql", json={"query": '{ person(name: "Ada") { name } }'})
+    assert still.json() == {"data": {"person": {"name": "Ada"}}}
+    activate(client)
+    assert client.engine.composition_error is None
 
 
 def test_store_service_composes_modules_declared_by_services(nats_url: str) -> None:

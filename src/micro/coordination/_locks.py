@@ -8,7 +8,7 @@ from ._table import Table
 
 
 class LockHolder(BaseModel):
-  model_config = ConfigDict(extra="forbid", frozen=True)
+  model_config = ConfigDict(extra="ignore", frozen=True)
 
   owner: str
 

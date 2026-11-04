@@ -20,6 +20,15 @@ EVENT_STREAM_SUBJECTS = (
   "micro.gateway.connection.>",
 )
 
+RETIRED_EVENT_STREAM_SUBJECTS = ("micro.discord.interaction.>",)
+"""Subjects earlier versions put in MICRO_EVENTS; removed on start."""
+
+INTERACTIONS_STREAM = "MICRO_INTERACTIONS"
+"""Work-queue stream of routed interactions, one consumer per route. Messages
+carry a TTL of Discord's response deadline, so nothing is delivered late."""
+
+INTERACTION_SUBJECTS = ("micro.discord.interaction.>",)
+
 WORK_STREAM_PREFIX = "MICRO_WORK_"
 
 PRESENCE_BUCKET = "micro_presence"
@@ -83,6 +92,11 @@ def standby(name: str, guild_id: int | str | None = None) -> str:
   return f"micro.discord.standby.{token(name)}.{_guild(guild_id)}"
 
 
+def interaction(route: str) -> str:
+  """An interaction routed to the one service owning `route` (see micro.discord.interactions)."""
+  return f"micro.discord.interaction.{route}"
+
+
 def connection(shard_id: int) -> str:
   return f"micro.gateway.connection.{shard_id}"
 
@@ -100,7 +114,7 @@ def work(queue: str) -> str:
 
 
 def work_stream(queue: str) -> str:
-  return WORK_STREAM_PREFIX + _safe(queue).upper()
+  return WORK_STREAM_PREFIX + safe_name(queue).upper()
 
 
 def supervisor(deployment: str, operation: str) -> str:
@@ -110,7 +124,7 @@ def supervisor(deployment: str, operation: str) -> str:
 
 def durable(kind: str, name: str) -> str:
   """A JetStream consumer name for one logical component."""
-  return f"{token(kind)}_{_safe(name)}"
+  return f"{token(kind)}_{safe_name(name)}"
 
 
 def _guild(guild_id: int | str | None) -> str:
@@ -122,7 +136,7 @@ def _guild(guild_id: int | str | None) -> str:
   return value
 
 
-def _safe(name: str) -> str:
+def safe_name(name: str) -> str:
   """Map a dotted name to a token, keeping it unique and readable."""
   readable = re.sub(r"[^A-Za-z0-9_-]", "_", name)
   if readable == name:
@@ -136,9 +150,12 @@ __all__ = (
   "EVENT_STREAM_SUBJECTS",
   "GATEWAY_BUCKET",
   "HTTP_GLOBAL_LIMIT",
+  "INTERACTIONS_STREAM",
+  "INTERACTION_SUBJECTS",
   "LOCKS_BUCKET",
   "PREFIX",
   "PRESENCE_BUCKET",
+  "RETIRED_EVENT_STREAM_SUBJECTS",
   "SHARDS_BUCKET",
   "STATE_BUCKET",
   "WORK_STREAM_PREFIX",
@@ -150,7 +167,9 @@ __all__ = (
   "event",
   "gateway_control",
   "http_worker",
+  "interaction",
   "request",
+  "safe_name",
   "standby",
   "supervisor",
   "token",

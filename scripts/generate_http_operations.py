@@ -211,9 +211,9 @@ def _render_operations(operations: list[dict[str, Any]]) -> str:
     id="{item["id"]}",
     method="{item["method"]}",
     path="{item["path"]}",
-    request_model=requests.{request_name},
-    response_model=requests.{response_name},
-    response_body_model=requests.{response_body_name},
+    request="{request_name}",
+    response="{response_name}",
+    response_body="{response_body_name}",
     path_fields={item["path_fields"]!r},
     query_fields={item["query_fields"]!r},
     header_fields={item["header_fields"]!r},
@@ -247,17 +247,31 @@ type DiscordOperationId = Literal[
 
 @dataclass(frozen=True, slots=True)
 class DiscordHTTPOperation:
+  """One operation; its models are imported only when first used."""
+
   id: DiscordOperationId
   method: str
   path: str
-  request_model: type[BaseModel]
-  response_model: type[BaseModel]
-  response_body_model: type[RootModel]
+  request: str
+  response: str
+  response_body: str
   path_fields: tuple[str, ...]
   query_fields: tuple[str, ...]
   header_fields: tuple[str, ...]
   content_types: tuple[str, ...]
   success_statuses: tuple[int, ...]
+
+  @property
+  def request_model(self) -> type[BaseModel]:
+    return getattr(requests, self.request)
+
+  @property
+  def response_model(self) -> type[BaseModel]:
+    return getattr(requests, self.response)
+
+  @property
+  def response_body_model(self) -> type[RootModel]:
+    return getattr(requests, self.response_body)
 
 
 HTTP_OPERATIONS: dict[DiscordOperationId, DiscordHTTPOperation] = {{

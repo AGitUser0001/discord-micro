@@ -87,7 +87,7 @@ requires = ["uv_build>=0.12.1,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.ruff]
-extend-exclude = ["src/micro/discord/models/*.py"]
+extend-exclude = ["src/micro/discord/models/**", "src/micro/schemas/events.py"]
 indent-width = 2
 
 [tool.ruff.format]

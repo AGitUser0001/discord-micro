@@ -21,5 +21,12 @@ components = ["app:bot", "app:audit"]
 [processes.ticker]
 components = ["app:ticker"]
 
+[processes.interactions]
+components = [
+  "micro.discord.interactions:InteractionRouter",
+  "micro.discord.interactions:CommandSync",
+]
+replicas = 2
+
 [processes.http]
 components = ["micro.http:HTTPBridge"]

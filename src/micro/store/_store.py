@@ -180,6 +180,7 @@ class GraphEngine:
     self._revision = 0
     self._available = True
     self._error: str | None = None
+    self._signature = ""
 
   @property
   def available(self) -> bool:
@@ -207,10 +208,13 @@ class GraphEngine:
     module_ids = tuple(module.id for module in ordered)
     if len(set(module_ids)) != len(module_ids):
       raise ValueError("Graph modules contain duplicate IDs.")
-    if module_ids == self._composition.module_ids and self._available:
+    if (
+      module_ids == self._composition.module_ids
+      and self._error is None
+      and self._signature == _signature(ordered)
+    ):
       return
     revision = self._revision + 1
-    self._available = False
     try:
       if ordered:
         from ._compiler import GraphCompiler, physical_type
@@ -241,9 +245,11 @@ class GraphEngine:
         schema = build_schema("type Query { _micro: Boolean }")
         compiler = _UnavailableCompiler()
     except Exception as exc:
+      # Keep serving the last good composition; report why the new one failed.
       self._error = str(exc)
       raise
     self._composition = _Composition(schema, compiler, module_ids)
+    self._signature = _signature(ordered)
     self._revision = revision
     self._error = None
     self._available = True
@@ -301,6 +307,10 @@ class GraphEngine:
 
   def print_schema(self) -> str:
     return print_schema(self._composition.schema)
+
+
+def _signature(modules: Sequence[GraphModule]) -> str:
+  return "\0".join(f"{module.id}\0{module.graphql_schema}" for module in modules)
 
 
 def _is_introspection(operation: OperationDefinitionNode) -> bool:
