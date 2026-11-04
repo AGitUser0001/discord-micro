@@ -19,6 +19,7 @@ component keeps working while NATS is up. Python 3.14+.
    :maxdepth: 1
 
    quickstart
+   project
    runtime
    services
    coordination

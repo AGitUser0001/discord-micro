@@ -1,0 +1,15 @@
+# DISCORD_TOKEN=... uv run micro up
+name = "${name}"
+
+# Discord plumbing: rolling your services never drops the Gateway connection.
+[processes.discord]
+components = [
+  "micro.gateway:GatewayWorker",
+  "micro.discord:DiscordHTTPWorker",
+  "micro.discord.interactions:InteractionRouter",
+  "micro.discord.interactions:CommandSync",
+]
+
+# Every service in ${package}/services (add one with `micro add service NAME`).
+[processes.app]
+components = ["${package}.services.*"]

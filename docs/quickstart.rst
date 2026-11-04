@@ -1,50 +1,22 @@
 Quickstart
 ==========
 
-Install
--------
+.. code-block:: console
+
+   uvx --from micro micro init mybot     # or: pip install micro, then micro init mybot
+   cd mybot
+   DISCORD_TOKEN=... uv run micro up
+
+``micro up`` starts a local ``nats-server`` when none is reachable (install the
+binary: ``brew install nats-server``, or the release archive on Linux).
+``/hello`` appears in Discord once ``CommandSync`` registers it.
+
+Next:
 
 .. code-block:: console
 
-   pip install "Micro[gateway,http,accel]"
+   uv run micro add service tickets       # src/mybot/services/tickets.py, loaded automatically
+   uv run micro roll app                  # deploy your changes without dropping the Gateway
 
-Extras: ``gateway`` (Hikari), ``store`` (GraphQL store), ``http`` (bridge),
-``accel`` (uvloop/winloop). ``micro up`` starts a local ``nats-server`` if none
-is reachable; install the binary (the gAIt installer puts it in ``.venv/bin``).
-
-A bot
------
-
-.. code-block:: python
-
-   # app.py
-   from micro.discord.interactions import Commands, Interaction
-   from micro.service import Service
-
-   bot = Service("hello")
-   commands = Commands(bot)
-
-   @commands.slash("hello", description="Say hello")
-   async def hello(ctx: Interaction, name: str = "world") -> None:
-     await ctx.reply(f"Hello, {name}!")
-
-.. code-block:: toml
-
-   # micro.toml
-   name = "hello"
-
-   [processes.all]
-   components = [
-     "micro.gateway:GatewayWorker",
-     "micro.discord:DiscordHTTPWorker",
-     "micro.discord.interactions:InteractionRouter",
-     "micro.discord.interactions:CommandSync",
-     "app:bot",
-   ]
-
-.. code-block:: console
-
-   DISCORD_TOKEN=... micro up
-
-``/hello`` is registered automatically. See ``examples/application`` for a
-fuller bot (autocomplete, buttons, a modal, work queues, a background task).
+See :doc:`project` for the layout and ``examples/bot`` for a fuller project
+(requests, events, work queues, buttons, a modal, a background task).

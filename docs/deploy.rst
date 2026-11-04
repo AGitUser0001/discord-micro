@@ -19,18 +19,19 @@ micro.toml
    replicas = 2
 
    [processes.app]
-   components = ["app:tickets", "app:music"]
+   components = ["mybot.services.*"]
    env = { LOG = "debug" }
 
-A component target is ``module:attribute``: a component, a list, or a
-zero-argument callable such as a class.
+Targets: ``package.*`` (every component in the package's modules) or
+``module:attribute`` (a component, a list, or a class to instantiate).
 
 CLI
 ---
 
 .. code-block:: console
 
-   micro run app:service micro.discord:DiscordHTTPWorker   # one process
+   micro init NAME | add service NAME   # see Projects
+   micro run mybot.services.* micro.discord:DiscordHTTPWorker   # one process
    micro up [micro.toml]          # whole deployment; restarts crashes, Ctrl-C drains
    micro ps                       # processes and live components
    micro scale app 4

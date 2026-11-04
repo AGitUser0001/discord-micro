@@ -36,6 +36,19 @@ def _parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(prog="micro", description=__doc__)
   commands = parser.add_subparsers(required=True, metavar="command")
 
+  init = commands.add_parser("init", help="create a project in the recommended layout")
+  init.add_argument("name", help="project name (lowercase, hyphens allowed)")
+  init.add_argument(
+    "--directory", type=Path, help="where to create it (default: ./NAME)"
+  )
+  init.set_defaults(handler=_init)
+
+  add = commands.add_parser("add", help="add to the project")
+  add_actions = add.add_subparsers(required=True, metavar="kind")
+  add_service = add_actions.add_parser("service", help="a new service module")
+  add_service.add_argument("name")
+  add_service.set_defaults(handler=_add_service)
+
   run = commands.add_parser("run", help="host components in this process")
   run.add_argument("targets", nargs="*", help="module:attribute components to host")
   run.add_argument("--config", help="deployment file to read a process group from")
@@ -93,6 +106,22 @@ def _parser() -> argparse.ArgumentParser:
   presence.add_argument("--activity")
   presence.set_defaults(handler=_gateway, action="presence")
   return parser
+
+
+async def _init(args: argparse.Namespace) -> int:
+  from micro.scaffold import init
+
+  target = init(args.name, args.directory)
+  print(f"Created {target}\n\n  cd {target}\n  DISCORD_TOKEN=... uv run micro up")
+  return 0
+
+
+async def _add_service(args: argparse.Namespace) -> int:
+  from micro.scaffold import add_service
+
+  path = add_service(args.name)
+  print(f"Created {path}; `micro up` loads it with the other services.")
+  return 0
 
 
 async def _run(args: argparse.Namespace) -> int:

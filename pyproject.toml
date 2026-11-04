@@ -76,7 +76,6 @@ dev = [
     "hikari>=2.5.0",
     "psycopg[binary,pool]>=3.3.4,<4",
     "pyright>=1.1.411",
-    "pytest>=9.1.1",
     "ruff>=0.16.1",
     "starlette>=1.4.1",
     "uvicorn>=0.52.1",

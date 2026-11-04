@@ -1,0 +1,12 @@
+"""The ${name} service."""
+
+from micro.discord.interactions import Commands, Interaction
+from micro.service import Service
+
+service = Service("${name}")
+commands = Commands(service)
+
+
+@commands.slash("${command}", description="${name}")
+async def ${function}(ctx: Interaction) -> None:
+  await ctx.reply("${name} is running.", ephemeral=True)

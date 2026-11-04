@@ -1,4 +1,5 @@
 import importlib
+import pkgutil
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
@@ -62,16 +63,23 @@ def load_config(path: str | Path) -> DeploymentConfig:
 
 
 def load_components(targets: Iterable[str]) -> list[Component]:
-  """Resolve `module:attribute` targets to components.
+  """Resolve component targets.
 
-  An attribute may be a component, a list of components, or a zero-argument
-  callable (such as a component class) returning either.
+  * `module:attribute`: a component, a list of components, or a zero-argument
+    callable (such as a component class) returning either.
+  * `package.*`: every component defined at module level in each module of the
+    package, in module-name order (the recommended layout's `app.services.*`).
   """
   components: list[Component] = []
   for target in targets:
+    if target.endswith(".*"):
+      components.extend(_package_components(target.removesuffix(".*")))
+      continue
     module_name, _, attribute = target.partition(":")
     if not module_name or not attribute:
-      raise ValueError(f"Component target {target!r} must look like module:attribute.")
+      raise ValueError(
+        f"Component target {target!r} must look like module:attribute or package.*."
+      )
     value: Any = importlib.import_module(module_name)
     for part in attribute.split("."):
       value = getattr(value, part)
@@ -83,3 +91,21 @@ def load_components(targets: Iterable[str]) -> list[Component]:
         raise TypeError(f"{target!r} did not produce a Micro component.")
       components.append(item)
   return components
+
+
+def _package_components(package_name: str) -> list[Component]:
+  package = importlib.import_module(package_name)
+  paths = getattr(package, "__path__", None)
+  if paths is None:
+    raise ValueError(f"{package_name!r} is a module, not a package.")
+  found: list[Component] = []
+  for info in sorted(pkgutil.iter_modules(paths), key=lambda item: item.name):
+    if info.name.startswith("_"):
+      continue
+    module = importlib.import_module(f"{package_name}.{info.name}")
+    found.extend(
+      value
+      for value in vars(module).values()
+      if isinstance(value, Component) and value not in found
+    )
+  return found
