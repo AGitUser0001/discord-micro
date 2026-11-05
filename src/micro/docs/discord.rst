@@ -2,8 +2,8 @@ Discord
 =======
 
 All Discord access goes through NATS: Gateway workers publish dispatches,
-HTTP workers make API calls. The token comes from ``DISCORD_TOKEN`` and is
-never stored in NATS; rotate it by rolling the processes.
+HTTP workers make API calls. The token comes from ``DISCORD_TOKEN`` (set it in
+``.env`` or the environment) and is never stored in NATS; rotate it by rolling the processes.
 
 HTTP workers and client
 -----------------------

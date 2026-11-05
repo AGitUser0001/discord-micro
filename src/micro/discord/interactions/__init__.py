@@ -5,7 +5,7 @@
 
     @commands.slash("ticket", description="Open a ticket")
     async def ticket(ctx: Interaction, topic: str) -> None:
-      await ctx.reply(f"Opened {topic}")
+      await ctx.respond(f"Opened {topic}")
 
 Run `InteractionRouter` (routes raw interactions) and `CommandSync` (registers
 converged commands) once per deployment, with any number of replicas.
@@ -19,8 +19,17 @@ from ._commands import (
   Mentionable,
   Option,
 )
-from ._context import TOKEN_LIFETIME, AlreadyResponded, Interaction, InteractionExpired
+from ._context import (
+  TOKEN_LIFETIME,
+  AlreadyResponded,
+  Interaction,
+  InteractionExpired,
+  InteractionState,
+  InvalidResponse,
+  ResponseType,
+)
 from ._custom_id import CUSTOM_ID_LIMIT, CustomId
+from ._flow import Flow, Middleware, MiddlewareError, defers
 from ._router import RAW_INTERACTION, InteractionRouter
 from ._sync import SYNC_LOCK, CommandSync, sync_commands
 from ._templates import (
@@ -50,13 +59,20 @@ __all__ = (
   "Commands",
   "Components",
   "CustomId",
+  "Flow",
   "Interaction",
   "InteractionExpired",
   "InteractionRouter",
+  "InteractionState",
   "InteractionTemplate",
+  "InvalidResponse",
   "Mentionable",
+  "Middleware",
+  "MiddlewareError",
   "Modals",
   "Option",
+  "ResponseType",
+  "defers",
   "ensure_interactions_stream",
   "route_consumer",
   "sync_commands",

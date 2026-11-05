@@ -68,7 +68,7 @@ async def add(
       "file": data,
     },
   )
-  await ctx.reply("Saved.", ephemeral=True)
+  await ctx.respond("Saved.", ephemeral=True)
 
 
 @note.command("list", description="Show recent notes")
@@ -78,4 +78,4 @@ async def list_notes(ctx: Interaction) -> None:
   )
   notes = (result.get("data") or {}).get("notes") or []
   lines = [f"**{item['author']}**: {item['text']}" for item in notes]
-  await ctx.reply("\n".join(lines) or "No notes yet.", ephemeral=True)
+  await ctx.respond("\n".join(lines) or "No notes yet.", ephemeral=True)

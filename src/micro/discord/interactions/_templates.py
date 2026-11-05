@@ -1,11 +1,11 @@
-"""Interaction templates: attach to any service, override any hook."""
+"""Interaction templates: attach to any service, shape them with middleware."""
 
 import asyncio
 import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from nats.aio.msg import Msg
 from nats.js.api import RetentionPolicy
@@ -37,6 +37,7 @@ from ._commands import (
 )
 from ._context import Interaction
 from ._custom_id import CustomId
+from ._flow import Flow, Middleware, Middlewares, flow_key
 
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
@@ -72,24 +73,16 @@ class InteractionTemplate:
 
   Each route gets one durable consumer on the interactions work queue, shared
   by every replica and version of every service handling it; all of them pull
-  from it. Override the hooks to change behavior:
-
-  * `around(ctx, call)` wraps every handler (logging, permissions, cooldowns).
-  * `on_error(ctx, error)` decides what the user sees when a handler fails.
-  * `deferral(ctx)` returns how to defer a slow handler (`None` never defers).
+  from it. Shape what happens around a handler with `use` (see `_flow`):
+  authorization, cooldowns, logging, deferral (`defers()`), unwrapping signed
+  custom IDs, or a custom error reply. Nothing is deferred automatically.
   """
 
-  defer_after: float = 1.5
-  """Seconds before an unanswered interaction is deferred (Discord allows 3)."""
-
-  def __init__(self, service: Service, *, defer_after: float | None = None) -> None:
-    if defer_after is not None:
-      if not 0 < defer_after < RESPONSE_DEADLINE:
-        raise ValueError("defer_after must be under Discord's 3-second deadline.")
-      self.defer_after = defer_after
+  def __init__(self, service: Service) -> None:
     self.service = service
     self._consumers: list[StreamConsumer] = []
     self._http: DiscordHTTPClient | None = None
+    self._middleware = Middlewares()
     service.extend(self)
 
   # Subclasses describe their routes and how to run one interaction.
@@ -101,24 +94,18 @@ class InteractionTemplate:
     """The call handling this interaction, or None if this template has none."""
     raise NotImplementedError
 
-  # Hooks.
+  @overload
+  def use(self, scope: Middleware, /) -> Middleware: ...
+  @overload
+  def use(self, scope: str, function: Middleware, /) -> Middleware: ...
+  @overload
+  def use(self, scope: str, /) -> Callable[[Middleware], Middleware]: ...
 
-  async def around(self, ctx: Interaction, call: Call) -> None:
-    await call()
-
-  async def on_error(self, ctx: Interaction, error: BaseException) -> None:
-    if ctx.expired:
-      return
-    if isinstance(error, CommandOutdated):
-      await ctx.reply(
-        "This command was just updated. Please try again.", ephemeral=True
-      )
-    else:
-      await ctx.reply("Something went wrong.", ephemeral=True)
-
-  def deferral(self, ctx: Interaction) -> bool | None:
-    """Defer slow handlers ephemerally (True), publicly (False), or never (None)."""
-    return None if ctx.type == AUTOCOMPLETE else False
+  def use(self, scope: Middleware | str, function: Middleware | None = None, /) -> Any:
+    """Add middleware around every handler: `use(fn)`, `use("scope", fn)`."""
+    if function is None:
+      return self._middleware.use(scope)  # type: ignore[arg-type]
+    return self._middleware.use(scope, function)  # type: ignore[arg-type]
 
   # ServiceExtension.
 
@@ -159,42 +146,53 @@ class InteractionTemplate:
     return self._http
 
   async def _deliver(self, message: Msg) -> None:
-    ctx = Interaction(json.loads(message.data), self.http, received=time.monotonic())
-    await self.handle(ctx)
+    payload = json.loads(message.data)
+    flow = Flow(
+      payload,
+      http=self.http,
+      key=flow_key(payload),
+      service=self.service,
+      received=time.monotonic(),
+    )
+    await self.handle(flow)
 
-  async def handle(self, ctx: Interaction) -> None:
-    """Run one interaction with deferral and error handling."""
-    call = self.resolve(ctx)
+  async def handle(self, flow: Flow) -> None:
+    """Run one interaction through the middleware and the template's handler."""
+    try:
+      await self._middleware.run(flow, self._dispatch)
+    except Exception as error:
+      logger.exception("Interaction handler failed in %s", self.service.name)
+      await report_failure(flow, error)
+      return
+    if not flow.reached and not flow.interaction.responded:
+      logger.warning(
+        "Middleware ended %r without responding; Discord will show a failure.",
+        flow.key,
+      )
+
+  async def _dispatch(self, flow: Flow) -> None:
+    call = self.resolve(flow.interaction)
     if call is None:
       logger.warning(
         "%s received an interaction it does not handle", type(self).__name__
       )
       return
-    deferral = self.deferral(ctx)
-    defer = (
-      asyncio.create_task(self._defer_later(ctx, deferral))
-      if deferral is not None
-      else None
-    )
-    try:
-      await self.around(ctx, call)
-    except Exception as error:
-      logger.exception("Interaction handler failed in %s", self.service.name)
-      try:
-        await self.on_error(ctx, error)
-      except Exception:
-        logger.warning("Could not report an interaction error", exc_info=True)
-    finally:
-      if defer is not None:
-        defer.cancel()
+    await call()
 
-  async def _defer_later(self, ctx: Interaction, ephemeral: bool) -> None:
-    await asyncio.sleep(self.defer_after)
-    if not ctx.responded:
-      try:
-        await ctx.defer(ephemeral=ephemeral)
-      except Exception:
-        logger.warning("Automatic deferral failed", exc_info=True)
+
+async def report_failure(flow: Flow, error: BaseException) -> None:
+  """Tell the user a handler or middleware failed (the default error layer)."""
+  try:
+    interaction = flow.interaction
+    if interaction.expired or interaction.is_autocomplete:
+      return
+    if isinstance(error, CommandOutdated):
+      text = "This command was just updated. Please try again."
+    else:
+      text = "Something went wrong."
+    await interaction.respond(text, ephemeral=True)
+  except Exception:
+    logger.warning("Could not report an interaction error", exc_info=True)
 
 
 class Commands(InteractionTemplate):
@@ -214,9 +212,8 @@ class Commands(InteractionTemplate):
     service: Service,
     *,
     guild_ids: Sequence[int] = (),
-    defer_after: float | None = None,
   ) -> None:
-    super().__init__(service, defer_after=defer_after)
+    super().__init__(service)
     self.guild_ids = tuple(guild_ids)
     self._commands: dict[tuple[int, str], Command | CommandGroup] = {}
 
@@ -230,7 +227,6 @@ class Commands(InteractionTemplate):
     contexts: Sequence[int] | None = None,
     integration_types: Sequence[int] | None = None,
     nsfw: bool = False,
-    ephemeral_defer: bool = False,
     name_localizations: Mapping[str, str] | None = None,
     description_localizations: Mapping[str, str] | None = None,
   ) -> Callable[[Handler], Command]:
@@ -251,7 +247,6 @@ class Commands(InteractionTemplate):
         if integration_types is not None
         else None,
         nsfw=nsfw,
-        ephemeral_defer=ephemeral_defer,
         name_localizations=name_localizations,
         description_localizations=description_localizations,
       )
@@ -334,12 +329,6 @@ class Commands(InteractionTemplate):
       service.declare("commands", key, definition)
     await super().start(service)
 
-  def deferral(self, ctx: Interaction) -> bool | None:
-    if ctx.type == AUTOCOMPLETE:
-      return None
-    command = self._find(ctx)
-    return bool(command[0].ephemeral_defer) if command is not None else False
-
   def _find(self, ctx: Interaction) -> tuple[Command, list[dict[str, Any]]] | None:
     data = ctx.data
     declared = self._commands.get((data.get("type", SLASH), data.get("name", "")))
@@ -398,8 +387,8 @@ class Commands(InteractionTemplate):
 class _CustomIdTemplate(InteractionTemplate):
   _route: Callable[[str], str] = staticmethod(component_route)
 
-  def __init__(self, service: Service, *, defer_after: float | None = None) -> None:
-    super().__init__(service, defer_after=defer_after)
+  def __init__(self, service: Service) -> None:
+    super().__init__(service)
     self._handlers: dict[str, tuple[CustomId[Any] | None, Handler]] = {}
 
   def on(self, custom_id: CustomId[Any] | str) -> Callable[[Handler], Handler]:

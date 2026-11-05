@@ -23,6 +23,10 @@ def main(argv: Sequence[str] | None = None) -> int:
   if getattr(args, "handler", None) is None:
     parser.print_help()
     return 0
+  if args.command not in {"help", "docs", "init", "add"}:
+    from micro import _dotenv
+
+    _dotenv.load()
   level = "DEBUG" if args.verbose else os.environ.get("MICRO_LOG_LEVEL", "INFO").upper()
   logging.basicConfig(
     level=level,
@@ -56,7 +60,7 @@ def _parser() -> argparse.ArgumentParser:
   parser.add_argument(
     "-V", "--verbose", action="store_true", help="debug logging (any command)"
   )
-  commands = parser.add_subparsers(metavar="command")
+  commands = parser.add_subparsers(dest="command", metavar="command")
 
   help_command = commands.add_parser("help", help="show this help, or a command's")
   help_command.add_argument("topic", nargs="?", help="a command, e.g. up")

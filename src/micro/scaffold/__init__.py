@@ -111,10 +111,10 @@ def init(start: Path | None = None) -> Project:
   config.write_text(_render("micro.toml.tmpl", values))
   ignore = project.root / ".gitignore"
   existing = ignore.read_text() if ignore.exists() else ""
-  if ".micro/" not in existing.split():
-    ignore.write_text(
-      existing + ("" if not existing or existing.endswith("\n") else "\n") + ".micro/\n"
-    )
+  missing = [entry for entry in (".micro/", ".env") if entry not in existing.split()]
+  if missing:
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    ignore.write_text(existing + separator + "".join(f"{entry}\n" for entry in missing))
   return project
 
 

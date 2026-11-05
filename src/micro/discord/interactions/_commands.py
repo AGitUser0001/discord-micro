@@ -177,7 +177,6 @@ class Command:
   nsfw: bool = False
   name_localizations: Mapping[str, str] | None = None
   description_localizations: Mapping[str, str] | None = None
-  ephemeral_defer: bool = False
 
   def autocomplete(self, option: str) -> Callable[[Handler], Handler]:
     """Register suggestions for one string/number option."""
@@ -235,7 +234,7 @@ class CommandGroup:
   type: int = SLASH
 
   def command(
-    self, name: str, *, description: str = "-", ephemeral_defer: bool = False
+    self, name: str, *, description: str = "-"
   ) -> Callable[[Handler], Command]:
     def register(handler: Handler) -> Command:
       _require_async(handler)
@@ -244,7 +243,6 @@ class CommandGroup:
         handler,
         description,
         options=parse_options(handler),
-        ephemeral_defer=ephemeral_defer,
       )
       self._add(command)
       return command

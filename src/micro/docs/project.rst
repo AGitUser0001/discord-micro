@@ -54,7 +54,7 @@ A service module:
 
    @commands.slash("tickets", description="tickets")
    async def tickets(ctx: Interaction) -> None:
-     await ctx.reply("tickets is running.", ephemeral=True)
+     await ctx.respond("tickets is running.", ephemeral=True)
 
 Examples ship with Micro (``greeter``, ``audit``, ``chat``, ``notes``, ``ticker``);
 ``micro add example`` copies one, plus the shared ``_contracts.py`` it needs.

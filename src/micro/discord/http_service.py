@@ -151,8 +151,8 @@ class DiscordHTTPWorker(Component):
     token = token if token is not None else os.environ.get("DISCORD_TOKEN")
     if not token:
       raise ValueError("A Discord token is required (argument or DISCORD_TOKEN).")
-    if not 1 <= max_attempts <= 10:
-      raise ValueError("max_attempts must be between 1 and 10.")
+    if max_attempts < 1:
+      raise ValueError("max_attempts must be at least 1.")
     super().__init__(name)
     self._token = token
     self._api_url = api_url

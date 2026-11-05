@@ -40,7 +40,7 @@ async def greet(
   ctx: Interaction, name: Annotated[str, Option("Who to greet")], shout: bool = False
 ) -> None:
   reply = (await service.client.request(GREET, Greeting(name=name))).message
-  await ctx.reply(reply.upper() if shout else reply)
+  await ctx.respond(reply.upper() if shout else reply)
 
 
 @greet.autocomplete("name")
@@ -65,7 +65,7 @@ async def start_poll(
 ) -> None:
   yes = VOTE.encode(Poll(question=question, choice=1))
   no = VOTE.encode(Poll(question=question, choice=0))
-  await ctx.reply(
+  await ctx.respond(
     embeds=[embed(question, "Vote below.")],
     components=[
       Button("Yes", custom_id=yes, style="success"),
@@ -77,7 +77,7 @@ async def start_poll(
 @components.on(VOTE)
 async def vote(ctx: Interaction, poll: Poll) -> None:
   answer = "yes" if poll.choice else "no"
-  await ctx.reply(
+  await ctx.respond(
     f"{ctx.user.display_name} voted {answer} on {poll.question!r}.", ephemeral=True
   )
 
@@ -93,10 +93,10 @@ async def feedback(ctx: Interaction) -> None:
   await service.client.enqueue(
     AUDIT, Greeting(name=f"feedback: {ctx.fields['text'][:40]}")
   )
-  await ctx.reply("Thanks for the feedback!", ephemeral=True)
+  await ctx.respond("Thanks for the feedback!", ephemeral=True)
 
 
 @commands.user("Say hi")
 async def say_hi(ctx: Interaction, member: Member) -> None:
   mentions = AllowedMentions.only(users=[int(member.id or 0)])
-  await ctx.reply(f"Hi {member.mention}!", allowed_mentions=mentions)
+  await ctx.respond(f"Hi {member.mention}!", allowed_mentions=mentions)
