@@ -2,7 +2,7 @@
 
 from micro.service import Service
 
-from ._contracts import AUDIT, GREETED, TICKED, Greeting, Tick
+from .schemas import AUDIT, GREETED, TICKED, Greeting, Tick
 
 service = Service("audit")
 

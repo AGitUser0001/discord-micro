@@ -4,8 +4,8 @@ The packaging tool owns the project (interpreter, dependencies, layout);
 Micro only adds its own pieces. Templates ship with Micro and update with it.
 
     pip install micro    # or: uv add micro
-    micro init           # micro.toml + services/hello.py
-    micro add service tickets
+    micro init           # micro.toml + services/hello/
+    micro add service tickets    # services/tickets/
 """
 
 import re
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from string import Template
+from typing import Any
 
 _NAME = re.compile(r"[a-z][a-z0-9-]*[a-z0-9]|[a-z]")
 
@@ -91,7 +92,7 @@ def _render(template: str, values: dict[str, str]) -> str:
 
 
 def init(start: Path | None = None) -> Project:
-  """Add micro.toml and a `hello` service to the current uv project."""
+  """Add micro.toml and a `hello` service to the current project."""
   project = locate(start)
   config = project.root / "micro.toml"
   if config.exists():
@@ -104,9 +105,10 @@ def init(start: Path | None = None) -> Project:
   project.services.mkdir(parents=True, exist_ok=True)
   for template, path in (
     ("services/__init__.py.tmpl", project.services / "__init__.py"),
-    ("services/hello.py.tmpl", project.services / "hello.py"),
+    ("services/hello.py.tmpl", project.services / "hello" / "__init__.py"),
   ):
     if not path.exists():
+      path.parent.mkdir(parents=True, exist_ok=True)
       path.write_text(_render(template, values))
   config.write_text(_render("micro.toml.tmpl", values))
   ignore = project.root / ".gitignore"
@@ -119,56 +121,59 @@ def init(start: Path | None = None) -> Project:
 
 
 def add_service(name: str, start: Path | None = None) -> Path:
-  """Add a service module; the services target loads it without config changes."""
+  """Add a service folder; the services target loads it without config changes."""
   if _NAME.fullmatch(name) is None:
     raise ValueError("Service names use lowercase letters, digits, and hyphens.")
   project = find(start)
   module = name.replace("-", "_")
-  path = project.services / f"{module}.py"
-  if path.exists():
-    raise FileExistsError(f"{path} already exists.")
-  project.services.mkdir(parents=True, exist_ok=True)
+  folder = project.services / module
+  if folder.exists() or (project.services / f"{module}.py").exists():
+    raise FileExistsError(f"{folder} already exists.")
+  folder.mkdir(parents=True)
+  path = folder / "__init__.py"
   path.write_text(
     _render("service.py.tmpl", {"name": name, "command": name, "function": module})
   )
-  return path
+  return folder
 
 
 def examples() -> dict[str, str]:
-  """Bundled examples and their one-line descriptions."""
+  """Bundled examples (one folder each) and their one-line descriptions."""
   folder = resources.files("micro.scaffold") / "examples"
   found: dict[str, str] = {}
   for item in sorted(folder.iterdir(), key=lambda entry: entry.name):
-    if item.name.endswith(".py") and not item.name.startswith("_"):
-      text = item.read_text()
+    if item.is_dir() and not item.name.startswith(("_", ".")):
+      text = (item / "__init__.py").read_text()
       summary = (
         text.split('"""')[1].strip().splitlines()[0] if text.startswith('"""') else ""
       )
-      found[item.name.removesuffix(".py")] = summary
+      found[item.name] = summary
   return found
 
 
-def add_example(name: str, start: Path | None = None) -> list[Path]:
-  """Copy a bundled example (and the shared contracts it uses) into the services."""
+def add_example(name: str, start: Path | None = None) -> Path:
+  """Copy a bundled example into the services as a folder of its own."""
   available = examples()
   if name not in available:
     raise ValueError(f"No example {name!r}; choose from: {', '.join(available)}.")
   project = find(start)
-  folder = resources.files("micro.scaffold") / "examples"
-  source = (folder / f"{name}.py").read_text()
-  wanted = [(f"{name}.py", source)]
-  if "from ._contracts import" in source:
-    wanted.append(("_contracts.py", (folder / "_contracts.py").read_text()))
+  target = project.services / name
+  if target.exists() or (project.services / f"{name}.py").exists():
+    raise FileExistsError(f"{target} already exists.")
   project.services.mkdir(parents=True, exist_ok=True)
-  if (project.services / f"{name}.py").exists():
-    raise FileExistsError(f"{project.services / f'{name}.py'} already exists.")
-  written: list[Path] = []
-  for filename, text in wanted:
-    path = project.services / filename
-    if not path.exists():
-      path.write_text(text)
-      written.append(path)
-  return written
+  _copy(resources.files("micro.scaffold") / "examples" / name, target)
+  return target
+
+
+def _copy(source: Any, target: Path) -> None:
+  target.mkdir()
+  for item in source.iterdir():
+    if item.name == "__pycache__":
+      continue
+    if item.is_dir():
+      _copy(item, target / item.name)
+    else:
+      (target / item.name).write_bytes(item.read_bytes())
 
 
 __all__ = (

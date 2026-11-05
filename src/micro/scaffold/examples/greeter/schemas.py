@@ -1,10 +1,10 @@
-"""Schemas shared between services: requests, events, and work queues."""
+"""The messages greeter sends and receives."""
 
 from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-from micro.service import EventSchema, RequestSchema, WorkQueue
+from micro.service import EventSchema, RequestSchema
 
 
 class Greeting(BaseModel):
@@ -15,13 +15,7 @@ class GreetingReply(BaseModel):
   message: str
 
 
-class Tick(BaseModel):
-  count: int
-
-
 GREET = RequestSchema[Greeting, GreetingReply](
   id="example.greet", input=Greeting, output=GreetingReply
 )
 GREETED = EventSchema[Greeting](id="example.greeted", payload=Greeting)
-TICKED = EventSchema[Tick](id="example.ticked", payload=Tick)
-AUDIT = WorkQueue[Greeting]("example.audit", Greeting)

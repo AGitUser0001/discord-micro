@@ -6,7 +6,7 @@ Micro is a library: add it to your project with whatever manages it.
 .. code-block:: console
 
    uv add micro            # or: pip install "micro[all,accel]"
-   micro init              # (uv run micro init) adds micro.toml and services/hello.py
+   micro init              # (uv run micro init) adds micro.toml and services/hello/
    echo 'DISCORD_TOKEN=...' > .env
    micro up
 
@@ -20,7 +20,7 @@ Next:
 
 .. code-block:: console
 
-   micro add service tickets     # a new service module, loaded automatically
+   micro add service tickets     # a new service folder, loaded automatically
    micro roll app                # deploy your changes without dropping the Gateway
 
 ``micro add example`` lists bundled examples (requests and events, work queues,

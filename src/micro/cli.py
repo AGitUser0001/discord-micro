@@ -88,7 +88,7 @@ def _parser() -> argparse.ArgumentParser:
 
   add = commands.add_parser("add", help="add to the project")
   add_actions = add.add_subparsers(required=True, metavar="kind")
-  add_service = add_actions.add_parser("service", help="a new service module")
+  add_service = add_actions.add_parser("service", help="a new service folder")
   add_service.add_argument("name")
   add_service.set_defaults(handler=_add_service)
   add_example = add_actions.add_parser(
@@ -175,8 +175,8 @@ async def _init(args: argparse.Namespace) -> int:
 async def _add_service(args: argparse.Namespace) -> int:
   from micro.scaffold import add_service
 
-  path = add_service(args.name)
-  print(f"Added {path.name}; `micro up` loads it with the other services.")
+  folder = add_service(args.name)
+  print(f"Added {folder.name}/; `micro up` loads it with the other services.")
   return 0
 
 
@@ -187,8 +187,8 @@ async def _add_example(args: argparse.Namespace) -> int:
     for name, summary in examples().items():
       print(f"  {name:10s} {summary}")
     return 0
-  for path in add_example(args.name):
-    print(f"Added {path.name}")
+  folder = add_example(args.name)
+  print(f"Added {folder.name}/; `micro up` loads it with the other services.")
   return 0
 
 

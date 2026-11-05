@@ -6,12 +6,12 @@ same code; scale, roll, or replace any part live.
 
 ```console
 uv add micro          # or: pip install "micro[all,accel]"
-micro init            # adds micro.toml and services/hello.py
+micro init            # adds micro.toml and services/hello/
 DISCORD_TOKEN=... micro up
 ```
 
 ```python
-# services/hello.py
+# services/hello/__init__.py
 from micro.discord.interactions import Commands, Interaction
 from micro.service import Service
 

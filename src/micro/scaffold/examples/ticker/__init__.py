@@ -2,10 +2,17 @@
 
 import asyncio
 
-from micro.runtime import Component
-from micro.service import Client
+from pydantic import BaseModel
 
-from ._contracts import TICKED, Tick
+from micro.runtime import Component
+from micro.service import Client, EventSchema
+
+
+class Tick(BaseModel):
+  count: int
+
+
+TICKED = EventSchema[Tick](id="example.ticked", payload=Tick)
 
 
 class Ticker(Component):
