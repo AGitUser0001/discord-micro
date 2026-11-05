@@ -25,6 +25,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "docutils>=0.21",
     "httpx2>=2.9.1",
     "nats-py>=2.15,<3",
     "pydantic>=2.13.4",

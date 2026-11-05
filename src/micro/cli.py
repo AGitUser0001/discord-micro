@@ -75,6 +75,10 @@ def _parser() -> argparse.ArgumentParser:
 
   help_command.set_defaults(handler=help_handler)
 
+  docs = commands.add_parser("docs", help="open the documentation in a browser")
+  docs.add_argument("--no-browser", action="store_true", help="only print the address")
+  docs.set_defaults(handler=_docs)
+
   init = commands.add_parser("init", help="add Micro to the project in this directory")
   init.set_defaults(handler=_init)
 
@@ -146,6 +150,13 @@ def _parser() -> argparse.ArgumentParser:
   presence.add_argument("--activity")
   presence.set_defaults(handler=_gateway, action="presence")
   return parser
+
+
+async def _docs(args: argparse.Namespace) -> int:
+  from micro._docs import serve
+
+  await asyncio.to_thread(serve, browser=not args.no_browser)
+  return 0
 
 
 async def _init(args: argparse.Namespace) -> int:
