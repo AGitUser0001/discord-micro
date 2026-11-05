@@ -25,4 +25,4 @@ async def hello(ctx: Interaction, name: str = "world") -> None:
 
 Documentation: [docs/index.rst](docs/index.rst) (quickstart, services,
 Discord, interactions, store, deploying, rolling upgrades, wire reference).
-Example: [examples/bot](examples/bot/README.md).
+Examples ship with Micro: `micro add example` lists them.

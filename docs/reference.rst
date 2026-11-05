@@ -43,6 +43,10 @@ Buckets
 ``micro_state``     ``decl.<kind>.<hash>``, ``applied.<kind>.<key>``, ``synced.commands.<scope>``
 ==================  ===================================================================
 
+The object store ``micro_payloads`` carries request and reply bodies above the
+NATS message limit; the message then has an empty body and a
+``Micro-Payload: <object>`` header, and the reader deletes the object.
+
 Headers
 -------
 

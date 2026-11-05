@@ -43,6 +43,9 @@ GATEWAY_BUCKET = "micro_gateway"
 LOCKS_BUCKET = "micro_locks"
 """One-time job leases such as identify buckets and command sync."""
 
+PAYLOADS_BUCKET = "micro_payloads"
+"""Object store for request/reply bodies above the NATS message limit."""
+
 STATE_BUCKET = "micro_state"
 """Small durable coordination values without a TTL, such as definition hashes."""
 
@@ -153,6 +156,7 @@ __all__ = (
   "INTERACTIONS_STREAM",
   "INTERACTION_SUBJECTS",
   "LOCKS_BUCKET",
+  "PAYLOADS_BUCKET",
   "PREFIX",
   "PRESENCE_BUCKET",
   "RETIRED_EVENT_STREAM_SUBJECTS",

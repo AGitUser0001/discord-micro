@@ -17,5 +17,8 @@ Design decisions
 * **Declarations converge** across rollouts; nothing applies half-deployed.
 * **Compatibility by validation**, forward-compatible records.
 * **Lazy imports**: generated models split per definition.
+* **Embedded store by default**: a disk-backed, schemaless graph on SQLite for
+  local distribution (no server, no port); true scale plugs in as an executor.
+* **Examples ship in the wheel** with the templates, so nothing needs the repo.
 * Out of scope: authentication, secret distribution, orchestration, voice
   audio, a discord.py shim, an in-process cache.

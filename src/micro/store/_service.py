@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from collections.abc import Sequence
 from typing import Any
 
@@ -14,6 +15,22 @@ from ._store import GraphEngine, GraphExecutor, GraphQLBody
 from .composer import DirectiveMetadata, TypeDirectiveMetadata
 
 logger = logging.getLogger("micro")
+
+DEFAULT_STORE_URL = "sqlite:.micro/store.db"
+
+
+def executor_from_url(url: str) -> GraphExecutor:
+  """`sqlite:PATH` (the embedded default); bring other databases as executors."""
+  if url.startswith("sqlite:"):
+    from .sqlite import SQLiteGraph
+
+    return SQLiteGraph(
+      url.removeprefix("sqlite:").removeprefix("//") or ".micro/store.db"
+    )
+  raise ValueError(
+    f"Unsupported MICRO_STORE_URL {url!r}; pass Store(executor=...) for other databases."
+  )
+
 
 STORE_EXECUTE = RequestSchema[GraphQLBody, dict[str, JsonValue]](
   id="micro.store.execute",
@@ -34,7 +51,7 @@ class Store(Service):
 
   def __init__(
     self,
-    executor: GraphExecutor,
+    executor: GraphExecutor | None = None,
     *,
     modules: Sequence[GraphModule] = (),
     directives: Sequence[DirectiveMetadata] = (),
@@ -43,7 +60,10 @@ class Store(Service):
   ) -> None:
     super().__init__(name)
     self.engine = GraphEngine(
-      executor, directives=directives, type_directives=type_directives
+      executor
+      or executor_from_url(os.environ.get("MICRO_STORE_URL", DEFAULT_STORE_URL)),
+      directives=directives,
+      type_directives=type_directives,
     )
     self._static = {module.id: module for module in modules}
     self._compose_requested = asyncio.Event()

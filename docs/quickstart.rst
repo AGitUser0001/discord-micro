@@ -20,5 +20,5 @@ Next:
    micro add service tickets     # a new service module, loaded automatically
    micro roll app                # deploy your changes without dropping the Gateway
 
-See :doc:`project` for the layout and ``examples/bot`` for a fuller project
-(requests, events, work queues, buttons, a modal, a background task).
+``micro add example`` lists bundled examples (requests and events, work queues,
+buttons and a modal, the store, a background task); see :doc:`project`.

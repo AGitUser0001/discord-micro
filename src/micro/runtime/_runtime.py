@@ -5,6 +5,7 @@ import signal
 import socket
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Self
 from uuid import uuid4
@@ -26,6 +27,17 @@ logger = logging.getLogger("micro")
 
 DEFAULT_NATS_URL = "nats://127.0.0.1:4222"
 RUNTIME_KIND = "runtime"
+PAYLOAD_HEADER = "Micro-Payload"
+"""Names the object holding a request or reply body too large for one message."""
+PAYLOAD_TTL = 3600.0
+"""Seconds an unread large payload is kept (readers delete them immediately)."""
+_HEADROOM = 64 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class Reply:
+  data: bytes
+  headers: dict[str, str]
 
 
 def default_servers() -> tuple[str, ...]:
@@ -73,6 +85,7 @@ class Runtime:
     self._components: list[Component] = []
     self._presences: dict[int, Presence] = {}
     self._started = False
+    self._payloads: Any = None
 
   @property
   def nats(self) -> NATS:
@@ -219,6 +232,62 @@ class Runtime:
         with suppress(NotImplementedError, RuntimeError):
           loop.remove_signal_handler(sig)
       await self.close()
+
+  # Request/reply with bodies of any size --------------------------------------------
+
+  async def request(
+    self,
+    subject: str,
+    body: bytes,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float,
+  ) -> Reply:
+    """A NATS request whose body and reply may exceed the server's message limit."""
+    data, sent = await self._encode(body, headers)
+    reply = await self.nats.request(subject, data, timeout=timeout, headers=sent)
+    return Reply(await self.payload(reply), dict(reply.headers or {}))
+
+  async def respond(
+    self, message: Any, body: bytes, *, headers: dict[str, str] | None = None
+  ) -> None:
+    """Reply to a request (any size); does nothing for messages without a reply."""
+    if message.reply:
+      data, sent = await self._encode(body, headers)
+      await self.nats.publish(message.reply, data, headers=sent)
+
+  async def payload(self, message: Any) -> bytes:
+    """A received body, fetching (and deleting) it if it travelled as an object."""
+    name = (message.headers or {}).get(PAYLOAD_HEADER)
+    if not name:
+      return message.data
+    store = await self._payload_store()
+    result = await store.get(name)
+    with suppress(Exception):
+      await store.delete(name)
+    return result.data or b""
+
+  async def _encode(
+    self, body: bytes, headers: dict[str, str] | None
+  ) -> tuple[bytes, dict[str, str] | None]:
+    if len(body) <= self.nats.max_payload - _HEADROOM:
+      return body, headers
+    name = uuid4().hex
+    await (await self._payload_store()).put(name, body)
+    return b"", {**(headers or {}), PAYLOAD_HEADER: name}
+
+  async def _payload_store(self) -> Any:
+    if self._payloads is None:
+      try:
+        self._payloads = await self.jetstream.create_object_store(
+          subjects.PAYLOADS_BUCKET,
+          ttl=PAYLOAD_TTL,
+          storage=self.storage,
+          replicas=self.replicas,
+        )
+      except BadRequestError:
+        self._payloads = await self.jetstream.object_store(subjects.PAYLOADS_BUCKET)
+    return self._payloads
 
   async def ensure_stream(
     self,

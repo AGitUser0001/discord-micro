@@ -3,20 +3,6 @@
   "venv": ".venv",
   "executionEnvironments": [
     {
-      "root": "examples/bot",
-      "extraPaths": [
-        "src",
-        "examples/bot/src"
-      ]
-    },
-    {
-      "root": "examples/apache_age",
-      "extraPaths": [
-        "src",
-        "examples/apache_age/src"
-      ]
-    },
-    {
       "root": ".",
       "extraPaths": [
         "src"

@@ -74,7 +74,6 @@ dev = [
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",
     "hikari>=2.5.0",
-    "psycopg[binary,pool]>=3.3.4,<4",
     "pyright>=1.1.411",
     "ruff>=0.16.1",
     "starlette>=1.4.1",

@@ -20,7 +20,7 @@ from micro.discord.ui import AllowedMentions, Button, Modal, TextInput, embed
 from micro.schemas import events
 from micro.service import Service
 
-from ..contracts import AUDIT, GREET, Greeting
+from ._contracts import AUDIT, GREET, Greeting
 
 service = Service("chat")
 commands = Commands(service)

@@ -223,7 +223,9 @@ class DiscordHTTPWorker(Component):
   async def _answer(self, message: Msg) -> None:
     async with self.tracked():
       try:
-        request = DiscordHTTPRequest.model_validate_json(message.data)
+        request = DiscordHTTPRequest.model_validate_json(
+          await self.runtime.payload(message)
+        )
         body = (await self.execute(request)).model_dump_json().encode()
         headers = {_STATUS_HEADER: "ok"}
       except Exception as exc:
@@ -233,8 +235,7 @@ class DiscordHTTPWorker(Component):
           {"code": code, "message": f"{type(exc).__name__}: {exc}"}
         ).encode()
         headers = {_STATUS_HEADER: "error"}
-      if message.reply:
-        await self.runtime.nats.publish(message.reply, body, headers=headers)
+      await self.runtime.respond(message, body, headers=headers)
 
   async def execute(self, request: DiscordHTTPRequest) -> DiscordHTTPResponse:
     if request.idempotency_key is not None:
@@ -379,7 +380,7 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
       raise RoutingError("No Discord HTTP worker is running.")
     for worker in candidates:
       try:
-        reply = await self.runtime.nats.request(
+        reply = await self.runtime.request(
           subjects.http_worker(worker.id), payload, timeout=self.timeout
         )
       except NoRespondersError:

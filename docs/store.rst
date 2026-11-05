@@ -1,28 +1,54 @@
 Store
 =====
 
-Optional graph storage, run as an ordinary service. No builtin needs it.
+Optional graph storage, run as an ordinary service; no builtin needs it.
+
+.. code-block:: toml
+
+   [processes.store]
+   components = ["micro.store:Store"]     # any number of replicas
+
+By default the store is an embedded, disk-backed, schemaless graph in one
+SQLite file (``MICRO_STORE_URL=sqlite:.micro/store.db``): no server, no port, no
+Docker. RAM holds only SQLite's page cache; store processes on one machine
+share the file. For more, implement ``GraphExecutor`` for your database (Spanner
+Graph speaks the ISO GQL Micro compiles to) and pass ``Store(executor=...)``.
+
+Modules
+-------
+
+Services declare the graph modules they use; stores serve them.
 
 .. code-block:: python
 
-   from micro.store import GraphModule, Store, StoreClient
+   from micro.store import GraphModule, StoreClient
 
-   PEOPLE = GraphModule(id="people", schema="""
-     type Person @entity(key: ["name"]) { name: String! }
-     type Query { person(name: String!): Person @from(key: {name: name}) }
+   NOTES = GraphModule(id="notes", schema="""
+     scalar Bytes
+     type Note @entity(key: ["id"]) { id: ID! text: String! file: Bytes }
+     type Query {
+       note(id: ID!): Note @from(key: {id: id})
+       notes(first: Int!, offset: Int!): [Note!]! @scan
+     }
      type Mutation {
-       createPerson(name: String!): Person! @insert(key: {name: name}, set: {name: name})
+       addNote(id: ID!, text: String!, file: Bytes): Note!
+         @insert(key: {id: id}, set: {id: id, text: text, file: file})
      }
    """)
 
-   store = Store(ApacheAgeExecutor(url), modules=[PEOPLE])   # or let services declare
-   service.uses(PEOPLE)
-
-   result = await StoreClient(runtime).execute('{ person(name: "Ada") { name } }')
+   service.uses(NOTES)
+   result = await StoreClient(runtime).execute('{ note(id: "1") { text } }')
 
 Modules converge across rollouts like commands; a stopped service's modules
 are retained, and a module set that fails to compose leaves the last good
-graph serving.
+graph serving. ``micro add example notes`` is a complete example.
+
+Files
+-----
+
+``Bytes`` values are base64 strings; files up to tens of megabytes are fine.
+Large values are stored out of line, and requests or replies above the NATS
+message limit travel through a NATS object store automatically.
 
 Directives
 ----------
@@ -31,22 +57,11 @@ Directives
 gated by an owner's active flag, ``@scan`` paginated listing, ``@insert``,
 ``@update``, ``@delete``, ``@connect``, ``@disconnect``. Install more with
 ``Store(directives=..., type_directives=...)``. Storage is never inferred:
-every root field needs a directive. Operations compile to ISO GQL; physical
-names are deterministic hashes, and layouts evolve additively.
-
-Apache AGE
-----------
-
-``examples/apache_age`` provides ``ApacheAgeExecutor``:
-
-.. code-block:: console
-
-   docker compose -f examples/apache_age/compose.yaml up --build -d age
-   micro run store:store micro.http:HTTPBridge
+every root field needs a directive.
 
 Gateway projection
 ------------------
 
-``GatewayProjection`` (``micro.gateway.projection``) stores every connection's
-guilds, channels, roles, members, and more, connection-scoped; a disconnected
-connection never serves stale reads. Run one replica.
+``micro.gateway.projection:GatewayProjection`` stores every connection's
+guilds, channels, roles, members, and more; a disconnected connection never
+serves stale reads, and ``DiscordState`` reads it. Run one replica.

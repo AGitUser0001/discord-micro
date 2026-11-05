@@ -8,6 +8,7 @@ Micro never manages your Python project; uv, pip, or anything else does.
 
    micro init                    # in the project directory
    micro add service NAME
+   micro add example [NAME]      # list, or copy a bundled example
 
 ``micro init`` adds ``micro.toml``, a services package with ``hello.py``, and
 ``.micro/`` to ``.gitignore``. It follows your layout:
@@ -55,4 +56,7 @@ A service module:
    async def tickets(ctx: Interaction) -> None:
      await ctx.reply("tickets is running.", ephemeral=True)
 
-Share schemas between services from a plain module next to ``services``.
+Examples ship with Micro (``greeter``, ``audit``, ``chat``, ``notes``, ``ticker``);
+``micro add example`` copies one, plus the shared ``_contracts.py`` it needs.
+Modules starting with ``_`` are never loaded as services, so shared schemas
+live there.

@@ -351,8 +351,7 @@ class Service(Component):
       except ServiceError as exc:
         body = error_body(exc.code, exc.message, exc.detail)
         headers = {STATUS_HEADER: "error"}
-      if message.reply:
-        await self.runtime.nats.publish(message.reply, body, headers=headers)
+      await self.runtime.respond(message, body, headers=headers)
 
   async def _run_request[InputT, OutputT](
     self,
@@ -364,7 +363,7 @@ class Service(Component):
     # rolling update that adds an optional field keeps working both ways.
     expected = (message.headers or {}).get(SCHEMA_HEADER)
     try:
-      payload = schema.decode_input_json(message.data)
+      payload = schema.decode_input_json(await self.runtime.payload(message))
     except ValidationError as exc:
       if expected is not None and expected != schema.hash:
         raise ServiceError(

@@ -117,7 +117,7 @@ class HTTPBridge(Component):
     except ValueError:
       return JSONResponse({"code": "invalid_input", "message": "Bad request ID."}, 400)
     try:
-      reply = await self.runtime.nats.request(
+      reply = await self.runtime.request(
         subject, await request.body(), timeout=self.request_timeout
       )
     except NoRespondersError:
@@ -126,7 +126,7 @@ class HTTPBridge(Component):
       )
     except NatsTimeoutError:
       return JSONResponse({"code": "timeout", "message": "The request timed out."}, 504)
-    if (reply.headers or {}).get("Micro-Status") == "error":
+    if reply.headers.get("Micro-Status") == "error":
       body = json.loads(reply.data)
       return JSONResponse(body, _ERROR_STATUS.get(body.get("code"), 400))
     return Response(reply.data, media_type="application/json")

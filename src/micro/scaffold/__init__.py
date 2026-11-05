@@ -134,4 +134,49 @@ def add_service(name: str, start: Path | None = None) -> Path:
   return path
 
 
-__all__ = ("Project", "add_service", "find", "init", "locate")
+def examples() -> dict[str, str]:
+  """Bundled examples and their one-line descriptions."""
+  folder = resources.files("micro.scaffold") / "examples"
+  found: dict[str, str] = {}
+  for item in sorted(folder.iterdir(), key=lambda entry: entry.name):
+    if item.name.endswith(".py") and not item.name.startswith("_"):
+      text = item.read_text()
+      summary = (
+        text.split('"""')[1].strip().splitlines()[0] if text.startswith('"""') else ""
+      )
+      found[item.name.removesuffix(".py")] = summary
+  return found
+
+
+def add_example(name: str, start: Path | None = None) -> list[Path]:
+  """Copy a bundled example (and the shared contracts it uses) into the services."""
+  available = examples()
+  if name not in available:
+    raise ValueError(f"No example {name!r}; choose from: {', '.join(available)}.")
+  project = find(start)
+  folder = resources.files("micro.scaffold") / "examples"
+  source = (folder / f"{name}.py").read_text()
+  wanted = [(f"{name}.py", source)]
+  if "from ._contracts import" in source:
+    wanted.append(("_contracts.py", (folder / "_contracts.py").read_text()))
+  project.services.mkdir(parents=True, exist_ok=True)
+  if (project.services / f"{name}.py").exists():
+    raise FileExistsError(f"{project.services / f'{name}.py'} already exists.")
+  written: list[Path] = []
+  for filename, text in wanted:
+    path = project.services / filename
+    if not path.exists():
+      path.write_text(text)
+      written.append(path)
+  return written
+
+
+__all__ = (
+  "Project",
+  "add_example",
+  "add_service",
+  "examples",
+  "find",
+  "init",
+  "locate",
+)

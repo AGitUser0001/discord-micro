@@ -4,10 +4,18 @@ from ._component import Component, ComponentState
 from ._consumer import Reject, Retry, StreamConsumer, default_backoff
 from ._loop import event_loop_factory
 from ._presence import Directory, Presence, Registration
-from ._runtime import DEFAULT_NATS_URL, RUNTIME_KIND, Runtime, default_servers
+from ._runtime import (
+  DEFAULT_NATS_URL,
+  PAYLOAD_HEADER,
+  RUNTIME_KIND,
+  Reply,
+  Runtime,
+  default_servers,
+)
 
 __all__ = (
   "DEFAULT_NATS_URL",
+  "PAYLOAD_HEADER",
   "RUNTIME_KIND",
   "Component",
   "ComponentState",
@@ -15,6 +23,7 @@ __all__ = (
   "Presence",
   "Registration",
   "Reject",
+  "Reply",
   "Retry",
   "Runtime",
   "StreamConsumer",

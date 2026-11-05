@@ -20,8 +20,12 @@ DEFAULT_CONFIG = "micro.toml"
 def main(argv: Sequence[str] | None = None) -> int:
   parser = _parser()
   args = parser.parse_args(argv)
+  if getattr(args, "handler", None) is None:
+    parser.print_help()
+    return 0
+  level = "DEBUG" if args.verbose else os.environ.get("MICRO_LOG_LEVEL", "INFO").upper()
   logging.basicConfig(
-    level=os.environ.get("MICRO_LOG_LEVEL", "INFO").upper(),
+    level=level,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
   )
   sys.path.insert(0, os.getcwd())
@@ -35,9 +39,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 1
 
 
+def _version() -> str:
+  from importlib.metadata import PackageNotFoundError, version
+
+  try:
+    return version("micro")
+  except PackageNotFoundError:
+    return "unknown"
+
+
 def _parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(prog="micro", description=__doc__)
-  commands = parser.add_subparsers(required=True, metavar="command")
+  parser.add_argument(
+    "-v", "--version", action="version", version=f"micro {_version()}"
+  )
+  parser.add_argument(
+    "-V", "--verbose", action="store_true", help="debug logging (any command)"
+  )
+  commands = parser.add_subparsers(metavar="command")
+
+  help_command = commands.add_parser("help", help="show this help, or a command's")
+  help_command.add_argument("topic", nargs="?", help="a command, e.g. up")
+
+  def show_help(args: argparse.Namespace) -> int:
+    if args.topic is None:
+      parser.print_help()
+    elif args.topic in commands.choices:
+      commands.choices[args.topic].print_help()
+    else:
+      raise ValueError(f"No command {args.topic!r}; see `micro help`.")
+    return 0
+
+  async def help_handler(args: argparse.Namespace) -> int:
+    return show_help(args)
+
+  help_command.set_defaults(handler=help_handler)
 
   init = commands.add_parser("init", help="add Micro to the project in this directory")
   init.set_defaults(handler=_init)
@@ -47,6 +83,11 @@ def _parser() -> argparse.ArgumentParser:
   add_service = add_actions.add_parser("service", help="a new service module")
   add_service.add_argument("name")
   add_service.set_defaults(handler=_add_service)
+  add_example = add_actions.add_parser(
+    "example", help="copy a bundled example (list without NAME)"
+  )
+  add_example.add_argument("name", nargs="?")
+  add_example.set_defaults(handler=_add_example)
 
   run = commands.add_parser("run", help="host components in this process")
   run.add_argument("targets", nargs="*", help="module:attribute components to host")
@@ -121,6 +162,18 @@ async def _add_service(args: argparse.Namespace) -> int:
 
   path = add_service(args.name)
   print(f"Added {path.name}; `micro up` loads it with the other services.")
+  return 0
+
+
+async def _add_example(args: argparse.Namespace) -> int:
+  from micro.scaffold import add_example, examples
+
+  if args.name is None:
+    for name, summary in examples().items():
+      print(f"  {name:10s} {summary}")
+    return 0
+  for path in add_example(args.name):
+    print(f"Added {path.name}")
   return 0
 
 

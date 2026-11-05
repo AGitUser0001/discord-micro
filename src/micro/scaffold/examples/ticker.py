@@ -5,7 +5,7 @@ import asyncio
 from micro.runtime import Component
 from micro.service import Client
 
-from ..contracts import TICKED, Tick
+from ._contracts import TICKED, Tick
 
 
 class Ticker(Component):

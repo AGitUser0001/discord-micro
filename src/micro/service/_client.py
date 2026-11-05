@@ -36,7 +36,7 @@ class Client:
     timeout: float | None = None,
   ) -> OutputT:
     try:
-      reply = await self.runtime.nats.request(
+      reply = await self.runtime.request(
         request.subject,
         request.encode_input_json(payload),
         timeout=timeout or self.timeout,
@@ -46,8 +46,7 @@ class Client:
       raise RoutingError(f"No service handles request {request.id!r}.") from exc
     except NatsTimeoutError as exc:
       raise RequestTimeoutError(f"Request {request.id!r} timed out.") from exc
-    headers = reply.headers or {}
-    if headers.get(STATUS_HEADER) == "error":
+    if reply.headers.get(STATUS_HEADER) == "error":
       raise remote_error(request.id, reply.data)
     return request.decode_output_json(reply.data)
 

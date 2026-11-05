@@ -30,7 +30,7 @@ CLI
 
 .. code-block:: console
 
-   micro init | add service NAME       # see Projects
+   micro init | add service NAME | add example [NAME]   # see Projects
    micro run mybot.services.* micro.discord:DiscordHTTPWorker   # one process
    micro up [micro.toml]          # whole deployment; restarts crashes, Ctrl-C drains
    micro ps                       # processes and live components

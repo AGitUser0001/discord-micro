@@ -50,15 +50,29 @@ class GraphStatement:
   def __post_init__(self) -> None:
     if not self.text.strip():
       raise ValueError("A graph statement cannot be empty.")
-    validation = Dialect.get_or_raise("fullgql").validate(self.text)
-    if not validation.success:
-      diagnostics = "; ".join(str(item) for item in validation.diagnostics)
-      raise ValueError(f"Graph statement is not valid ISO GQL: {diagnostics}")
+    problem = _validated(self.text)
+    if problem is not None:
+      raise ValueError(f"Graph statement is not valid ISO GQL: {problem}")
     if len(set(self.columns)) != len(self.columns) or any(
       not column.isidentifier() for column in self.columns
     ):
       raise ValueError("Graph result columns must be unique identifiers.")
     object.__setattr__(self, "parameters", MappingProxyType(dict(self.parameters)))
+
+
+_VALIDATED: dict[str, str | None] = {}
+"""Validation results per statement text: queries repeat with new parameters."""
+
+
+def _validated(text: str) -> str | None:
+  if text not in _VALIDATED:
+    validation = Dialect.get_or_raise("fullgql").validate(text)
+    _VALIDATED[text] = (
+      None
+      if validation.success
+      else "; ".join(str(item) for item in validation.diagnostics)
+    )
+  return _VALIDATED[text]
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +173,9 @@ class _Composition:
   schema: GraphQLSchema
   compiler: _Compiler
   module_ids: tuple[str, ...]
+  documents: dict[str, tuple[DocumentNode | None, list[Any]]] = field(
+    default_factory=dict
+  )
 
 
 class GraphEngine:
@@ -262,12 +279,19 @@ class GraphEngine:
         error["detail"] = self._error
       return {"data": None, "errors": [error]}
     composition = self._composition
-    try:
-      document = parse(body.query)
-    except GraphQLSyntaxError as exc:
-      return {"data": None, "errors": [exc.formatted]}  # pyright: ignore[reportReturnType]
-    if errors := validate(composition.schema, document):
-      return {"data": None, "errors": [error.formatted for error in errors]}  # pyright: ignore[reportReturnType]
+    # Parsing and validation depend only on the query text and the graph, and
+    # clients repeat the same queries with new variables.
+    cached = composition.documents.get(body.query)
+    if cached is None:
+      try:
+        parsed = parse(body.query)
+        problems = [error.formatted for error in validate(composition.schema, parsed)]
+      except GraphQLSyntaxError as exc:
+        parsed, problems = None, [exc.formatted]
+      cached = composition.documents[body.query] = (parsed, problems)
+    document, problems = cached
+    if problems or document is None:
+      return {"data": None, "errors": problems}  # pyright: ignore[reportReturnType]
     operation = get_operation_ast(document, body.operation_name)
     if operation is None:
       return {
