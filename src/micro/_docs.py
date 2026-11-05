@@ -5,6 +5,7 @@ build step and nothing written to disk: pages are rendered with docutils in
 memory and served on 127.0.0.1 only while the command runs.
 """
 
+import asyncio
 import html
 import re
 import webbrowser
@@ -163,7 +164,7 @@ def render() -> dict[str, bytes]:
   return rendered
 
 
-def serve(*, browser: bool = True) -> None:
+async def serve(*, browser: bool = True) -> None:
   """Serve the docs from memory on 127.0.0.1 until interrupted; writes no files."""
   pages = render()
 
@@ -189,8 +190,8 @@ def serve(*, browser: bool = True) -> None:
   if browser:
     webbrowser.open(url)
   try:
-    server.serve_forever()
-  except KeyboardInterrupt:
-    pass
+    await asyncio.to_thread(server.serve_forever)
   finally:
+    # Ctrl-C cancels this task; stopping the loop lets the worker thread exit.
+    server.shutdown()
     server.server_close()

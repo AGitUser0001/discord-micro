@@ -155,7 +155,7 @@ def _parser() -> argparse.ArgumentParser:
 async def _docs(args: argparse.Namespace) -> int:
   from micro._docs import serve
 
-  await asyncio.to_thread(serve, browser=not args.no_browser)
+  await serve(browser=not args.no_browser)
   return 0
 
 
