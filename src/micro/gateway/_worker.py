@@ -68,6 +68,13 @@ def lease_key(generation: int, shard_id: int) -> str:
   return f"{generation}.{shard_id}"
 
 
+def _plain(value: object) -> object:
+  """Hikari hands over each payload as a read-only mapping, which json refuses."""
+  if isinstance(value, Mapping):
+    return dict(value)
+  raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def guild_of(name: str, payload: Mapping[str, Any]) -> str | None:
   guild = payload.get("guild_id")
   if (
@@ -534,7 +541,7 @@ class GatewayWorker(Component):
     }
     if session.connection_id is not None:
       headers[CONNECTION_HEADER] = session.connection_id
-    body = json.dumps(payload, separators=(",", ":")).encode()
+    body = json.dumps(payload, separators=(",", ":"), default=_plain).encode()
     await self.runtime.jetstream.publish(
       subject, body, stream=subjects.EVENTS_STREAM, headers=headers
     )
