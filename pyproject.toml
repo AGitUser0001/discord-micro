@@ -1,5 +1,5 @@
 [project]
-name = "Micro"
+name = "discord-micro"
 version = "0.1.0"
 description = "Microservice-based Discord bot framework."
 readme = "README.md"
@@ -80,6 +80,9 @@ dev = [
     "starlette>=1.4.1",
     "uvicorn>=0.52.1",
 ]
+
+[tool.uv.build-backend]
+module-name = "micro"
 
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]

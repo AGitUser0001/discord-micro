@@ -47,7 +47,7 @@ def _version() -> str:
   from importlib.metadata import PackageNotFoundError, version
 
   try:
-    return version("micro")
+    return version("discord-micro")
   except PackageNotFoundError:
     return "unknown"
 

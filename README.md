@@ -5,7 +5,7 @@ microservices on NATS. One process on a small box, or many machines, with the
 same code; scale, roll, or replace any part live.
 
 ```console
-uv add micro          # or: pip install "micro[all,accel]"
+uv add discord-micro  # or: pip install "discord-micro[all,accel]"
 micro init            # adds micro.toml and services/hello/
 DISCORD_TOKEN=... micro up
 ```

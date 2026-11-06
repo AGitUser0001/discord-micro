@@ -131,7 +131,7 @@ def render() -> dict[str, bytes]:
   """Every page as HTML, in memory: `{"index.html": ..., ...}`."""
   _register()
   try:
-    release = version("micro")
+    release = version("discord-micro")
   except PackageNotFoundError:
     release = "development"
   pages = _pages()

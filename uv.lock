@@ -242,6 +242,94 @@ wheels = [
 ]
 
 [[package]]
+name = "discord-micro"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "docutils" },
+    { name = "httpx2" },
+    { name = "nats-py" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+accel = [
+    { name = "uvloop", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "winloop", marker = "sys_platform == 'win32'" },
+]
+all = [
+    { name = "graphglot" },
+    { name = "graphql-core" },
+    { name = "hikari" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
+gateway = [
+    { name = "hikari" },
+]
+http = [
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
+store = [
+    { name = "graphglot" },
+    { name = "graphql-core" },
+]
+uvloop = [
+    { name = "uvloop" },
+]
+winloop = [
+    { name = "winloop" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "datamodel-code-generator" },
+    { name = "graphglot" },
+    { name = "graphql-core" },
+    { name = "hikari" },
+    { name = "pyright" },
+    { name = "ruff" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "docutils", specifier = ">=0.21" },
+    { name = "graphglot", marker = "extra == 'all'", specifier = ">=0.14.1,<0.15" },
+    { name = "graphglot", marker = "extra == 'store'", specifier = ">=0.14.1,<0.15" },
+    { name = "graphql-core", marker = "extra == 'all'", specifier = ">=3.2.11,<3.3" },
+    { name = "graphql-core", marker = "extra == 'store'", specifier = ">=3.2.11,<3.3" },
+    { name = "hikari", marker = "extra == 'all'", specifier = ">=2.5.0" },
+    { name = "hikari", marker = "extra == 'gateway'", specifier = ">=2.5.0" },
+    { name = "httpx2", specifier = ">=2.9.1" },
+    { name = "nats-py", specifier = ">=2.15,<3" },
+    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "starlette", marker = "extra == 'all'", specifier = ">=1.4.1" },
+    { name = "starlette", marker = "extra == 'http'", specifier = ">=1.4.1" },
+    { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.52.1" },
+    { name = "uvicorn", marker = "extra == 'http'", specifier = ">=0.52.1" },
+    { name = "uvloop", marker = "(sys_platform == 'darwin' and extra == 'accel') or (sys_platform == 'linux' and extra == 'accel')", specifier = ">=0.22.1" },
+    { name = "uvloop", marker = "extra == 'uvloop'", specifier = ">=0.22.1" },
+    { name = "winloop", marker = "sys_platform == 'win32' and extra == 'accel'", specifier = ">=0.6.3" },
+    { name = "winloop", marker = "extra == 'winloop'", specifier = ">=0.6.3" },
+]
+provides-extras = ["gateway", "store", "http", "uvloop", "winloop", "accel", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "datamodel-code-generator", specifier = ">=0.72.2" },
+    { name = "graphglot", specifier = ">=0.14.1,<0.15" },
+    { name = "graphql-core", specifier = ">=3.2.11,<3.3" },
+    { name = "hikari", specifier = ">=2.5.0" },
+    { name = "pyright", specifier = ">=1.1.411" },
+    { name = "ruff", specifier = ">=0.16.1" },
+    { name = "starlette", specifier = ">=1.4.1" },
+    { name = "uvicorn", specifier = ">=0.52.1" },
+]
+
+[[package]]
 name = "docutils"
 version = "0.23"
 source = { registry = "https://pypi.org/simple" }
@@ -538,94 +626,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
-]
-
-[[package]]
-name = "micro"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "docutils" },
-    { name = "httpx2" },
-    { name = "nats-py" },
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-accel = [
-    { name = "uvloop", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "winloop", marker = "sys_platform == 'win32'" },
-]
-all = [
-    { name = "graphglot" },
-    { name = "graphql-core" },
-    { name = "hikari" },
-    { name = "starlette" },
-    { name = "uvicorn" },
-]
-gateway = [
-    { name = "hikari" },
-]
-http = [
-    { name = "starlette" },
-    { name = "uvicorn" },
-]
-store = [
-    { name = "graphglot" },
-    { name = "graphql-core" },
-]
-uvloop = [
-    { name = "uvloop" },
-]
-winloop = [
-    { name = "winloop" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "datamodel-code-generator" },
-    { name = "graphglot" },
-    { name = "graphql-core" },
-    { name = "hikari" },
-    { name = "pyright" },
-    { name = "ruff" },
-    { name = "starlette" },
-    { name = "uvicorn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "docutils", specifier = ">=0.21" },
-    { name = "graphglot", marker = "extra == 'all'", specifier = ">=0.14.1,<0.15" },
-    { name = "graphglot", marker = "extra == 'store'", specifier = ">=0.14.1,<0.15" },
-    { name = "graphql-core", marker = "extra == 'all'", specifier = ">=3.2.11,<3.3" },
-    { name = "graphql-core", marker = "extra == 'store'", specifier = ">=3.2.11,<3.3" },
-    { name = "hikari", marker = "extra == 'all'", specifier = ">=2.5.0" },
-    { name = "hikari", marker = "extra == 'gateway'", specifier = ">=2.5.0" },
-    { name = "httpx2", specifier = ">=2.9.1" },
-    { name = "nats-py", specifier = ">=2.15,<3" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "starlette", marker = "extra == 'all'", specifier = ">=1.4.1" },
-    { name = "starlette", marker = "extra == 'http'", specifier = ">=1.4.1" },
-    { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.52.1" },
-    { name = "uvicorn", marker = "extra == 'http'", specifier = ">=0.52.1" },
-    { name = "uvloop", marker = "(sys_platform == 'darwin' and extra == 'accel') or (sys_platform == 'linux' and extra == 'accel')", specifier = ">=0.22.1" },
-    { name = "uvloop", marker = "extra == 'uvloop'", specifier = ">=0.22.1" },
-    { name = "winloop", marker = "sys_platform == 'win32' and extra == 'accel'", specifier = ">=0.6.3" },
-    { name = "winloop", marker = "extra == 'winloop'", specifier = ">=0.6.3" },
-]
-provides-extras = ["gateway", "store", "http", "uvloop", "winloop", "accel", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "datamodel-code-generator", specifier = ">=0.72.2" },
-    { name = "graphglot", specifier = ">=0.14.1,<0.15" },
-    { name = "graphql-core", specifier = ">=3.2.11,<3.3" },
-    { name = "hikari", specifier = ">=2.5.0" },
-    { name = "pyright", specifier = ">=1.1.411" },
-    { name = "ruff", specifier = ">=0.16.1" },
-    { name = "starlette", specifier = ">=1.4.1" },
-    { name = "uvicorn", specifier = ">=0.52.1" },
 ]
 
 [[package]]

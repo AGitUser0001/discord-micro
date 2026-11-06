@@ -5,7 +5,7 @@ Micro is a library: add it to your project with whatever manages it.
 
 .. code-block:: console
 
-   uv add micro            # or: pip install "micro[all,accel]"
+   uv add discord-micro    # or: pip install "discord-micro[all,accel]"
    micro init              # (uv run micro init) adds micro.toml and services/hello/
    echo 'DISCORD_TOKEN=...' > .env
    micro up

@@ -3,7 +3,7 @@
 The packaging tool owns the project (interpreter, dependencies, layout);
 Micro only adds its own pieces. Templates ship with Micro and update with it.
 
-    pip install micro    # or: uv add micro
+    pip install discord-micro    # or: uv add discord-micro
     micro init           # micro.toml + services/hello/
     micro add service tickets    # services/tickets/
 """
