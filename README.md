@@ -28,3 +28,5 @@ Discord, interactions, store, deploying, rolling upgrades, wire reference).
 Examples ship with Micro: `micro add example` lists them.
 
 Chat and EverythingBogo was here.
+
+Msmastr74 was also here
