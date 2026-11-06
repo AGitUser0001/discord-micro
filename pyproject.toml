@@ -81,6 +81,11 @@ dev = [
     "uvicorn>=0.52.1",
 ]
 
+[tool.uv]
+# A folder install is only rebuilt when these change; the default is just
+# pyproject.toml, which made code edits invisible until the version was bumped.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*" }]
+
 [tool.uv.build-backend]
 module-name = "micro"
 
