@@ -32,6 +32,22 @@ class ProcessConfig(BaseModel):
   env: dict[str, str] = Field(default_factory=dict)
 
 
+class InviteConfig(BaseModel):
+  """Defaults for `micro invite`: the permissions the bot asks for."""
+
+  model_config = ConfigDict(extra="forbid")
+
+  permissions: list[str | int] = Field(default_factory=list)
+
+  @field_validator("permissions")
+  @classmethod
+  def _known(cls, value: list[str | int]) -> list[str | int]:
+    from micro.discord.invite import parse_permissions
+
+    parse_permissions(value)
+    return value
+
+
 class DeploymentConfig(BaseModel):
   """A deployment described in `micro.toml`."""
 
@@ -41,6 +57,7 @@ class DeploymentConfig(BaseModel):
   nats: list[str] = Field(default_factory=lambda: [DEFAULT_NATS_URL])
   jetstream_replicas: int = Field(default=1, ge=1)
   nats_server: NatsServerConfig = Field(default_factory=NatsServerConfig)
+  invite: InviteConfig = Field(default_factory=InviteConfig)
   processes: dict[str, ProcessConfig] = Field(default_factory=dict)
 
   @field_validator("nats", mode="before")

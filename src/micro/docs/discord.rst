@@ -5,6 +5,37 @@ All Discord access goes through NATS: Gateway workers publish dispatches,
 HTTP workers make API calls. The token comes from ``DISCORD_TOKEN`` (set it in
 ``.env`` or the environment) and is never stored in NATS; rotate it by rolling the processes.
 
+Invite links
+------------
+
+``micro invite`` prints the link that adds the bot to a server and the one that
+installs its commands on a user's account. It reads the application ID from
+``DISCORD_TOKEN`` (or ``DISCORD_APPLICATION_ID``) and the permissions from
+micro.toml:
+
+.. code-block:: toml
+
+   [invite]
+   permissions = ["view_channel", "send_messages", "embed_links"]   # names or numbers
+
+.. code-block:: console
+
+   micro invite                    # both links
+   micro invite -p admin           # other permissions, once
+   micro invite --guild 1234       # preselect (and lock) one server
+
+Names are Discord's (``manage_roles``, ``Moderate Members``, ...); a typo is
+caught with a suggestion, and also when ``micro up`` loads micro.toml. Enable
+*User Install* under Installation in the Developer Portal for the second link
+to work. In code:
+
+.. code-block:: python
+
+   from micro.discord.invite import Permissions, invite_url
+
+   invite_url("1234", permissions=Permissions.SEND_MESSAGES | Permissions.EMBED_LINKS)
+   invite_url("1234", install="user")      # also: guild_id=, redirect_uri=, state=
+
 HTTP workers and client
 -----------------------
 

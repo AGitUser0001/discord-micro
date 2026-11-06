@@ -83,6 +83,21 @@ def _parser() -> argparse.ArgumentParser:
   docs.add_argument("--no-browser", action="store_true", help="only print the address")
   docs.set_defaults(handler=_docs)
 
+  invite = commands.add_parser(
+    "invite", help="print the links that add the bot to a server or account"
+  )
+  invite.add_argument(
+    "-p",
+    "--permissions",
+    help="comma-separated names or a number (default: [invite] in micro.toml)",
+  )
+  invite.add_argument("--guild", metavar="ID", help="preselect this server")
+  invite.add_argument(
+    "--application-id", help="use this instead of reading it from DISCORD_TOKEN"
+  )
+  invite.add_argument("--config", default=DEFAULT_CONFIG, help="micro.toml to read")
+  invite.set_defaults(handler=_invite)
+
   init = commands.add_parser("init", help="add Micro to the project in this directory")
   init.set_defaults(handler=_init)
 
@@ -160,6 +175,60 @@ async def _docs(args: argparse.Namespace) -> int:
   from micro._docs import serve
 
   await serve(browser=not args.no_browser)
+  return 0
+
+
+def _configured_permissions(path: str) -> list[str | int]:
+  """The `[invite] permissions` of micro.toml, or none without a file."""
+  import tomllib
+
+  try:
+    with open(path, "rb") as file:
+      return list(tomllib.load(file).get("invite", {}).get("permissions", []))
+  except FileNotFoundError:
+    return []
+
+
+async def _invite(args: argparse.Namespace) -> int:
+
+  from micro.discord.invite import (
+    application_id,
+    invite_url,
+    parse_permissions,
+  )
+
+  token = os.environ.get("DISCORD_TOKEN")
+  application = (
+    args.application_id
+    or os.environ.get("DISCORD_APPLICATION_ID")
+    or (application_id(token) if token else None)
+  )
+  if application is None:
+    raise ValueError(
+      "Set DISCORD_TOKEN (in .env or the environment) or pass --application-id."
+    )
+  if args.permissions is not None:
+    names: list[str | int] = args.permissions.split(",")
+  else:
+    names = _configured_permissions(args.config)
+  permissions = parse_permissions(names)
+  print("Add to a server (bot and slash commands):")
+  print(f"  {invite_url(application, permissions=permissions, guild_id=args.guild)}")
+  print("Install on a user account (slash commands only):")
+  print(f"  {invite_url(application, install='user')}")
+  if permissions:
+    from micro.discord.invite import Permissions
+
+    listed = ", ".join(
+      name.lower()
+      for name, flag in Permissions.__members__.items()
+      if flag in permissions
+    )
+    print(f"Permissions: {listed} (= {int(permissions)})")
+  else:
+    print(
+      "No permissions requested; set [invite] permissions in micro.toml or pass -p."
+    )
   return 0
 
 

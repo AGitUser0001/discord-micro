@@ -15,6 +15,7 @@ the environment win, and ``micro init`` adds ``.env`` to ``.gitignore``.
 ``micro up`` starts a local ``nats-server`` when none is reachable (install the
 binary: ``brew install nats-server``, or the release archive on Linux).
 ``/hello`` appears in Discord once ``CommandSync`` registers it.
+``micro invite`` prints the link that adds the bot to a server.
 
 Next:
 
