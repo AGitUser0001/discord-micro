@@ -79,6 +79,40 @@ Jobs are kept until exactly one worker finishes them, even if none is running.
 
    await service.client.enqueue(AUDIT, Greeting(name="Ada"))
 
+Middleware
+----------
+
+``service.use`` wraps every request, event and job handler. Middleware nests
+in the order added; ``next()`` runs the rest, ``end()`` stops, and each pass
+must do exactly one of those (or raise). ``use("scope", fn)`` limits it to a
+request ID, event ID or queue name, and the dotted names under it.
+
+.. code-block:: python
+
+   import time
+   from micro.service import Call
+
+   @service.use
+   async def timed(call: Call, next) -> None:
+     started = time.monotonic()
+     await next()
+     print(call.kind, call.key, time.monotonic() - started)
+
+   @service.use("example.admin")
+   async def staff_only(call: Call, next, end) -> None:
+     if not allowed(call.input):
+       call.output = "denied"       # what the caller gets
+       return await end()
+     await next()
+
+``Call`` has ``kind`` (``"request"``, ``"event"``, ``"work"``), ``key``,
+``input`` (replace it to change what the handler gets), ``output`` (a request's
+reply), ``message`` (the NATS message), ``service``, ``state`` and ``reached``.
+A request that ends without an ``output`` fails with ``ended_without_reply``;
+``ServiceError`` raised in middleware reaches the caller like one from a handler.
+For events and jobs, ``end()`` counts as handled, and an exception retries as
+usual. Interaction templates use the same engine (:doc:`interactions`).
+
 Outside a service
 -----------------
 

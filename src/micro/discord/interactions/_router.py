@@ -47,7 +47,7 @@ class InteractionRouter(Service):
 
   def __init__(self, name: str = "interaction-router", **settings: Any) -> None:
     super().__init__(name, **settings)
-    self._middleware = Middlewares()
+    self._middleware: Middlewares[Flow] = Middlewares()
     self._http: DiscordHTTPClient | None = None
     self.listen(RAW_INTERACTION)(self._on_interaction)
 

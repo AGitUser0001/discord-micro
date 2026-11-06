@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from re import fullmatch
-from typing import TYPE_CHECKING, Any, Never, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Never, Protocol, overload
 
 from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
@@ -13,9 +13,11 @@ from pydantic import JsonValue, ValidationError
 from micro import subjects
 from micro.coordination import DECLARATIONS_KEY, Declarations
 from micro.errors import ServiceError
+from micro.middleware import Middleware, Middlewares
 from micro.queue import WorkQueue
 from micro.runtime import Component, Presence, Reject, Retry, StreamConsumer
 
+from ._call import UNSET, Call
 from ._client import SCHEMA_HEADER, STATUS_HEADER, Client, error_body
 from ._event import EventSchema
 from ._request import RequestSchema
@@ -105,6 +107,7 @@ class Service(Component):
     self._declarations: dict[str, dict[str, JsonValue]] = {}
     self._declared: dict[str, dict[str, str]] = {}
     self._extensions: list[ServiceExtension] = []
+    self._call_middleware: Middlewares[Call] = Middlewares()
     self._client: Client | None = None
     self._subscriptions: list[Subscription] = []
     self._consumers: list[StreamConsumer] = []
@@ -169,6 +172,24 @@ class Service(Component):
       return handler
 
     return register
+
+  @overload
+  def use(self, scope: Middleware, /) -> Middleware: ...
+  @overload
+  def use(self, scope: str, function: Middleware, /) -> Middleware: ...
+  @overload
+  def use(self, scope: str, /) -> Callable[[Middleware], Middleware]: ...
+
+  def use(self, scope: Middleware | str, function: Middleware | None = None, /) -> Any:
+    """Add middleware around every request, event and job handler.
+
+    `fn(call, next[, end])`; see `Call`. `use("scope", fn)` limits it to a
+    request ID, event ID or queue name, and the dotted names under it.
+    """
+    self._declaring("Middleware")
+    if function is None:
+      return self._call_middleware.use(scope)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    return self._call_middleware.use(scope, function)  # pyright: ignore[reportArgumentType]
 
   def uses(self, *modules: GraphModule) -> None:
     """Declare graph modules a running store must serve for this service."""
@@ -376,8 +397,19 @@ class Service(Component):
         f"Input does not match request {schema.id!r}.",
         detail=_errors(exc),
       ) from exc
+    call = Call("request", schema.id, self, message, payload)
+
+    async def final(call: Call) -> None:
+      call.output = await handler(call.input)
+
     try:
-      result = await handler(payload)
+      await self._call_middleware.run(call, final)
+      if call.output is UNSET:
+        raise ServiceError(
+          "ended_without_reply",
+          f"Middleware ended request {schema.id!r} without setting `call.output`.",
+        )
+      result = call.output
     except ServiceError:
       raise
     except Exception as exc:
@@ -434,7 +466,13 @@ class Service(Component):
       payload = decoded[event.id]
       if listener.when is not None and not listener.when(payload):
         continue
-      runs.append((index, listener, listener.handler(payload)))
+      runs.append(
+        (
+          index,
+          listener,
+          self._through("event", event.id, message, payload, listener.handler),
+        )
+      )
     results = await asyncio.gather(*(run for *_, run in runs), return_exceptions=True)
     failures: list[tuple[_Listener, BaseException]] = []
     for (index, listener, _), result in zip(runs, results):
@@ -454,6 +492,21 @@ class Service(Component):
       self._succeeded[sequence] = done
       raise Retry(min(2.0 ** ((message.metadata.num_delivered or 1) - 1), 60.0))
     self._succeeded.pop(sequence, None)
+
+  async def _through(
+    self,
+    kind: Literal["event", "work"],
+    key: str,
+    message: Msg,
+    payload: Any,
+    handler: EventHandler[Any],
+  ) -> None:
+    """Run a handler inside the middleware stack. `end()` counts as handled."""
+
+    async def final(call: Call) -> None:
+      await handler(call.input)
+
+    await self._call_middleware.run(Call(kind, key, self, message, payload), final)
 
   def _undecodable(
     self, kind: str, key: str, mine: str, error: ValidationError
@@ -482,7 +535,7 @@ class Service(Component):
         job = queue.decode_json(message.data)
       except ValidationError as exc:
         self._undecodable("work", queue.name, queue.hash, exc)
-      await handler(job)
+      await self._through("work", queue.name, message, job, handler)
 
     return callback
 

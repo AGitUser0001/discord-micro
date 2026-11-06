@@ -983,11 +983,134 @@ async def pkg_scenarios() -> None:
     check("micro.toml with [sources] is still a valid deployment file", code == 0, out)
 
 
+async def service_scenarios() -> None:
+  print("service: middleware on requests, events and work")
+  from micro.errors import RemoteError
+  from micro.service import Call, EventSchema, RequestSchema, WorkQueue
+
+  class Say(BaseModel):
+    text: str
+
+  ECHO = RequestSchema[Say, str](id="mw.echo", input=Say, output=str)
+  SECRET = RequestSchema[Say, str](id="mw.secret.read", input=Say, output=str)
+  OTHER = RequestSchema[Say, str](id="mw.other", input=Say, output=str)
+  HAPPENED = EventSchema[Say](id="mw.happened", payload=Say)
+  QUEUE = WorkQueue[Say]("mw.jobs", Say)
+
+  trace: list[str] = []
+  flaky = {"left": 1}
+  service = Service("mw")
+
+  @service.use
+  async def outer(call: Call, next: Any) -> None:
+    trace.append(f"outer>{call.kind}:{call.key}")
+    await next()
+    trace.append(f"outer<{call.kind}:{call.key}")
+
+  @service.use
+  async def shout(call: Call, next: Any) -> None:
+    if call.kind == "request" and call.key == "mw.echo":
+      call.input = Say(text=call.input.text.upper())  # rewrite what the handler gets
+    await next()
+    if call.kind == "request" and call.key == "mw.echo":
+      call.output = f"{call.output}!"  # rewrite what the caller gets
+
+  @service.use("mw.secret")
+  async def gate(call: Call, next: Any, end: Any) -> None:
+    if call.input.text != "please":
+      call.output = "denied"
+      return await end()
+    await next()
+
+  @service.use("mw.other")
+  async def forgets(call: Call, next: Any, end: Any) -> None:
+    await end()  # ends without setting an output
+
+  @service.use("mw.happened")
+  async def veto(call: Call, next: Any, end: Any) -> None:
+    if call.input.text == "skip":
+      return await end()
+    await next()
+
+  @service.handle(ECHO)
+  async def echo(request: Say) -> str:
+    return request.text
+
+  @service.handle(SECRET)
+  async def secret(request: Say) -> str:
+    return "the secret"
+
+  @service.handle(OTHER)
+  async def other(request: Say) -> str:
+    return "unreachable"
+
+  @service.listen(HAPPENED)
+  async def happened(event: Say) -> None:
+    trace.append(f"event:{event.text}")
+    if event.text == "flaky" and flaky["left"]:
+      flaky["left"] -= 1
+      raise RuntimeError("try again")
+
+  @service.work(QUEUE)
+  async def job(item: Say) -> None:
+    trace.append(f"job:{item.text}")
+
+  async with Stack(App()) as s:
+    await s.runtime.add(service)
+    client = service.client
+    check(
+      "input and output rewritten", await client.request(ECHO, Say(text="hi")) == "HI!"
+    )
+    check(
+      "scoped middleware passes the right input",
+      await client.request(SECRET, Say(text="please")) == "the secret",
+    )
+    check(
+      "end() with an output answers the caller",
+      await client.request(SECRET, Say(text="nope")) == "denied",
+    )
+    try:
+      await client.request(OTHER, Say(text="x"))
+      code = None
+    except RemoteError as error:
+      code = error.code
+    check("end() with no output is an error", code == "ended_without_reply", code)
+    check(
+      "middleware nests in order",
+      trace[:2] == ["outer>request:mw.echo", "outer<request:mw.echo"],
+      trace[:2],
+    )
+    trace.clear()
+    await client.emit(HAPPENED, Say(text="skip"))
+    await client.emit(HAPPENED, Say(text="ok"))
+    await s.fake.until(lambda: "event:ok" in trace, 8)
+    await asyncio.sleep(0.3)
+    check("end() on an event skips its handler", "event:skip" not in trace, trace)
+    check(
+      "end() on an event is acked, not redelivered",
+      trace.count("outer<event:mw.happened") == 2,
+      trace,
+    )
+    trace.clear()
+    await client.emit(HAPPENED, Say(text="flaky"))
+    await s.fake.until(lambda: trace.count("event:flaky") >= 2, 12)
+    check(
+      "a failing handler still retries through middleware",
+      trace.count("event:flaky") == 2,
+      trace,
+    )
+    trace.clear()
+    await client.enqueue(QUEUE, Say(text="a"))
+    await s.fake.until(lambda: "job:a" in trace, 8)
+    check("work runs through middleware", "outer>work:mw.jobs" in trace, trace)
+
+
 SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "basics": basics,
   "sync": sync_scenarios,
   "cli": cli_scenarios,
   "pkg": pkg_scenarios,
+  "service": service_scenarios,
 }
 
 

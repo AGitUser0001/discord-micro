@@ -82,7 +82,7 @@ class InteractionTemplate:
     self.service = service
     self._consumers: list[StreamConsumer] = []
     self._http: DiscordHTTPClient | None = None
-    self._middleware = Middlewares()
+    self._middleware: Middlewares[Flow] = Middlewares()
     service.extend(self)
 
   # Subclasses describe their routes and how to run one interaction.

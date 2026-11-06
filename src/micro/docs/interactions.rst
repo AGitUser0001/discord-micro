@@ -121,7 +121,8 @@ The low-level layer is one Discord request each, never deciding or refusing:
 Middleware
 ----------
 
-``use`` wraps what happens around a handler, on any template and on the router.
+``use`` wraps what happens around a handler, on any template and on the router
+(the same engine as ``service.use`` in :doc:`services`).
 Middleware nests in the order added; ``next()`` runs the rest, ``end()`` stops
 the flow, and each pass must do exactly one of those (or raise). ``ctx`` is the
 flow: ``ctx.interaction``, ``ctx.payload`` (Discord's JSON, editable before
