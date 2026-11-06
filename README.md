@@ -26,3 +26,5 @@ async def hello(ctx: Interaction, name: str = "world") -> None:
 Documentation: `micro docs` (sources in [src/micro/docs](src/micro/docs/index.rst)) (quickstart, services,
 Discord, interactions, store, deploying, rolling upgrades, wire reference).
 Examples ship with Micro: `micro add example` lists them.
+
+Chat and EverythingBogo was here.
