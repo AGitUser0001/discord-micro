@@ -142,7 +142,11 @@ class HikariShard:
       raise RuntimeError("Shard session is not connected.")
     return self.bot
 
-  async def _on_dispatch(self, event: hikari.ShardPayloadEvent) -> None:
+  # hikari's `listen` calls inspect.signature on these, which evaluates their
+  # annotations on Python 3.14. hikari is imported inside `start` (importing
+  # micro.gateway must not require it), so the event types stay quoted;
+  # ruff's UP037 would unquote them and bring back a NameError.
+  async def _on_dispatch(self, event: "hikari.ShardPayloadEvent") -> None:  # noqa: UP037
     if event.name == "READY":
       if self.connection_id is not None:
         await self.host.on_connection(self, ConnectionEventKind.INVALIDATED)
@@ -153,10 +157,10 @@ class HikariShard:
       await self.host.on_connection(self, ConnectionEventKind.RESUMED)
     await self.host.on_dispatch(self, event.name, event.payload)
 
-  async def _on_connected(self, event: hikari.ShardConnectedEvent) -> None:
+  async def _on_connected(self, event: "hikari.ShardConnectedEvent") -> None:  # noqa: UP037
     await self.host.on_connection(self, ConnectionEventKind.CONNECTED)
 
-  async def _on_disconnected(self, event: hikari.ShardDisconnectedEvent) -> None:
+  async def _on_disconnected(self, event: "hikari.ShardDisconnectedEvent") -> None:  # noqa: UP037
     await self.host.on_connection(self, ConnectionEventKind.DISCONNECTED)
 
   async def _request_initial_members(self, payload: Mapping[str, Any]) -> None:
