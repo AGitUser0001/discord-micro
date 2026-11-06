@@ -1,4 +1,4 @@
-# DISCORD_TOKEN=... uv run micro up
+# DISCORD_TOKEN=... uv run micro dev
 name = "${name}"
 
 # Discord plumbing: rolling your services never drops the Gateway connection.
@@ -10,6 +10,6 @@ components = [
   "micro.discord.interactions:CommandSync",
 ]
 
-# Every service in ${directory} (add one with `micro add service NAME`).
+# Every service in ${directory} (add one with `micro services add NAME`).
 [processes.app]
 components = ["${target}"]

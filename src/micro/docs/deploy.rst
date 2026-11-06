@@ -6,11 +6,11 @@ micro.toml
 
 .. code-block:: toml
 
-   name = "bot"                       # deployment name (supervisor subjects)
+   name = "bot"                       # deployment name (shared by every node)
    nats = "nats://127.0.0.1:4222"     # or a list
    jetstream_replicas = 1
 
-   [nats_server]                      # started by `micro up` if NATS is unreachable
+   [nats_server]                      # what `micro server start` runs
    enabled = true
    store_dir = ".micro/nats"
 
@@ -25,19 +25,72 @@ micro.toml
 Targets: ``package.*`` (every component in the package's modules) or
 ``module:attribute`` (a component, a list, or a class to instantiate).
 
+Running it
+----------
+
+``micro dev`` runs your bot on this machine: it is a server, the workers, and the
+manager that keeps those workers running. It starts the NATS server if none is
+running, starts a worker for every replica of every process group in micro.toml,
+restarts the ones that crash, and stops them in order on Ctrl-C. That is all most
+projects need.
+
+.. code-block:: console
+
+   micro dev                      # everything described in micro.toml
+   micro dev scale app 4          # change a running group's replicas
+   micro dev roll app             # new replica, wait until ready, drain the old; repeat
+   micro nodes list               # the machines running it, their processes, live components
+
+The pieces underneath, each also usable on its own:
+
+* **server**: NATS (JetStream on), the only thing that listens on a port.
+  ``micro server start`` runs it alone; ``micro server status`` says whether it is
+  reachable and which nodes are connected.
+* **worker**: one process that connects to the server and hosts components. It is the
+  server's pair: ``micro worker services.*`` hosts everything in ``services`` until
+  Ctrl-C, and ``micro dev`` starts one for each replica in micro.toml. Run one by hand
+  to debug a single service, or under systemd, Docker, or Kubernetes when they
+  supervise the processes instead.
+* **node**: one machine running ``micro dev``. Name it with ``--name`` (default: the
+  hostname) when several machines serve one bot; ``scale`` and ``roll`` take
+  ``--node NAME`` when more than one of them runs the group.
+
+For more than one machine, run the server on one (``micro server start``, or any
+NATS) and point ``nats`` in micro.toml on the others at it; ``micro dev`` there uses
+that server instead of starting one.
+
+.. code-block:: console
+
+   # machine A                        # machines B and C
+   micro server start                 micro dev --name b       # [nats] names A
+   micro dev --name a                 micro dev --name c
+
 CLI
 ---
 
 .. code-block:: console
 
-   micro init | add service NAME | add example [NAME]   # see Projects
-   micro run mybot.services.* micro.discord:DiscordHTTPWorker   # one process
-   micro up [micro.toml]          # whole deployment; restarts crashes, Ctrl-C drains
-   micro ps                       # processes and live components
-   micro scale app 4
-   micro roll app                 # new replica, wait until ready, drain old; repeat
+   micro init | docs | invite
+   micro services add NAME | list
+   micro pkg list | add PACKAGE [NAME] | status | diff | upgrade | forget   # see Projects
+
+   micro dev [-c micro.toml] [--name NAME]
+   micro dev scale PROCESS N [--node NAME]
+   micro dev roll PROCESS [--node NAME]
+   micro nodes list
+   micro server start | status
+   micro worker mybot.services.* micro.discord:DiscordHTTPWorker   # one worker
+
    micro gateway status | shards N | roll | presence idle --activity "..."
    micro commands list | sync | forget TYPE:NAME
+
+A command that needs the server and finds none says so at once.
+
+Stopping: Ctrl-C (or SIGTERM, or closing the terminal) on ``micro dev`` stops the
+processes in order: each drains its in-flight work. Press Ctrl-C again to skip the
+rest of the draining. ``micro dev`` also stops the server, last, if it started it; a
+server you started yourself keeps running. Processes and the server run in their own
+sessions, so the terminal's Ctrl-C reaches only ``micro dev``.
 
 HTTP bridge
 -----------
@@ -56,6 +109,7 @@ in one process; give separate processes to ones you roll often.
 Containers
 ----------
 
-Only NATS listens on a port. One container running ``micro up`` is enough on a
-single machine; the same components run unchanged under systemd, Docker, k3s,
-or MicroK8s.
+Only NATS listens on a port. One container running ``micro dev`` is enough on a
+single machine. For more, run the server on its own (a unit or container for
+``micro server start``, or any NATS) and a ``micro dev`` per machine; the
+same components run unchanged under systemd, Docker, k3s, or MicroK8s.

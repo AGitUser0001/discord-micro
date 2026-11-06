@@ -7,9 +7,12 @@ import logging
 import math
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+
+from nats.errors import NoServersError
 
 from micro import subjects
 from micro.runtime import Runtime, event_loop_factory
@@ -38,7 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
       return runner.run(args.handler(args)) or 0
   except KeyboardInterrupt:
     return 130
-  except (FileExistsError, FileNotFoundError, ValueError) as error:
+  except (ConnectionError, FileExistsError, FileNotFoundError, ValueError) as error:
     print(f"micro: {error}", file=sys.stderr)
     return 1
 
@@ -52,18 +55,68 @@ def _version() -> str:
     return "unknown"
 
 
+GROUPS: dict[str, tuple[str, ...]] = {
+  "Project": ("init", "services", "pkg", "docs", "invite", "help"),
+  "Run": ("dev", "server", "worker", "nodes"),
+  "Discord": ("commands", "gateway"),
+}
+"""How `micro --help` sections the commands."""
+
+
+class _Root(argparse.ArgumentParser):
+  """The top-level parser; lists commands by purpose instead of in one column."""
+
+  descriptions: dict[str, str]
+
+  def format_help(self) -> str:
+    formatter = self._get_formatter()
+    formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
+    formatter.add_text(self.description)
+    for title, names in GROUPS.items():
+      formatter.start_section(title)
+      for name in names:
+        formatter.add_argument(
+          argparse.Action([], dest=name, metavar=name, help=self.descriptions[name])
+        )
+      formatter.end_section()
+    formatter.start_section("options")
+    formatter.add_arguments(
+      [action for action in self._actions if action.option_strings]
+    )
+    formatter.end_section()
+    return formatter.format_help() + (
+      "\ncommon tasks:\n"
+      "  micro init                    start a project in this directory\n"
+      "  micro services add tickets    add a service\n"
+      "  micro dev                     run everything on this machine\n"
+      "  micro nodes list              see what is running\n"
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
-  parser = argparse.ArgumentParser(prog="micro", description=__doc__)
+  parser = _Root(prog="micro", description=__doc__)
+  parser.descriptions = {}
   parser.add_argument(
     "-v", "--version", action="version", version=f"micro {_version()}"
   )
   parser.add_argument(
     "-V", "--verbose", action="store_true", help="debug logging (any command)"
   )
-  commands = parser.add_subparsers(dest="command", metavar="command")
+  commands = parser.add_subparsers(
+    dest="command", metavar="command", parser_class=argparse.ArgumentParser
+  )
 
-  help_command = commands.add_parser("help", help="show this help, or a command's")
-  help_command.add_argument("topic", nargs="?", help="a command, e.g. up")
+  def command(
+    name: str, help: str, description: str | None = None
+  ) -> argparse.ArgumentParser:
+    parser.descriptions[name] = help
+    return commands.add_parser(name, help=help, description=description)
+
+  config = argparse.ArgumentParser(add_help=False)
+  config.add_argument("--config", default=DEFAULT_CONFIG, help="micro.toml to read")
+
+  help_command = command("help", "show this help, or a command's")
+  help_command.add_argument("topic", nargs="?", help="a command, e.g. node")
 
   def show_help(args: argparse.Namespace) -> int:
     if args.topic is None:
@@ -79,13 +132,11 @@ def _parser() -> argparse.ArgumentParser:
 
   help_command.set_defaults(handler=help_handler)
 
-  docs = commands.add_parser("docs", help="open the documentation in a browser")
+  docs = command("docs", "open the documentation in a browser")
   docs.add_argument("--no-browser", action="store_true", help="only print the address")
   docs.set_defaults(handler=_docs)
 
-  invite = commands.add_parser(
-    "invite", help="print the links that add the bot to a server or account"
-  )
+  invite = command("invite", "print the links that add the bot to a server or account")
   invite.add_argument(
     "-p",
     "--permissions",
@@ -98,73 +149,170 @@ def _parser() -> argparse.ArgumentParser:
   invite.add_argument("--config", default=DEFAULT_CONFIG, help="micro.toml to read")
   invite.set_defaults(handler=_invite)
 
-  init = commands.add_parser("init", help="add Micro to the project in this directory")
+  init = command("init", "add Micro to the project in this directory")
   init.set_defaults(handler=_init)
 
-  add = commands.add_parser("add", help="add to the project")
-  add_actions = add.add_subparsers(required=True, metavar="kind")
-  add_service = add_actions.add_parser("service", help="a new service folder")
-  add_service.add_argument("name")
-  add_service.set_defaults(handler=_add_service)
-  add_example = add_actions.add_parser(
-    "example", help="copy a bundled example (list without NAME)"
+  services = command("services", "the services in this project")
+  services_actions = services.add_subparsers(required=True, metavar="action")
+  service_add = services_actions.add_parser("add", help="a new, empty service")
+  service_add.add_argument("name")
+  service_add.set_defaults(handler=_services, action="add")
+  services_actions.add_parser(
+    "list", help="the services here, and which came from a package"
+  ).set_defaults(handler=_services, action="list")
+
+  pkg = command("pkg", "packages: services Micro ships, to copy in, edit, and upgrade")
+  pkg_actions = pkg.add_subparsers(required=True, metavar="action")
+  pkg_list = pkg_actions.add_parser(
+    "list",
+    help="the packages in each source, and which you have added",
+    parents=[config],
   )
-  add_example.add_argument("name", nargs="?")
-  add_example.set_defaults(handler=_add_example)
-
-  run = commands.add_parser("run", help="host components in this process")
-  run.add_argument("targets", nargs="*", help="module:attribute components to host")
-  run.add_argument("--config", help="deployment file to read a process group from")
-  run.add_argument("--process", help="process group in the deployment file")
-  run.add_argument("--nats", help="NATS URL(s), comma separated")
-  run.add_argument("--name", help="runtime name shown in presence")
-  run.set_defaults(handler=_run)
-
-  up = commands.add_parser("up", help="run a whole deployment on this machine")
-  up.add_argument("config", nargs="?", default=DEFAULT_CONFIG)
-  up.set_defaults(handler=_up)
-
-  for name, help_text in (
-    ("ps", "list a deployment's processes and live components"),
-    ("scale", "change the replicas of a process group"),
-    ("roll", "replace every replica of a process group, one at a time"),
-  ):
-    command = commands.add_parser(name, help=help_text)
-    command.add_argument("--config", default=DEFAULT_CONFIG)
-    if name != "ps":
-      command.add_argument("process")
-    if name == "scale":
-      command.add_argument("replicas", type=int)
-    command.set_defaults(handler=_control, operation=name)
-
-  slash = commands.add_parser(
-    "commands", help="inspect and sync Discord application commands"
+  pkg_list.add_argument(
+    "--source", help="only this source (default: builtin and those in [sources])"
   )
-  slash.add_argument("--config", default=DEFAULT_CONFIG)
+  pkg_list.set_defaults(handler=_pkg, action="list")
+  pkg_add = pkg_actions.add_parser(
+    "add",
+    help="copy a package into services/ (a template needs a name)",
+    parents=[config],
+  )
+  pkg_add.add_argument("package")
+  pkg_add.add_argument(
+    "--source",
+    help="where the package comes from: a name in [sources], or a folder (default: builtin)",
+  )
+  pkg_add.add_argument(
+    "name", nargs="?", help="what to call the copy, as in `service tickets`"
+  )
+  pkg_add.set_defaults(handler=_pkg, action="add")
+  pkg_status = pkg_actions.add_parser(
+    "status", help="your packages against what this Micro ships", parents=[config]
+  )
+  pkg_status.add_argument("names", nargs="*", metavar="name")
+  pkg_status.set_defaults(handler=_pkg, action="status")
+  pkg_diff = pkg_actions.add_parser(
+    "diff",
+    help="a package's files, yours against what this Micro ships",
+    parents=[config],
+  )
+  pkg_diff.add_argument("name")
+  pkg_diff.set_defaults(handler=_pkg, action="diff")
+  pkg_upgrade = pkg_actions.add_parser(
+    "upgrade",
+    help="bring packages up to what this Micro ships, keeping your edits",
+    parents=[config],
+  )
+  pkg_upgrade.add_argument("names", nargs="*", metavar="name")
+  settle = pkg_upgrade.add_mutually_exclusive_group()
+  settle.add_argument(
+    "--theirs", action="store_true", help="on a conflict, take Micro's file"
+  )
+  settle.add_argument(
+    "--mine",
+    action="store_true",
+    help="on a conflict, keep yours and mark Micro's as reviewed",
+  )
+  pkg_upgrade.set_defaults(handler=_pkg, action="upgrade")
+  pkg_forget = pkg_actions.add_parser(
+    "forget", help="stop tracking a package; its files stay", parents=[config]
+  )
+  pkg_forget.add_argument("name")
+  pkg_forget.set_defaults(handler=_pkg, action="forget")
+
+  server = command("server", "the NATS server everything connects to, on its own")
+  server_actions = server.add_subparsers(required=True, metavar="action")
+  server_start = server_actions.add_parser(
+    "start", help="run it in the foreground (data in [nats_server] store_dir)"
+  )
+  server_start.add_argument("config", nargs="?", default=DEFAULT_CONFIG)
+  server_start.set_defaults(handler=_server, action="start")
+  server_actions.add_parser(
+    "status",
+    help="is it reachable, is JetStream on, which nodes are connected",
+    parents=[config],
+  ).set_defaults(handler=_server, action="status")
+
+  dev = command(
+    "dev",
+    "run the whole bot on this machine",
+    "Starts the NATS server if none is running, then runs every process group in "
+    "micro.toml and keeps them running; Ctrl-C stops them in order. `scale` and "
+    "`roll` change a running one.",
+  )
+  dev.add_argument("-c", "--config", default=DEFAULT_CONFIG, help="micro.toml to run")
+  dev.add_argument(
+    "--name", help="this machine's name among the nodes (default: hostname)"
+  )
+  dev.set_defaults(handler=_dev, action=None)
+  dev_actions = dev.add_subparsers(metavar="[action]")
+  dev_scale = dev_actions.add_parser(
+    "scale", help="change the replicas of a process group", parents=[config]
+  )
+  dev_scale.add_argument("process")
+  dev_scale.add_argument("replicas", type=int)
+  dev_scale.set_defaults(handler=_dev, action="scale")
+  dev_roll = dev_actions.add_parser(
+    "roll",
+    help="replace every replica of a process group, one at a time",
+    parents=[config],
+  )
+  dev_roll.add_argument("process")
+  dev_roll.set_defaults(handler=_dev, action="roll")
+  for leaf in (dev_scale, dev_roll):
+    leaf.add_argument("--node", help="which node (default: the one running the group)")
+
+  nodes = command("nodes", "the machines running your bot")
+  nodes_actions = nodes.add_subparsers(required=True, metavar="action")
+  nodes_actions.add_parser(
+    "list", help="each node, its processes, and the live components", parents=[config]
+  ).set_defaults(handler=_nodes, action="list")
+
+  worker = command(
+    "worker",
+    "one process hosting components, connected to the server",
+    "Connects to the NATS server and hosts components in this one process until "
+    "Ctrl-C. It is the server's pair: `micro dev` starts one worker per process "
+    "group replica in micro.toml and keeps them running. Name components as "
+    "module:attribute, or package.* for every component in a package.",
+  )
+  worker.add_argument("targets", nargs="*", help="module:attribute components to host")
+  worker.add_argument("--config", help="deployment file to read a process group from")
+  worker.add_argument("--process", help="process group in the deployment file")
+  worker.add_argument("--nats", help="NATS URL(s), comma separated")
+  worker.add_argument("--name", help="name shown in presence")
+  worker.set_defaults(handler=_worker)
+
+  slash = command("commands", "inspect and sync Discord application commands")
   slash_actions = slash.add_subparsers(required=True, metavar="action")
   slash_actions.add_parser(
-    "list", help="commands, their state, and live versions"
+    "list", help="commands, their state, and live versions", parents=[config]
   ).set_defaults(handler=_commands, action="list")
-  slash_actions.add_parser("sync", help="sync changed scopes now").set_defaults(
-    handler=_commands, action="sync"
-  )
+  slash_actions.add_parser(
+    "sync", help="sync now, repairing commands changed outside Micro", parents=[config]
+  ).set_defaults(handler=_commands, action="sync")
   forget = slash_actions.add_parser(
-    "forget", help="drop a retired service's commands, then sync"
+    "forget", help="drop a retired service's commands, then sync", parents=[config]
   )
   forget.add_argument("service")
   forget.set_defaults(handler=_commands, action="forget")
 
-  gateway = commands.add_parser("gateway", help="operate the Discord Gateway")
-  gateway.add_argument("--config", default=DEFAULT_CONFIG)
+  gateway = command("gateway", "operate the Discord Gateway")
   actions = gateway.add_subparsers(required=True, metavar="action")
-  actions.add_parser("status").set_defaults(handler=_gateway, action="status")
-  shards = actions.add_parser("shards", help="roll in a generation with N shards")
+  actions.add_parser("status", parents=[config]).set_defaults(
+    handler=_gateway, action="status"
+  )
+  shards = actions.add_parser(
+    "shards", help="roll in a generation with N shards", parents=[config]
+  )
   shards.add_argument("count", type=int)
   shards.set_defaults(handler=_gateway, action="shards")
-  actions.add_parser("roll", help="replace every connection").set_defaults(
-    handler=_gateway, action="roll"
+  actions.add_parser(
+    "roll", help="replace every connection", parents=[config]
+  ).set_defaults(handler=_gateway, action="roll")
+  presence = actions.add_parser(
+    "presence", help="set the bot presence", parents=[config]
   )
-  presence = actions.add_parser("presence", help="set the bot presence")
   presence.add_argument("status", choices=("online", "idle", "dnd", "offline"))
   presence.add_argument("--activity")
   presence.set_defaults(handler=_gateway, action="presence")
@@ -237,31 +385,104 @@ async def _init(args: argparse.Namespace) -> int:
 
   project = init()
   services = project.services.relative_to(project.root)
-  print(f"Added micro.toml and {services}/hello.py.\n\n  DISCORD_TOKEN=... micro up")
+  print(f"Added micro.toml and {services}/hello/.\n\n  DISCORD_TOKEN=... micro dev")
   return 0
 
 
-async def _add_service(args: argparse.Namespace) -> int:
-  from micro.scaffold import add_service
+_WORDS: dict[str, str] = {
+  "upgrade": "upgrade",
+  "add": "new file",
+  "remove": "removed by Micro",
+  "refresh": "already matches",
+  "orphan": "no longer shipped (yours kept)",
+  "dropped": "no longer shipped",
+  "modified": "edited by you",
+  "deleted": "deleted by you",
+  "conflict": "CONFLICT: changed by you and by Micro",
+  "gone": "CONFLICT: deleted by you, changed by Micro",
+  "theirs": "replaced with Micro's",
+  "mine": "kept yours; Micro's marked reviewed",
+}
 
-  folder = add_service(args.name)
-  print(f"Added {folder.name}/; `micro up` loads it with the other services.")
-  return 0
 
+async def _pkg(args: argparse.Namespace) -> int:
+  from micro.scaffold import find, packages
 
-async def _add_example(args: argparse.Namespace) -> int:
-  from micro.scaffold import add_example, examples
-
-  if args.name is None:
-    for name, summary in examples().items():
-      print(f"  {name:10s} {summary}")
+  if args.action == "list":
+    try:
+      project = find()
+    except FileNotFoundError:
+      project = None
+    labels = [args.source] if args.source else [packages.BUILTIN]
+    if project is not None and not args.source:
+      labels += sorted(packages.configured_sources(project))
+    entries = packages.Lock.load(project).entries.values() if project else ()
+    for label in labels:
+      name, root = packages.resolve(project, label)
+      print(name if name == packages.BUILTIN else f"{name}  ({root})")
+      for package, summary in packages.available(root).items():
+        copies = sorted(
+          e.path for e in entries if e.package == package and e.source == name
+        )
+        print(
+          f"  {package:10s} {summary}" + (f"  [{', '.join(copies)}]" if copies else "")
+        )
     return 0
-  folder = add_example(args.name)
-  print(f"Added {folder.name}/; `micro up` loads it with the other services.")
-  return 0
+  project = find()
+  if args.action == "add":
+    folder = packages.add(args.package, project, name=args.name, source=args.source)
+    print(
+      f"Added {folder.relative_to(project.root)}/; `micro dev` loads it with the other services."
+    )
+    return 0
+  if args.action == "forget":
+    packages.forget(project, args.name)
+    print(f"{args.name} is no longer tracked; its files are unchanged.")
+    return 0
+  if args.action == "diff":
+    text = packages.diff(project, args.name)
+    print(
+      text or f"{args.name} matches what this Micro ships.", end="" if text else "\n"
+    )
+    return 0
+  names = args.names or None
+  if args.action == "status":
+    reports = packages.status(project, names)
+  else:
+    settle = "theirs" if args.theirs else "mine" if args.mine else None
+    reports = packages.upgrade(project, names, settle=settle)
+  if not reports:
+    print("No packages added yet. See `micro pkg list`.")
+  open_items = 0
+  for report in reports:
+    notable = [c for c in report.changes if c.kind != "current"]
+    if not report.shipped:
+      reason = (
+        report.problem or f"the {report.source} source no longer has {report.package}"
+      )
+      print(f"{report.path}  can't compare: {reason}")
+      continue
+    headline = "up to date" if not notable else ""
+    if report.attention:
+      headline = "needs a decision"
+    elif any(c.kind in packages.PENDING for c in notable):
+      headline = "upgrade available" if args.action == "status" else "upgraded"
+    elif notable:
+      headline = "up to date, with your edits"
+    origin = "" if report.source == packages.BUILTIN else f"  ({report.source})"
+    print(f"{report.path}  {headline}{origin}")
+    for change in notable:
+      print(f"    {change.file}: {_WORDS.get(change.kind, change.kind)}")
+    open_items += len(report.attention)
+  if open_items:
+    print(
+      "\nSee `micro pkg diff NAME`, then `micro pkg upgrade --theirs` (take Micro's) or "
+      "`--mine` (keep yours)."
+    )
+  return 1 if open_items else 0
 
 
-async def _run(args: argparse.Namespace) -> int:
+async def _worker(args: argparse.Namespace) -> int:
   from micro.launch import load_components, load_config
 
   targets = list(args.targets)
@@ -282,19 +503,209 @@ async def _run(args: argparse.Namespace) -> int:
     name = name or f"{config.name}.{args.process}"
     replicas = config.jetstream_replicas
   if not targets:
-    raise SystemExit("Nothing to run: pass module:attribute targets or --process.")
+    raise SystemExit(
+      "Nothing to host: pass module:attribute targets, or --config and --process."
+    )
   components = load_components(targets)
   runtime = Runtime(servers, name=name or "micro", replicas=replicas)
   await runtime.serve(*components)
   return 0
 
 
-async def _up(args: argparse.Namespace) -> int:
-  from micro.launch import Supervisor, load_config
+async def _dev(args: argparse.Namespace) -> int:
+  if args.action is None:
+    return await _dev_start(args)
+  return await _operate(args)
+
+
+async def _dev_start(args: argparse.Namespace) -> int:
+  from micro.launch import NatsServer, Node, load_config
 
   path = Path(args.config)
-  await Supervisor(load_config(path), path).run()
+  config = load_config(path)
+  server = NatsServer(config, path)
+  started = False
+  if config.local_nats() is not None and config.nats_server.enabled:
+    if await server.reachable():
+      logging.getLogger("micro").info(
+        "Using the NATS server already running at %s:%d", *server.address
+      )
+    else:
+      await server.start()
+      started = True
+  try:
+    await Node(config, path, name=args.name).run()
+  finally:
+    if started:
+      await server.stop()
   return 0
+
+
+async def _server(args: argparse.Namespace) -> int:
+  from micro.launch import NODE_KIND, DeploymentConfig, NatsServer, load_config
+
+  path = Path(args.config)
+  config = load_config(path) if path.exists() else DeploymentConfig()
+  if args.action == "start":
+    server = NatsServer(config, path)
+    if await server.reachable():
+      host, port = server.address
+      raise ValueError(f"A NATS server is already running at {host}:{port}.")
+    return await server.run()
+  async with _connect(config.nats) as runtime:
+    info = await runtime.jetstream.account_info()
+    print(
+      json.dumps(
+        {
+          "server": runtime.nats.connected_url.netloc
+          if runtime.nats.connected_url
+          else None,
+          "jetstream": {"streams": info.streams, "consumers": info.consumers},
+          "nodes": sorted(
+            f"{entry.metadata.get('deployment')}/{entry.name}"
+            for entry in runtime.directory.entries(NODE_KIND)
+          ),
+        },
+        indent=2,
+      )
+    )
+  return 0
+
+
+def _nodes_of(runtime: Runtime, name: str) -> dict[str, Any]:
+  from micro.launch import NODE_KIND
+
+  nodes = {
+    entry.name: entry
+    for entry in runtime.directory.entries(NODE_KIND)
+    if entry.metadata.get("deployment") == name
+  }
+  if not nodes:
+    raise ConnectionError(
+      f"No node is running for {name!r}. Start one with `micro dev`."
+    )
+  return nodes
+
+
+async def _nodes(args: argparse.Namespace) -> int:
+  from micro.launch import NODE_KIND
+
+  name, servers = _deployment(args.config)
+  async with _connect(servers) as runtime:
+    nodes = _nodes_of(runtime, name)
+    report: dict[str, Any] = {"ok": True, "nodes": {}, "components": []}
+    for node in sorted(nodes):
+      reply = await runtime.nats.request(
+        subjects.node(name, node, "ps"), b"{}", timeout=30
+      )
+      answer = json.loads(reply.data)
+      report["nodes"][node] = {key: v for key, v in answer.items() if key != "ok"}
+    for entry in runtime.directory.entries():
+      if entry.kind not in ("runtime", NODE_KIND):
+        report["components"].append(
+          {"kind": entry.kind, "name": entry.name, "runtime": entry.instance[:8]}
+        )
+    print(json.dumps(report, indent=2))
+  return 0
+
+
+async def _operate(args: argparse.Namespace) -> int:
+  name, servers = _deployment(args.config)
+  async with _connect(servers) as runtime:
+    target = _target(args, _nodes_of(runtime, name))
+    request: dict[str, Any] = {"process": args.process}
+    if args.action == "scale":
+      request["replicas"] = args.replicas
+    reply = await runtime.nats.request(
+      subjects.node(name, target, args.action),
+      json.dumps(request).encode(),
+      # Rolling waits for each replacement to become ready, however long that is.
+      timeout=math.inf if args.action == "roll" else 30,
+    )
+    body = json.loads(reply.data)
+    print(json.dumps(body, indent=2))
+    return 0 if body.get("ok") else 1
+
+
+async def _services(args: argparse.Namespace) -> int:
+  from micro.scaffold import find, packages
+
+  project = find()
+  if args.action == "add":
+    folder = packages.add("service", project, name=args.name)
+    print(
+      f"Added {folder.relative_to(project.root)}/; `micro dev` loads it with the other services."
+    )
+    return 0
+  copies = {
+    Path(entry.path).name: entry
+    for entry in packages.Lock.load(project).entries.values()
+  }
+  for item in sorted(project.services.iterdir()):
+    if item.name.startswith(("_", ".")):
+      continue
+    if item.is_dir() and (item / "__init__.py").is_file():
+      key = item.name
+    elif item.suffix == ".py":
+      key = item.stem
+    else:
+      continue
+    entry = copies.get(key)
+    blank = entry is None or entry.package == "service"
+    origin = (
+      "yours" if blank or entry is None else f"from {entry.package} ({entry.source})"
+    )
+    print(f"  {key:16s} {origin}")
+  return 0
+
+
+def _target(args: argparse.Namespace, nodes: dict[str, Any]) -> str:
+  """The node a scale or roll goes to: --node, or the one running that group."""
+  if args.node:
+    if args.node not in nodes:
+      raise ValueError(f"No node {args.node!r}; running: {', '.join(sorted(nodes))}.")
+    return args.node
+  running = sorted(
+    node
+    for node, entry in nodes.items()
+    if args.process in (entry.metadata.get("processes") or [])
+  )
+  if not running:
+    raise ValueError(f"No node runs a process group {args.process!r}.")
+  if len(running) > 1:
+    raise ValueError(
+      f"Several nodes run {args.process!r} ({', '.join(running)}); pass --node."
+    )
+  return running[0]
+
+
+@asynccontextmanager
+async def _connect(servers: list[str] | None) -> AsyncIterator[Runtime]:
+  """A CLI runtime, with a plain message when no NATS server answers."""
+
+  # nats-py keeps retrying a refused first connection for minutes (each try printing a
+  # traceback) unless it is told to give up after two quick attempts.
+  async def quiet(error: Exception) -> None:
+    del error
+
+  runtime = Runtime(
+    servers,
+    name="micro.cli",
+    max_reconnect_attempts=1,
+    reconnect_time_wait=0,
+    error_cb=quiet,
+  )
+  try:
+    await runtime.start()
+  except (NoServersError, OSError, TimeoutError) as error:
+    raise ConnectionError(
+      f"No NATS server at {', '.join(runtime.servers)}. Start one with "
+      "`micro server start`, or run `micro dev`."
+    ) from error
+  try:
+    yield runtime
+  finally:
+    await runtime.close()
 
 
 def _deployment(path: str) -> tuple[str, list[str] | None]:
@@ -306,36 +717,11 @@ def _deployment(path: str) -> tuple[str, list[str] | None]:
   return "micro", None
 
 
-async def _control(args: argparse.Namespace) -> int:
-  name, servers = _deployment(args.config)
-  request: dict[str, Any] = {}
-  if args.operation != "ps":
-    request["process"] = args.process
-  if args.operation == "scale":
-    request["replicas"] = args.replicas
-  async with Runtime(servers, name="micro.cli") as runtime:
-    reply = await runtime.nats.request(
-      subjects.supervisor(name, args.operation),
-      json.dumps(request).encode(),
-      # Rolling waits for each replacement to become ready, however long that is.
-      timeout=math.inf if args.operation == "roll" else 30,
-    )
-    body = json.loads(reply.data)
-    if args.operation == "ps":
-      for entry in runtime.directory.entries():
-        if entry.kind != "runtime":
-          body.setdefault("components", []).append(
-            {"kind": entry.kind, "name": entry.name, "runtime": entry.instance[:8]}
-          )
-  print(json.dumps(body, indent=2))
-  return 0 if body.get("ok") else 1
-
-
 async def _gateway(args: argparse.Namespace) -> int:
   from micro.gateway import ActivityUpdate, GatewayControl
 
   _, servers = _deployment(args.config)
-  async with Runtime(servers, name="micro.cli") as runtime:
+  async with _connect(servers) as runtime:
     control = GatewayControl(runtime)
     if args.action == "status":
       status = await control.status()
@@ -365,10 +751,10 @@ async def _gateway(args: argparse.Namespace) -> int:
 async def _commands(args: argparse.Namespace) -> int:
   from micro.coordination import Declarations
   from micro.discord import DiscordHTTPClient
-  from micro.discord.interactions import SYNC_LOCK, sync_commands
+  from micro.discord.interactions import SYNC_LOCK, SyncFailed, sync_commands
 
   _, servers = _deployment(args.config)
-  async with Runtime(servers, name="micro.cli") as runtime:
+  async with _connect(servers) as runtime:
     declarations = Declarations(runtime, "commands")
     if args.action == "list":
       view = await declarations.view()
@@ -393,7 +779,14 @@ async def _commands(args: argparse.Namespace) -> int:
     application = await http.call("get_my_application")
     locks = await runtime.locks()
     async with locks.hold(SYNC_LOCK, ttl=30):
-      changed = await sync_commands(runtime, http, str(application["id"]))
+      try:
+        changed = await sync_commands(
+          runtime, http, str(application["id"]), verify=True
+        )
+      except SyncFailed as failure:
+        for scope, error in sorted(failure.failures.items()):
+          print(f"{scope}: {error}", file=sys.stderr)
+        return 1
     print(
       "Synced changed command scopes." if changed else "Commands were already in sync."
     )

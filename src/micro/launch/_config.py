@@ -12,7 +12,7 @@ from micro.runtime import DEFAULT_NATS_URL, Component
 
 
 class NatsServerConfig(BaseModel):
-  """A local nats-server the supervisor starts when none is reachable."""
+  """The local nats-server `micro server start` (and `micro dev`) runs."""
 
   model_config = ConfigDict(extra="forbid")
 
@@ -58,6 +58,7 @@ class DeploymentConfig(BaseModel):
   jetstream_replicas: int = Field(default=1, ge=1)
   nats_server: NatsServerConfig = Field(default_factory=NatsServerConfig)
   invite: InviteConfig = Field(default_factory=InviteConfig)
+  sources: dict[str, str] = Field(default_factory=dict)
   processes: dict[str, ProcessConfig] = Field(default_factory=dict)
 
   @field_validator("nats", mode="before")

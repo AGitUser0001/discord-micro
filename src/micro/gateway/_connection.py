@@ -15,6 +15,7 @@ class ShardHost(Protocol):
 
   token: str
   intents: hikari.Intents
+  api_url: str | None
 
   async def on_dispatch(
     self, session: ShardSession, name: str, payload: Mapping[str, Any]
@@ -72,6 +73,7 @@ class HikariShard:
         ),
         auto_chunk_members=False,
         banner=None,
+        rest_url=self.host.api_url,
       )
       bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
       bot.listen(hikari.ShardConnectedEvent)(self._on_connected)

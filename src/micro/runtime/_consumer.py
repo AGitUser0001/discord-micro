@@ -5,7 +5,6 @@ from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from nats.aio.msg import Msg
-from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 
 from micro.errors import DrainingError
@@ -123,7 +122,7 @@ class StreamConsumer:
           free += 1
         try:
           messages = await subscription.fetch(free, timeout=_FETCH_WAIT)
-        except NatsTimeoutError:
+        except TimeoutError:  # nothing arrived; nats's own is a subclass of this
           messages = []
         except asyncio.CancelledError:
           for _ in range(free):

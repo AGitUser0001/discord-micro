@@ -120,9 +120,9 @@ def work_stream(queue: str) -> str:
   return WORK_STREAM_PREFIX + safe_name(queue).upper()
 
 
-def supervisor(deployment: str, operation: str) -> str:
-  """Control subjects of the `micro up` supervisor for one deployment."""
-  return f"micro.supervisor.{token(deployment)}.{token(operation)}"
+def node(deployment: str, node: str, operation: str) -> str:
+  """Control subjects of one node (`micro nodes list`, `micro dev scale|roll`)."""
+  return f"micro.node.{token(deployment)}.{token(node)}.{token(operation)}"
 
 
 def durable(kind: str, name: str) -> str:
@@ -172,10 +172,10 @@ __all__ = (
   "gateway_control",
   "http_worker",
   "interaction",
+  "node",
   "request",
   "safe_name",
   "standby",
-  "supervisor",
   "token",
   "work",
   "work_stream",

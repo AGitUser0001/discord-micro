@@ -31,7 +31,7 @@ from ._context import (
 from ._custom_id import CUSTOM_ID_LIMIT, CustomId
 from ._flow import Flow, Middleware, MiddlewareError, defers
 from ._router import RAW_INTERACTION, InteractionRouter
-from ._sync import SYNC_LOCK, CommandSync, sync_commands
+from ._sync import SYNC_LOCK, CommandSync, SyncFailed, sync_commands
 from ._templates import (
   INTERACTIONS_KEY,
   RESPONSE_DEADLINE,
@@ -72,6 +72,7 @@ __all__ = (
   "Modals",
   "Option",
   "ResponseType",
+  "SyncFailed",
   "defers",
   "ensure_interactions_stream",
   "route_consumer",

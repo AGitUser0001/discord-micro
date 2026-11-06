@@ -17,6 +17,51 @@ from pathlib import Path
 
 HEADER = "# Generated from Discord's API specification. Do not edit directly.\n"
 
+# Discord's bit fields are listed in the spec as an enum of single bits, but any
+# combination of them (including none) is a valid value, so the enums behind
+# fields with these names become IntFlag.
+FLAG_FIELD = re.compile(r"(?:.*_)?flags")
+
+
+def flag_enums(tree: ast.Module) -> set[str]:
+  """Integer enums used by a bit field such as `flags` or `public_flags`."""
+  enums = {
+    node.name
+    for node in tree.body
+    if isinstance(node, ast.ClassDef)
+    and any(isinstance(base, ast.Name) and base.id == "IntEnum" for base in node.bases)
+  }
+  used: set[str] = set()
+  for node in ast.walk(tree):
+    if (
+      isinstance(node, ast.AnnAssign)
+      and isinstance(node.target, ast.Name)
+      and FLAG_FIELD.fullmatch(node.target.id)
+    ):
+      used |= {
+        part.id
+        for part in ast.walk(node.annotation)
+        if isinstance(part, ast.Name) and part.id in enums
+      }
+  return used
+
+
+def as_flags(text: str, names: set[str]) -> str:
+  for name in names:
+    text = text.replace(f"class {name}(IntEnum):", f"class {name}(IntFlag):")
+  return re.sub(
+    r"^from enum import (.*)$",
+    lambda match: (
+      "from enum import "
+      + ", ".join(
+        sorted({*(item.strip() for item in match.group(1).split(",")), "IntFlag"})
+      )
+    ),
+    text,
+    count=1,
+    flags=re.MULTILINE,
+  )
+
 
 def _references(node: ast.AST, names: set[str]) -> set[str]:
   found: set[str] = set()
@@ -97,6 +142,10 @@ def _module_name(name: str, used: set[str]) -> str:
 def split(source: Path, target: Path, package: str, rewrites: dict[str, str]) -> int:
   text = source.read_text()
   tree = ast.parse(text)
+  flags = flag_enums(tree)
+  if flags:
+    text = as_flags(text, flags)
+    tree = ast.parse(text)
   imports: list[str] = []
   definitions: dict[str, ast.stmt] = {}
   order: list[str] = []

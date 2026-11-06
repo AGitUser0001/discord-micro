@@ -1,4 +1,4 @@
-"""Launching deployments: `micro run` for one process, `micro up` for many."""
+"""Launching: `micro dev` runs a machine's workers (and NATS), `micro worker` one."""
 
 from ._config import (
   DeploymentConfig,
@@ -7,13 +7,18 @@ from ._config import (
   load_components,
   load_config,
 )
-from ._supervisor import Supervisor
+from ._node import NODE_KIND, Node, default_node_name
+from ._server import NatsServer, reachable
 
 __all__ = (
+  "NODE_KIND",
   "DeploymentConfig",
+  "NatsServer",
   "NatsServerConfig",
+  "Node",
   "ProcessConfig",
-  "Supervisor",
+  "default_node_name",
   "load_components",
   "load_config",
+  "reachable",
 )

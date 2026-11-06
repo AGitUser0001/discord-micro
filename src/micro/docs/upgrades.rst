@@ -1,7 +1,7 @@
 Rolling upgrades
 ================
 
-Old and new versions run side by side during every rollout (``micro roll``,
+Old and new versions run side by side during every rollout (``micro dev roll``,
 or starting new processes and stopping old ones). Micro treats that as normal.
 
 What converges

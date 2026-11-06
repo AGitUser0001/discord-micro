@@ -17,7 +17,7 @@ Subjects
 ``micro.discord.http.<worker>``                        HTTP worker requests
 ``micro.ratelimit.discord.global``                     global rate-limit broadcast
 ``micro.work.<queue>``                                 work queue jobs
-``micro.supervisor.<deployment>.scale|roll|ps``        ``micro up`` control
+``micro.node.<deployment>.<node>.scale|roll|ps``        node control (``micro dev scale|roll``)
 =====================================================  ==========================================
 
 Routes: ``cmd.<type>.<name>``, ``cmp.<prefix>``, ``mdl.<prefix>``; tokens outside

@@ -1,6 +1,6 @@
 """A template component bridging HTTP to a Micro deployment.
 
-Use it as-is (`micro run micro.http:HTTPBridge`) for health probes, discovery,
+Use it as-is (`micro worker micro.http:HTTPBridge`) for health probes, discovery,
 and an admin API, or subclass it and add routes to `app` before it starts.
 It serves only what it exposes; put it behind your own authentication.
 """

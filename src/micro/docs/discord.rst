@@ -4,6 +4,8 @@ Discord
 All Discord access goes through NATS: Gateway workers publish dispatches,
 HTTP workers make API calls. The token comes from ``DISCORD_TOKEN`` (set it in
 ``.env`` or the environment) and is never stored in NATS; rotate it by rolling the processes.
+``DISCORD_API_URL`` (or ``api_url=`` on the HTTP and Gateway workers) points them
+at another API with Discord's shape, such as a proxy or a fake for testing.
 
 Invite links
 ------------
@@ -25,7 +27,7 @@ micro.toml:
    micro invite --guild 1234       # preselect (and lock) one server
 
 Names are Discord's (``manage_roles``, ``Moderate Members``, ...); a typo is
-caught with a suggestion, and also when ``micro up`` loads micro.toml. Enable
+caught with a suggestion, and also when ``micro dev`` loads micro.toml. Enable
 *User Install* under Installation in the Developer Portal for the second link
 to work. In code:
 

@@ -143,7 +143,7 @@ class DiscordHTTPWorker(Component):
     token: str | None = None,
     *,
     name: str = "discord.http",
-    api_url: str = "https://discord.com/api/v10",
+    api_url: str | None = None,
     transport: httpx2.AsyncBaseTransport | None = None,
     max_attempts: int = 4,
     concurrency: int = 256,
@@ -155,7 +155,9 @@ class DiscordHTTPWorker(Component):
       raise ValueError("max_attempts must be at least 1.")
     super().__init__(name)
     self._token = token
-    self._api_url = api_url
+    self._api_url = (
+      api_url or os.environ.get("DISCORD_API_URL") or "https://discord.com/api/v10"
+    )
     self._transport = transport
     self._max_attempts = max_attempts
     self._slots = asyncio.Semaphore(concurrency)

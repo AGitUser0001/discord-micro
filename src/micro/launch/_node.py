@@ -2,8 +2,9 @@ import asyncio
 import json
 import logging
 import os
-import shutil
+import re
 import signal
+import socket
 import sys
 import time
 from contextlib import suppress
@@ -12,13 +13,19 @@ from pathlib import Path
 from typing import Any
 
 from nats.aio.msg import Msg
+from nats.errors import NoServersError
+from pydantic import JsonValue
 
 from micro import subjects
 from micro.runtime import RUNTIME_KIND, Runtime
 
 from ._config import DeploymentConfig
+from ._server import reachable
 
-logger = logging.getLogger("micro.supervisor")
+logger = logging.getLogger("micro.node")
+
+NODE_KIND = "node"
+"""Presence kind of a node: `name` is the node, `metadata` its deployment and groups."""
 
 _RESTART_DELAY = 1.0
 _RESTART_DELAY_LIMIT = 30.0
@@ -37,21 +44,31 @@ class Child:
     return self.process.pid
 
 
-class Supervisor:
-  """Runs a deployment from `micro.toml` on one machine.
+def default_node_name() -> str:
+  """This machine's hostname, trimmed to what a subject token allows."""
+  host = socket.gethostname().split(".")[0]
+  return re.sub(r"[^A-Za-z0-9_-]", "-", host).strip("-") or "node"
 
-  It starts a local nats-server when none is reachable, runs every process
-  group with its replicas, restarts crashed processes, and answers `micro scale`,
-  `micro roll`, and `micro ps` over NATS. Stopping it drains every process.
+
+class Node:
+  """One machine's share of a deployment, from `micro.toml`.
+
+  A node connects to a NATS server that is already running (`micro server start`),
+  runs every process group with its replicas, restarts crashed processes, and
+  answers `micro nodes list`, `micro dev scale`, and `micro dev roll` over NATS. Several nodes, each with
+  its own name, can serve the same deployment. Stopping a node drains every
+  process it started and leaves the server alone.
   """
 
-  def __init__(self, config: DeploymentConfig, path: str | Path) -> None:
+  def __init__(
+    self, config: DeploymentConfig, path: str | Path, name: str | None = None
+  ) -> None:
     self.config = config
     self.path = Path(path).resolve()
     self.root = self.path.parent
+    self.name = subjects.token(name or default_node_name())
     self.desired = {name: group.replicas for name, group in config.processes.items()}
     self.children: dict[str, list[Child]] = {name: [] for name in config.processes}
-    self._nats_server: asyncio.subprocess.Process | None = None
     self._runtime: Runtime | None = None
     self._stopping = False
     self._delays: dict[str, float] = {}
@@ -60,33 +77,79 @@ class Supervisor:
   async def run(self) -> None:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
-    for sig in (signal.SIGINT, signal.SIGTERM):
+
+    def interrupt() -> None:
+      if stop.is_set():
+        self._hurry()
+      stop.set()
+
+    # The children and nats-server run in their own sessions (see `_spawn`), so a
+    # terminal's Ctrl-C or hangup reaches only this process, which then stops
+    # everything in order: children drain, then NATS goes last.
+    signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+      signals.append(signal.SIGHUP)
+    for sig in signals:
       with suppress(NotImplementedError, RuntimeError):
-        loop.add_signal_handler(sig, stop.set)
+        loop.add_signal_handler(sig, interrupt)
     try:
-      await self._ensure_nats()
+      local = self.config.local_nats()
+      if local is not None and not await reachable(*local):
+        raise ConnectionError(self._missing_server())
       runtime = Runtime(
         self.config.nats,
-        name=f"{self.config.name}.supervisor",
+        name=f"{self.config.name}.node",
         replicas=self.config.jetstream_replicas,
       )
       self._runtime = runtime
-      await runtime.start()
+      try:
+        await runtime.start()
+      except (NoServersError, OSError, TimeoutError) as error:
+        raise ConnectionError(self._missing_server()) from error
+      taken = any(
+        entry.name == self.name and entry.metadata.get("deployment") == self.config.name
+        for entry in runtime.directory.entries(NODE_KIND)
+      )
+      if taken:
+        raise ValueError(
+          f"A node named {self.name!r} is already running for {self.config.name!r}; "
+          "pick another with --name."
+        )
+      groups: list[JsonValue] = [*sorted(self.config.processes)]
+      await runtime.register(
+        kind=NODE_KIND,
+        name=self.name,
+        id=runtime.instance,
+        metadata={"deployment": self.config.name, "processes": groups},
+      )
       for operation, handler in (
         ("scale", self._on_scale),
         ("roll", self._on_roll),
         ("ps", self._on_ps),
       ):
         await runtime.nats.subscribe(
-          subjects.supervisor(self.config.name, operation), cb=handler
+          subjects.node(self.config.name, self.name, operation), cb=handler
         )
       for group, replicas in self.desired.items():
         for _ in range(replicas):
           await self._spawn(group)
-      logger.info("Deployment %s is up", self.config.name)
+      logger.info("Node %s of %s is up", self.name, self.config.name)
       await stop.wait()
     finally:
       await self.shutdown()
+
+  def _missing_server(self) -> str:
+    return (
+      f"No NATS server at {', '.join(self.config.nats)}. Start one with "
+      "`micro server start` on the machine it names."
+    )
+
+  def _hurry(self) -> None:
+    """A second Ctrl-C: a child's second signal makes it skip the rest of its drain."""
+    for group in self.children.values():
+      for child in group:
+        with suppress(ProcessLookupError):
+          child.process.send_signal(signal.SIGTERM)
 
   async def shutdown(self) -> None:
     self._stopping = True
@@ -101,11 +164,6 @@ class Supervisor:
     if self._runtime is not None:
       await self._runtime.close()
       self._runtime = None
-    if self._nats_server is not None:
-      with suppress(ProcessLookupError):
-        self._nats_server.send_signal(signal.SIGTERM)
-      await self._nats_server.wait()
-      self._nats_server = None
 
   # Processes -------------------------------------------------------------------
 
@@ -116,13 +174,14 @@ class Supervisor:
       sys.executable,
       "-m",
       "micro",
-      "run",
+      "worker",
       "--config",
       str(self.path),
       "--process",
       group,
       cwd=self.root,
       env=env,
+      start_new_session=True,
     )
     child = Child(group, process)
     self.children[group].append(child)
@@ -237,36 +296,3 @@ class Supervisor:
     await self._reply(
       message, {"ok": True, "desired": self.desired, "processes": self.processes()}
     )
-
-  # NATS ------------------------------------------------------------------------
-
-  async def _ensure_nats(self) -> None:
-    local = self.config.local_nats()
-    if local is None or await _reachable(*local):
-      return
-    settings = self.config.nats_server
-    if not settings.enabled:
-      raise RuntimeError(f"NATS at {self.config.nats[0]} is not reachable.")
-    binary = shutil.which(settings.binary) or settings.binary
-    host, port = local
-    store = (self.root / settings.store_dir).resolve()
-    store.mkdir(parents=True, exist_ok=True)
-    self._nats_server = await asyncio.create_subprocess_exec(
-      binary, "-js", "-a", host, "-p", str(port), "-sd", str(store), *settings.args
-    )
-    logger.info("Started nats-server on %s:%d (store %s)", host, port, store)
-    while not await _reachable(host, port):
-      if self._nats_server.returncode is not None:
-        raise RuntimeError("nats-server exited during startup.")
-      await asyncio.sleep(0.05)
-
-
-async def _reachable(host: str, port: int) -> bool:
-  try:
-    _, writer = await asyncio.open_connection(host, port)
-  except OSError:
-    return False
-  writer.close()
-  with suppress(Exception):
-    await writer.wait_closed()
-  return True

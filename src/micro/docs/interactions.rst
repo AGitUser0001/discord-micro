@@ -178,3 +178,9 @@ Routing and sync
 * ``CommandSync`` registers a definition only when every live replica agrees on
   it; stopping a service never unregisters commands. ``micro commands list``,
   ``micro commands forget TYPE:NAME``.
+* Each scope (global, and every guild a command names) is registered on its own,
+  global first, with one bulk overwrite that changes it atomically. A scope
+  Discord refuses, such as a guild the bot left, is retried and reported once
+  without holding up the others. A pass trusts its own record, but the first
+  pass after ``CommandSync`` starts, and ``micro commands sync``, also compare
+  with what Discord has and repair commands deleted or edited elsewhere.

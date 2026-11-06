@@ -114,6 +114,7 @@ class GatewayWorker(Component):
     max_concurrency: int = 1,
     lease_ttl: float = 10.0,
     name: str = "gateway",
+    api_url: str | None = None,
     session_factory: SessionFactory = HikariShard,
   ) -> None:
     import hikari
@@ -131,6 +132,7 @@ class GatewayWorker(Component):
       raise ValueError("lease_ttl must be at least 3 seconds.")
     super().__init__(name)
     self.token = token
+    self.api_url = api_url or os.environ.get("DISCORD_API_URL")
     self.intents = hikari.Intents(intents)
     self.initial_shard_count = shard_count
     self.max_concurrency = max_concurrency
