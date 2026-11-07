@@ -91,6 +91,40 @@ def guild_of(name: str, payload: Mapping[str, Any]) -> str | None:
   return guild if isinstance(guild, str) and guild.isdecimal() else None
 
 
+def parse_intents(text: str) -> hikari.Intents:
+  """Intents from names or numbers: `unprivileged,message_content` or `33280`.
+
+  `unprivileged`, `privileged` and `all` stand for hikari's groups; anything
+  else is an intent name such as `message_content` or `guild_members`.
+  """
+  import difflib
+
+  import hikari
+
+  groups = {
+    "UNPRIVILEGED": hikari.Intents.ALL_UNPRIVILEGED,
+    "PRIVILEGED": hikari.Intents.ALL_PRIVILEGED,
+  }
+  result = hikari.Intents.NONE
+  for part in text.replace("|", ",").split(","):
+    item = part.strip()
+    if not item:
+      continue
+    if item.isdecimal():
+      result |= hikari.Intents(int(item))
+      continue
+    name = item.upper().replace(" ", "_").replace("-", "_")
+    found = groups.get(name) or hikari.Intents.__members__.get(name)
+    if found is None:
+      close = difflib.get_close_matches(
+        name, [*groups, *hikari.Intents.__members__], n=1
+      )
+      hint = f" Did you mean {close[0].lower()}?" if close else ""
+      raise ValueError(f"Unknown intent {item!r}.{hint}")
+    result |= found
+  return result
+
+
 class GatewayWorker(Component):
   """A self-balancing Discord Gateway worker.
 
@@ -123,7 +157,7 @@ class GatewayWorker(Component):
     if not token:
       raise ValueError("A Discord token is required (argument or DISCORD_TOKEN).")
     if intents is None:
-      intents = int(os.environ.get("DISCORD_INTENTS", hikari.Intents.ALL_UNPRIVILEGED))
+      intents = parse_intents(os.environ.get("DISCORD_INTENTS", "unprivileged"))
     if not 1 <= shard_count <= 4096:
       raise ValueError("shard_count must be between 1 and 4096.")
     if max_concurrency < 1:

@@ -68,6 +68,15 @@ Gateway workers
 
    GatewayWorker(intents=hikari.Intents.ALL_UNPRIVILEGED, shard_count=1, max_concurrency=1)
 
+Intents come from ``DISCORD_INTENTS`` (default ``unprivileged``): names or numbers,
+comma separated. Reading message text (``!ping`` in the ``chat`` package) needs
+the privileged ``message_content`` intent, switched on both here and under
+**Bot > Privileged Gateway Intents** in the Discord developer portal:
+
+.. code-block:: sh
+
+   DISCORD_INTENTS=unprivileged,message_content
+
 Workers balance shards through TTL leases, reclaim a crashed worker's shards,
 hand shards over without gaps when draining, and respect identify concurrency.
 Only the owner of a shard publishes its dispatches.
