@@ -116,23 +116,20 @@ class StreamConsumer:
     try:
       while self._component.active:
         await self._slots.acquire()
-        free = 1
-        while free < self._concurrency and not self._slots.locked():
-          await self._slots.acquire()
-          free += 1
+        # One message per fetch: nats-py's batch path (`_fetch_n`) can leave the
+        # first message after an idle spell waiting for seconds, `_fetch_one` does not.
         try:
-          messages = await subscription.fetch(free, timeout=_FETCH_WAIT)
+          messages = await subscription.fetch(1, timeout=_FETCH_WAIT)
         except TimeoutError:  # nothing arrived; nats's own is a subclass of this
           messages = []
         except asyncio.CancelledError:
-          for _ in range(free):
-            self._slots.release()
+          self._slots.release()
           raise
         except Exception:
           logger.warning("Fetch from %s failed", self.durable, exc_info=True)
           messages = []
           await asyncio.sleep(1)
-        for _ in range(free - len(messages)):
+        if not messages:
           self._slots.release()
         for message in messages:
           task = asyncio.create_task(self._handle(message))

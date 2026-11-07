@@ -31,10 +31,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     _dotenv.load()
   level = "DEBUG" if args.verbose else os.environ.get("MICRO_LOG_LEVEL", "INFO").upper()
-  logging.basicConfig(
-    level=level,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-  )
+  from micro import _logging
+
+  _logging.configure(level)
   sys.path.insert(0, os.getcwd())
   try:
     with asyncio.Runner(loop_factory=event_loop_factory) as runner:

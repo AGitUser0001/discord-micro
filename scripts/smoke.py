@@ -1203,6 +1203,19 @@ async def route_scenarios() -> None:
       data,
     )
 
+    slow: list[tuple[str, float]] = []
+    for _ in range(2):
+      await asyncio.sleep(12)  # idle long enough for every consumer's fetch to cycle
+      for custom_id in ("ticket.close:42", "legacy:x", "ticket.close:42"):
+        started = time.monotonic()
+        await s.interact(f.component(custom_id))
+        took = (
+          time.monotonic() - started - 0.1
+        )  # interact() waits 0.1 s after the reply
+        if took > 0.5:
+          slow.append((custom_id, round(took, 2)))
+    check("the first click after idle is answered promptly", not slow, slow)
+
 
 SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "basics": basics,
