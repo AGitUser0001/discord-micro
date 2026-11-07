@@ -27,7 +27,7 @@ def main(argv: Sequence[str] | None = None) -> int:
   if getattr(args, "handler", None) is None:
     parser.print_help()
     return 0
-  if not getattr(args, "help_only", False) and args.command not in {"docs", "init"}:
+  if args.handler is not _help_handler and args.command not in {"docs", "init"}:
     from micro import _dotenv
 
     _dotenv.load()
@@ -90,7 +90,7 @@ class _Parser(argparse.ArgumentParser):
     kwargs.setdefault("metavar", "command")
     actions = super().add_subparsers(**kwargs)
     if "handler" not in self._defaults:  # a command that also runs keeps its handler
-      self.set_defaults(handler=_help_handler, target=self, topic=[], help_only=True)
+      self.set_defaults(handler=_help_handler, target=self, topic=[])
     return actions
 
   def commands(self) -> argparse._SubParsersAction | None:  # pyright: ignore[reportPrivateUsage, reportMissingTypeArgument]
@@ -179,7 +179,7 @@ def _add_help_commands(parser: _Parser) -> None:
     leaf.add_argument(
       "topic", nargs="*", metavar="command", help="a command, as in `help source add`"
     )
-    leaf.set_defaults(handler=_help_handler, target=parser, help_only=True)
+    leaf.set_defaults(handler=_help_handler, target=parser)
 
 
 def _parser() -> argparse.ArgumentParser:

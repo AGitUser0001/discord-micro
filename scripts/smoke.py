@@ -727,6 +727,26 @@ async def cli_scenarios() -> None:
     all(f"{title}:" in out for title in ("Project", "Run", "Discord")),
     out[:300],
   )
+  # Commands read .env next to micro.toml (a regression once skipped it for every command).
+  with tempfile.TemporaryDirectory() as raw:
+    dotenv_dir = Path(raw)
+    (dotenv_dir / "micro.toml").write_text('name = "dotenv"\n')
+    (dotenv_dir / ".env").write_text(f"DISCORD_TOKEN={TOKEN}\n")
+    saved = os.environ.pop("DISCORD_TOKEN", None)
+    try:
+      code, out = await cli(dotenv_dir, "invite")
+    finally:
+      if saved is not None:
+        os.environ["DISCORD_TOKEN"] = saved
+    check(
+      "commands read DISCORD_TOKEN from .env",
+      code == 0 and "client_id=100" in out,
+      out[-200:],
+    )
+    code, out = await cli(dotenv_dir, "pkg")
+    check(
+      "and a help command does not need it", code == 0 and "source" in out, out[-200:]
+    )
 
 
 async def _count(
