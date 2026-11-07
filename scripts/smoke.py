@@ -15,6 +15,7 @@ import re
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -685,330 +686,454 @@ async def _micro(directory: Path, *args: str, merge: bool = True) -> tuple[int, 
   return proc.returncode or 0, out.decode()
 
 
+def _git(repo: Path, *args: str) -> str:
+  done = subprocess.run(
+    ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+    cwd=repo, capture_output=True, text=True, check=True,
+  )  # fmt: skip
+  return done.stdout.strip()
+
+
+def _commit(repo: Path, message: str, tag: str | None = None) -> str:
+  _git(repo, "add", "-A")
+  _git(repo, "commit", "-qm", message)
+  if tag:
+    _git(repo, "tag", tag)
+  return _git(repo, "rev-parse", "HEAD")
+
+
+def _upstream(root: Path) -> Path:
+  """A git repository standing in for Micro's examples: the real hello, chat and
+  ticker, plus a template and a package that has one file for every outcome."""
+  repo = root / "upstream"
+  repo.mkdir()
+  _git(repo, "init", "-q", "-b", "main")
+  for name in ("hello", "chat", "ticker"):
+    shutil.copytree(
+      ROOT / "packages" / name,
+      repo / "packages" / name,
+      ignore=shutil.ignore_patterns("__pycache__"),
+    )
+  tpl = repo / "packages/tpl"
+  tpl.mkdir(parents=True)
+  (tpl / "package.toml").write_text('description = "A template; name it."\n')
+  (tpl / "__init__.py.tmpl").write_text(
+    '"""The ${name} service."""\nname = "${name}"\n'
+  )
+  demo = repo / "packages/demo"
+  demo.mkdir(parents=True)
+  for name in (
+    "plain", "edited", "both", "clash", "deleted", "gone", "same", "dropped", "orphan",
+  ):  # fmt: skip
+    (demo / f"{name}.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n")
+  (demo / "__init__.py").write_text('"""A package with a file for every outcome."""\n')
+  _commit(repo, "v1", tag="v1")
+  return repo
+
+
+def _release_two(repo: Path) -> str:
+  """What the next release changes in demo."""
+  demo = repo / "packages/demo"
+  v2 = "a = 1\nb = 2\nc = 3\nd = 40\n"
+  (demo / "plain.py").write_text("a = 10\nb = 2\nc = 3\nd = 4\n")
+  (demo / "both.py").write_text(v2)  # you edit line a, they edit line d
+  (demo / "clash.py").write_text("a = 1\nb = 22\nc = 3\nd = 4\n")  # same line as you
+  (demo / "gone.py").write_text(v2)
+  (demo / "same.py").write_text(v2)
+  (demo / "dropped.py").unlink()
+  (demo / "orphan.py").unlink()
+  (demo / "extra.py").write_text("x = 1\n")
+  return _commit(repo, "v2", tag="v2")
+
+
+def _edit_demo(folder: Path) -> None:
+  """Your edits to a fresh copy of demo."""
+  (folder / "edited.py").write_text("a = 1\nb = 99\nc = 3\nd = 4\n")
+  (folder / "both.py").write_text("a = 11\nb = 2\nc = 3\nd = 4\n")
+  (folder / "clash.py").write_text("a = 1\nb = 77\nc = 3\nd = 4\n")
+  (folder / "deleted.py").unlink()
+  (folder / "gone.py").unlink()
+  (folder / "same.py").write_text("a = 1\nb = 2\nc = 3\nd = 40\n")
+  (folder / "orphan.py").write_text("a = 99\nb = 2\nc = 3\nd = 4\n")
+
+
 async def pkg_scenarios() -> None:
-  print("pkg: packages, and upgrading them")
-  from micro.scaffold import Project, packages
+  print("pkg: git sources, packages, and merging upgrades")
+  from micro.scaffold import Project, _sources, packages
+  from micro.scaffold import _git as scaffold_git
 
+  saved = os.environ.get("MICRO_PACKAGES_URL")
   with tempfile.TemporaryDirectory() as raw:
-    d = Path(raw)
-    code, out = await _micro(d, "init")
-    check(
-      "init adds hello as a tracked package",
-      code == 0
-      and (d / "services/hello/__init__.py").is_file()
-      and "[hello]" in (d / "micro.lock").read_text(),
-      out,
-    )
-    code, out = await _micro(d, "pkg", "list")
-    check(
-      "pkg list shows what ships and what you have",
-      code == 0 and "chat" in out and "service" in out and "services/hello" in out,
-      out,
-    )
-    code, out = await _micro(d, "pkg", "add", "chat")
-    check(
-      "pkg add copies a package in",
-      code == 0 and (d / "services/chat/schemas.py").is_file(),
-      out,
-    )
-    code, out = await _micro(d, "pkg", "add", "service", "tickets")
-    check(
-      "a template takes a name",
-      code == 0
-      and 'Service("tickets")' in (d / "services/tickets/__init__.py").read_text(),
-      out,
-    )
-    code, out = await _micro(d, "services", "add", "orders")
-    check(
-      "services add makes a blank service",
-      code == 0
-      and 'Service("orders")' in (d / "services/orders/__init__.py").read_text(),
-      out,
-    )
-    (d / "services/mine").mkdir()
-    (d / "services/mine/__init__.py").write_text("")
-    code, out = await _micro(d, "services", "list")
-    check(
-      "services list says which came from a package and which are yours",
-      code == 0
-      and "hello" in out
-      and "from hello (builtin)" in out
-      and "orders" in out
-      and "yours" in out
-      and "mine" in out
-      and "tickets" in out,
-      out,
-    )
-    code, out = await _micro(d, "services", "add", "Bad Name")
-    check("services add checks the name", code == 1 and "lowercase" in out, out)
-    code, out = await _micro(d, "pkg", "add", "service")
-    check(
-      "a template without a name says so",
-      code == 1 and "give the copy a name" in out,
-      out,
-    )
-    code, out = await _micro(d, "pkg", "add", "chat")
-    check("adding twice refuses", code == 1 and "already exists" in out, out)
-    code, out = await _micro(d, "pkg", "add", "nope")
-    check(
-      "an unknown package lists the choices",
-      code == 1 and "No package" in out and "chat" in out,
-      out,
-    )
-    code, out = await _micro(d, "pkg", "status")
-    check(
-      "status: nothing changed, everything up to date",
-      code == 0 and out.count("up to date") == 4,
-      out,
-    )
+    root = Path(raw)
+    repo = _upstream(root)
+    os.environ["MICRO_PACKAGES_URL"] = repo.as_uri()
+    first = _git(repo, "rev-parse", "HEAD")
+    try:
+      await _pkg_cli(root, repo, first)
+      await _pkg_merging(root, repo, first, Project, packages)
+      await _pkg_refs_and_sources(root, repo, first, Project, packages, _sources)
+      await _pkg_environment(root, scaffold_git)
+    finally:
+      if saved is None:
+        os.environ.pop("MICRO_PACKAGES_URL", None)
+      else:
+        os.environ["MICRO_PACKAGES_URL"] = saved
 
-    chat = d / "services/chat/__init__.py"
-    chat.write_text(chat.read_text() + "# my note\n")
-    code, out = await _micro(d, "pkg", "status", "chat")
-    check("status notices your edit", "edited by you" in out, out)
-    code, out = await _micro(d, "pkg", "diff", "chat")
-    check(
-      "diff shows your edit against what Micro ships",
-      "-# my note" in out and "(yours)" in out,
-      out,
-    )
-    code, out = await _micro(d, "pkg", "upgrade", "chat")
-    check(
-      "upgrade leaves your edit alone",
-      code == 0 and chat.read_text().endswith("# my note\n"),
-      out,
-    )
 
-    # Micro changed a file you never touched: what you were given differs from what ships now.
-    project = Project(d, d.name, d / "services", "services.*")
-    code, _ = await _micro(d, "pkg", "add", "ticker")
-    ticker = d / "services/ticker/__init__.py"
-    shipped = ticker.read_bytes()
-    ticker.write_bytes(b"# an older Micro shipped this\n")
-    lock = packages.Lock.load(project)
-    lock.entries["ticker"].files["__init__.py"] = packages._hash(ticker.read_bytes())
-    lock.save()
-    code, out = await _micro(d, "pkg", "status", "ticker")
-    check(
-      "status offers an upgrade for a file you never touched",
-      "upgrade available" in out,
-      out,
-    )
-    code, out = await _micro(d, "pkg", "upgrade", "ticker")
-    check(
-      "upgrade replaces it with what Micro ships now",
-      code == 0 and ticker.read_bytes() == shipped,
-      out,
-    )
+async def _pkg_cli(root: Path, repo: Path, first: str) -> None:
+  d = root / "cli"
+  d.mkdir()
+  code, out = await _micro(d, "init")
+  lock = (d / "micro.lock").read_text() if (d / "micro.lock").exists() else ""
+  check(
+    "init fetches hello and records its source, ref and commit",
+    code == 0
+    and (d / "services/hello/__init__.py").is_file()
+    and "[hello]" in lock
+    and f'commit = "{first}"' in lock
+    and 'ref = "main"' in lock,
+    out + lock,
+  )
+  code, out = await _micro(d, "pkg", "list")
+  check(
+    "pkg list shows the source, its commit, and what you have added",
+    code == 0
+    and "builtin" in out
+    and first[:7] in out
+    and "tpl" in out
+    and "services/hello" in out,
+    out,
+  )
+  code, out = await _micro(d, "pkg", "add", "builtin/chat")
+  check(
+    "pkg add copies a package",
+    code == 0 and (d / "services/chat/__init__.py").is_file(),
+    out,
+  )
+  code, out = await _micro(d, "pkg", "add", "builtin/ticker")
+  check(
+    "another package, by SOURCE/NAME",
+    code == 0 and (d / "services/ticker/__init__.py").is_file(),
+    out,
+  )
+  code, out = await _micro(d, "pkg", "add", "builtin/tpl", "tickets")
+  text = (d / "services/tickets/__init__.py").read_text() if code == 0 else ""
+  check("a template is filled in with its name", 'name = "tickets"' in text, out + text)
+  code, out = await _micro(d, "pkg", "add", "builtin/tpl")
+  check(
+    "a template without a name says so",
+    code == 1 and "give the copy a name" in out,
+    out,
+  )
+  code, out = await _micro(d, "pkg", "add", "builtin/nope")
+  check(
+    "an unknown package lists the choices",
+    code == 1 and "choose from" in out and "chat" in out,
+    out,
+  )
+  code, out = await _micro(d, "pkg", "add", "builtin/chat")
+  check("adding twice is refused", code == 1 and "already exists" in out, out)
+  code, out = await _micro(d, "pkg", "status")
+  check(
+    "status: everything up to date, with the source and commit shown",
+    code == 0
+    and out.count("up to date") == 4
+    and f"main ({first[:7]})".replace("main (", "builtin@main (") in out,
+    out,
+  )
+  code, out = await _micro(d, "services", "add", "orders")
+  check(
+    "services add makes an empty service without any network",
+    code == 0 and "Service(" in (d / "services/orders/__init__.py").read_text(),
+    out,
+  )
+  code, out = await _micro(d, "services", "add", "Bad Name")
+  check("a bad service name is refused", code == 1 and "lowercase" in out, out)
+  code, out = await _micro(d, "services", "list")
+  check(
+    "services list says which came from a package and which are yours",
+    code == 0 and "from hello (builtin)" in out and "orders" in out and "yours" in out,
+    out,
+  )
+  code, out = await _micro(d, "pkg", "forget", "tickets")
+  code, out = await _micro(d, "pkg", "status", "tickets")
+  check(
+    "an untracked name is an error", code == 1 and "Not an added package" in out, out
+  )
 
-    code, out = await _micro(d, "pkg", "forget", "tickets")
-    check(
-      "forget stops tracking but keeps the files",
-      code == 0
-      and "[tickets]" not in (d / "micro.lock").read_text()
-      and (d / "services/tickets/__init__.py").is_file(),
-      out,
-    )
-    code, out = await _micro(d, "pkg", "status", "tickets")
-    check(
-      "an untracked name is an error", code == 1 and "Not an added package" in out, out
-    )
 
-  # Every outcome, one file each, against a source we control ("the next Micro").
-  def build(root: Path, version: int) -> None:
-    pkg = root / "demo"
-    pkg.mkdir(parents=True, exist_ok=True)
-    for name in (
-      "__init__",
-      "edited",
-      "both",
-      "deleted",
-      "gone",
-      "same",
-      "dropped",
-      "orphan",
-    ):
-      (pkg / f"{name}.py").write_text(f"v = 1  # {name}\n")
-    if version == 2:
-      for name in ("__init__", "both", "gone", "same"):
-        (pkg / f"{name}.py").write_text(f"v = 2  # {name}\n")
-      (pkg / "dropped.py").unlink()
-      (pkg / "orphan.py").unlink()
-      (pkg / "extra.py").write_text("v = 2  # extra\n")
-
-  def prepare(root: Path) -> tuple[Project, Path]:
-    source = root / "source"
-    build(source, 1)
-    project_dir = root / "project"
-    (project_dir / "services").mkdir(parents=True)
-    project = Project(project_dir, "p", project_dir / "services", "services.*")
-    packages.add("demo", project, source=str(source))
-    folder = project_dir / "services/demo"
-    (folder / "edited.py").write_text("v = 99  # edited\n")
-    (folder / "both.py").write_text("v = 99  # both\n")
-    (folder / "deleted.py").unlink()
-    (folder / "gone.py").unlink()
-    (folder / "same.py").write_text("v = 2  # same\n")
-    (folder / "orphan.py").write_text("v = 99  # orphan\n")
-    shutil.rmtree(source)
-    build(source, 2)  # the next Micro
+async def _pkg_merging(root: Path, repo: Path, first: str, Project, packages) -> None:
+  def fresh(name: str) -> tuple[Any, Path]:
+    d = root / name
+    (d / "services").mkdir(parents=True)
+    project = Project(d, name, d / "services", "services.*")
+    packages.add("builtin/demo", project, ref="v1")
+    folder = d / "services/demo"
+    _edit_demo(folder)
     return project, folder
 
-  with tempfile.TemporaryDirectory() as raw:
-    project, folder = prepare(Path(raw))
-    kinds = {c.file: c.kind for c in packages.status(project)[0].changes}
-    want = {
-      "__init__.py": "upgrade",
-      "edited.py": "modified",
-      "both.py": "conflict",
-      "deleted.py": "deleted",
-      "gone.py": "gone",
-      "same.py": "refresh",
-      "dropped.py": "remove",
-      "orphan.py": "orphan",
-      "extra.py": "add",
-    }
-    check(
-      "status classifies each file",
-      kinds == want,
-      {k: (kinds.get(k), v) for k, v in want.items() if kinds.get(k) != v},
-    )
-    reports = packages.upgrade(project)
-    text = lambda name: (
-      (folder / name).read_text() if (folder / name).exists() else None
-    )
-    check(
-      "upgrade: untouched file replaced, new file added",
-      text("__init__.py") == "v = 2  # __init__\n"
-      and text("extra.py") == "v = 2  # extra\n",
-    )
-    check(
-      "upgrade: file Micro dropped is removed, edited one kept",
-      text("dropped.py") is None and text("orphan.py") == "v = 99  # orphan\n",
-    )
-    check(
-      "upgrade: your edits and deletions are untouched",
-      text("edited.py") == "v = 99  # edited\n" and text("deleted.py") is None,
-    )
-    check(
-      "upgrade: a conflict is left alone and reported",
-      text("both.py") == "v = 99  # both\n"
-      and text("gone.py") is None
-      and len(reports[0].attention) == 2,
-      reports[0].attention,
-    )
-    lock = packages.Lock.load(project).entries["demo"].files
-    check(
-      "the lock tracks what you were given, not what you edited",
-      lock["both.py"] != packages._hash(b"v = 2  # both\n")
-      and "orphan.py" not in lock
-      and lock["__init__.py"] == packages._hash(b"v = 2  # __init__\n"),
-    )
-    patch = packages.diff(project, "demo")
-    check(
-      "diff shows a conflict's two sides",
-      "-v = 99  # both" in patch and "+v = 2  # both" in patch,
-      patch[:200],
-    )
+  project, folder = fresh("merge")
+  second = _release_two(repo)
+  kinds = {c.file: c.kind for c in packages.status(project)[0].changes}
+  want = {
+    "plain.py": "upgrade", "edited.py": "modified", "both.py": "conflict",
+    "clash.py": "conflict", "deleted.py": "deleted", "gone.py": "gone",
+    "same.py": "refresh", "dropped.py": "remove", "orphan.py": "orphan",
+    "extra.py": "add", "__init__.py": "current",
+  }  # fmt: skip
+  check(
+    "status: pinned to the v1 tag, nothing moves",
+    set(kinds.values()) <= {"modified", "deleted", "current"},
+    kinds,
+  )
+  reports = packages.upgrade(project, ref="main")
+  kinds = {c.file: c.kind for c in reports[0].changes}
+  check(
+    "upgrade --ref main follows the branch and classifies each file",
+    kinds == {**want, "both.py": "merged", "clash.py": "markers"},
+    {k: (kinds.get(k), v) for k, v in want.items() if kinds.get(k) != v},
+  )
+  text = lambda name: (folder / name).read_text() if (folder / name).exists() else None
+  check(
+    "upgrade: untouched file replaced, new file added, dropped file removed",
+    text("plain.py") == "a = 10\nb = 2\nc = 3\nd = 4\n"
+    and text("extra.py") == "x = 1\n"
+    and text("dropped.py") is None,
+  )
+  check(
+    "upgrade: your edits, deletions and an edited dropped file are kept",
+    text("edited.py") == "a = 1\nb = 99\nc = 3\nd = 4\n"
+    and text("deleted.py") is None
+    and text("orphan.py") == "a = 99\nb = 2\nc = 3\nd = 4\n",
+  )
+  check(
+    "a file you both changed on different lines is merged",
+    text("both.py") == "a = 11\nb = 2\nc = 3\nd = 40\n",
+    text("both.py"),
+  )
+  clash = text("clash.py") or ""
+  check(
+    "a file you both changed on the same line gets conflict markers",
+    "<<<<<<< yours" in clash
+    and "b = 77" in clash
+    and "b = 22" in clash
+    and ">>>>>>>" in clash,
+    clash,
+  )
+  entry = packages.Lock.load(project).entries["demo"]
+  check(
+    "the lock follows the files to the new commit and ref, with the undecided still flagged",
+    entry.commit == second and entry.ref == "main",
+    (entry.commit, entry.ref),
+  )
+  after = {c.file: c.kind for c in packages.status(project)[0].changes}
+  check(
+    "status keeps flagging the markers and the deleted-but-changed file",
+    after["clash.py"] == "markers" and after["gone.py"] == "gone",
+    after,
+  )
+  (folder / "clash.py").write_text("a = 1\nb = 77\nc = 3\nd = 4\n")  # you resolve it
+  (folder / "gone.py").write_text(
+    "a = 1\nb = 2\nc = 3\nd = 40\n"
+  )  # and bring gone back
+  after = {c.file: c.kind for c in packages.status(project)[0].changes}
+  check(
+    "resolving the markers clears the flag",
+    after["clash.py"] == "modified" and "markers" not in after.values(),
+    after,
+  )
+  patch = packages.diff(project, "demo")
+  check(
+    "diff shows what still differs from upstream",
+    "-b = 77" in patch and "+b = 22" in patch,
+    patch[:200],
+  )
 
-  with tempfile.TemporaryDirectory() as raw:
-    project, folder = prepare(Path(raw))
-    packages.upgrade(project, settle="theirs")
-    check(
-      "--theirs takes Micro's file and recreates a deleted one",
-      (folder / "both.py").read_text() == "v = 2  # both\n"
-      and (folder / "gone.py").read_text() == "v = 2  # gone\n",
-    )
-    check(
-      "--theirs leaves nothing to decide",
-      not any(r.attention for r in packages.status(project)),
-    )
+  # --theirs and --mine, from a fresh copy.
+  repo_reset = _git(repo, "rev-parse", "HEAD")
+  project, folder = fresh("theirs")
+  packages.upgrade(project, ref="main", settle="theirs")
+  check(
+    "--theirs takes upstream's file for every conflict and brings a deleted file back",
+    (folder / "both.py").read_text() == "a = 1\nb = 2\nc = 3\nd = 40\n"
+    and (folder / "clash.py").read_text() == "a = 1\nb = 22\nc = 3\nd = 4\n"
+    and (folder / "gone.py").exists(),
+  )
+  entry = packages.Lock.load(project).entries["demo"]
+  check(
+    "once nothing is undecided the lock moves to the new commit",
+    entry.commit == repo_reset
+    and entry.ref == "main"
+    and not any(r.attention for r in packages.status(project)),
+    (entry.commit, repo_reset),
+  )
+  project, folder = fresh("mine")
+  packages.upgrade(project, ref="main", settle="mine")
+  after = {c.file: c.kind for c in packages.status(project)[0].changes}
+  check(
+    "--mine keeps your files and marks upstream's reviewed",
+    (folder / "clash.py").read_text() == "a = 1\nb = 77\nc = 3\nd = 4\n"
+    and not (folder / "gone.py").exists()
+    and after["clash.py"] == "modified"
+    and after["gone.py"] == "deleted",
+    after,
+  )
 
-  with tempfile.TemporaryDirectory() as raw:
-    project, folder = prepare(Path(raw))
-    packages.upgrade(project, settle="mine")
-    check(
-      "--mine keeps your file and your deletion",
-      (folder / "both.py").read_text() == "v = 99  # both\n"
-      and not (folder / "gone.py").exists(),
+  # A lock from before commits were recorded has no original to merge against.
+  project, folder = fresh("legacy")
+  lock = project.root / "micro.lock"
+  lock.write_text(
+    "\n".join(
+      line for line in lock.read_text().splitlines() if not line.startswith("commit")
     )
-    after = {c.file: c.kind for c in packages.status(project)[0].changes}
-    check(
-      "--mine marks Micro's version reviewed: no conflict until it changes again",
-      after["both.py"] == "modified" and after["gone.py"] == "deleted",
-      after,
-    )
+  )
+  reports = packages.upgrade(project, ref="main")
+  kinds = {c.file: c.kind for c in reports[0].changes}
+  check(
+    "without a recorded commit a both-changed file stays a conflict",
+    kinds["both.py"] == "conflict"
+    and "<<<<<<<" not in (folder / "both.py").read_text(),
+    kinds,
+  )
 
-  # A source is a folder of packages; micro.toml can name it.
-  with tempfile.TemporaryDirectory() as raw:
-    d = Path(raw)
-    team = d / "team-packages"
-    (team / "billing").mkdir(parents=True)
-    (team / "billing/__init__.py").write_text('"""Invoices for the team."""\nv = 1\n')
-    code, out = await _micro(d, "init")
-    (d / "micro.toml").write_text(
-      (d / "micro.toml").read_text() + '\n[sources]\nteam = "team-packages"\n'
-    )
-    code, out = await _micro(d, "pkg", "list")
-    check(
-      "pkg list shows each source on its own",
-      code == 0
-      and "builtin" in out
-      and "team" in out
-      and "billing" in out
-      and "Invoices for the team" in out,
-      out,
-    )
-    code, out = await _micro(d, "pkg", "add", "billing")
-    check(
-      "a package is looked up in the builtin source by default",
-      code == 1 and "builtin source" in out,
-      out,
-    )
-    code, out = await _micro(d, "pkg", "add", "billing", "--source", "team")
-    check(
-      "--source picks another source by name",
-      code == 0 and (d / "services/billing/__init__.py").is_file(),
-      out,
-    )
-    check(
-      "the lock records where it came from",
-      'source = "team"' in (d / "micro.lock").read_text(),
-    )
-    (team / "billing/__init__.py").write_text('"""Invoices for the team."""\nv = 2\n')
-    code, out = await _micro(d, "pkg", "status", "billing")
-    check(
-      "status compares against the package's own source",
-      "upgrade available" in out and "(team)" in out,
-      out,
-    )
-    code, out = await _micro(d, "pkg", "upgrade", "billing")
-    check(
-      "upgrade takes the new version from that source",
-      code == 0 and "v = 2" in (d / "services/billing/__init__.py").read_text(),
-      out,
-    )
-    code, out = await _micro(
-      d, "pkg", "add", "billing", "invoices", "--source", str(team)
-    )
-    check(
-      "a folder path works as a source too",
-      code == 0 and (d / "services/invoices/__init__.py").is_file(),
-      out,
-    )
-    code, out = await _micro(d, "pkg", "add", "billing", "--source", "nowhere")
-    check(
-      "an unknown source name says what to do", code == 1 and "[sources]" in out, out
-    )
-    shutil.rmtree(team)
-    code, out = await _micro(d, "pkg", "status", "billing")
-    check(
-      "a missing source folder is reported, not a crash",
-      code == 0 and "can't compare" in out and "not a folder" in out,
-      out,
-    )
-    code, out = await _micro(d, "dev", "--help")
-    check("micro.toml with [sources] is still a valid deployment file", code == 0, out)
+
+async def _pkg_refs_and_sources(
+  root: Path, repo: Path, first: str, Project, packages, sources
+) -> None:
+  d = root / "sources"
+  d.mkdir()
+  code, out = await _micro(d, "init")
+  # A second repository as a named source.
+  team = root / "team"
+  (team / "packages/billing").mkdir(parents=True)
+  _git(team, "init", "-q", "-b", "main")
+  (team / "packages/billing/__init__.py").write_text(
+    '"""Invoices for the team."""\nv = 1\n'
+  )
+  _commit(team, "billing v1", tag="v1")
+  code, out = await _micro(d, "pkg", "source", "add", "team", team.as_uri())
+  check(
+    "pkg source add saves the source and says what it found",
+    code == 0
+    and "billing" in out
+    and "[sources.team]" in (d / "micro.toml").read_text(),
+    out,
+  )
+  code, out = await _micro(d, "pkg", "source", "list")
+  check(
+    "pkg source list shows both", code == 0 and "builtin" in out and "team" in out, out
+  )
+  code, out = await _micro(d, "pkg", "add", "billing")
+  check(
+    "a bare name is refused: name the source",
+    code == 1 and "SOURCE/NAME" in out and "builtin/billing" in out,
+    out,
+  )
+  code, out = await _micro(d, "pkg", "add", "team/billing")
+  lock = (d / "micro.lock").read_text()
+  check(
+    "SOURCE/NAME adds from that source and records it",
+    code == 0 and 'source = "team"' in lock and f'url = "{team.as_uri()}"' in lock,
+    out,
+  )
+  (team / "packages/billing/__init__.py").write_text(
+    '"""Invoices for the team."""\nv = 2\n'
+  )
+  _commit(team, "billing v2")
+  code, out = await _micro(d, "pkg", "status", "billing")
+  check(
+    "status sees the source's new commit",
+    "upgrade available" in out and "team@main" in out,
+    out,
+  )
+  code, out = await _micro(d, "pkg", "source", "remove", "team")
+  code, out = await _micro(d, "pkg", "upgrade", "billing")
+  check(
+    "a package still upgrades after its source is removed from micro.toml (the lock remembers it)",
+    code == 0 and "v = 2" in (d / "services/billing/__init__.py").read_text(),
+    out,
+  )
+  # A folder source, and the older `[sources]` table.
+  (d / "folder-pkgs/thing").mkdir(parents=True)
+  (d / "folder-pkgs/thing/__init__.py").write_text('"""A folder package."""\n')
+  code, out = await _micro(d, "pkg", "source", "add", "loc", "./folder-pkgs")
+  code, out = await _micro(d, "pkg", "add", "loc/thing")
+  check(
+    "a folder works as a source",
+    code == 0 and (d / "services/thing/__init__.py").is_file(),
+    out,
+  )
+  (d / "micro.toml").write_text(
+    (d / "micro.toml").read_text() + '\n[sources.old]\npath = "x"\n'
+  )
+  old = root / "oldstyle"
+  old.mkdir()
+  (old / "micro.toml").write_text('[sources]\nteam = "team-packages"\n')
+  check(
+    "the older `[sources] name = folder` form still reads",
+    sources.configured(old)["team"].path == "team-packages",
+  )
+  code, out = await _micro(d, "pkg", "source", "remove", "nope")
+  check(
+    "removing an unknown source says so", code == 1 and "no source named" in out, out
+  )
+  # Refs: a tag pins, a branch follows.
+  code, out = await _micro(d, "pkg", "add", "builtin/ticker", "--ref", "v1")
+  lock = (d / "micro.lock").read_text()
+  check("--ref pins a tag and records it", code == 0 and 'ref = "v1"' in lock, out)
+  code, out = await _micro(d, "pkg", "add", "builtin/hello", "hello2", "--ref", "nope")
+  check("an unknown ref is an error", code == 1 and "nope" in out, out)
+  code, out = await _micro(d, "pkg", "upgrade", "--ref", "main")
+  check("--ref needs exactly one package", code == 1 and "name it" in out, out)
+
+
+async def _pkg_environment(root: Path, scaffold_git) -> None:
+  remotes = scaffold_git.remotes
+  check(
+    "https and ssh remotes are each other's fallback",
+    remotes("https://github.com/o/r.git")
+    == ["https://github.com/o/r.git", "git@github.com:o/r.git"]
+    and remotes("git@github.com:o/r.git")
+    == ["git@github.com:o/r.git", "https://github.com/o/r.git"]
+    and remotes("ssh://git@gitlab.com/g/p")
+    == ["ssh://git@gitlab.com/g/p", "https://gitlab.com/g/p.git"]
+    and remotes("file:///x") == ["file:///x"],
+  )
+  # Offline: init still works, and says how to get hello later.
+  d = root / "offline"
+  d.mkdir()
+  os.environ["MICRO_PACKAGES_URL"] = (root / "nowhere").as_uri()
+  code, out = await _micro(d, "init")
+  check(
+    "init works without reaching the source, and says how to add hello",
+    code == 0
+    and (d / "micro.toml").is_file()
+    and not (d / "services/hello").exists()
+    and "micro pkg add builtin/hello" in out,
+    out,
+  )
+  code, out = await _micro(d, "pkg", "add", "builtin/hello")
+  check(
+    "an unreachable source is a message, not a traceback",
+    code == 1 and "Cannot reach" in out and "Traceback" not in out,
+    out,
+  )
+  # No git at all.
+  empty = root / "nogit"
+  empty.mkdir()
+  env_path = os.environ["PATH"]
+  os.environ["PATH"] = str(empty)
+  try:
+    d2 = root / "nogit-project"
+    d2.mkdir()
+    code, out = await _micro(d2, "init")
+  finally:
+    os.environ["PATH"] = env_path
+  check(
+    "without git, init still works and `pkg` explains what to install",
+    code == 0 and (d2 / "micro.toml").is_file() and "needs git" in out,
+    out,
+  )
 
 
 async def service_scenarios() -> None:
@@ -1217,6 +1342,38 @@ async def route_scenarios() -> None:
     check("the first click after idle is answered promptly", not slow, slow)
 
 
+async def health_scenarios() -> None:
+  print("health: the bundled introspection package")
+  import importlib.util
+
+  spec = importlib.util.spec_from_file_location(
+    "health_package", ROOT / "packages/health/__init__.py"
+  )
+  assert spec and spec.loader
+  health = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(health)
+
+  async with Stack(App()) as s:
+    await s.runtime.add(health.service)
+    f = s.fake
+    await f.until(lambda: "health" in s.names(), 10)
+    data = await health.report(s.runtime)
+    names = [item["stream"] for item in data["streams"]]
+    check("report lists the streams", "MICRO_EVENTS" in names, names)
+    check(
+      "report counts match the account",
+      data["consumers"] == sum(item["consumers"] for item in data["streams"]),
+      data,
+    )
+    calls = await s.interact(f.slash("health"), count=2)
+    texts = [str(c.body) for c in calls if c.body]
+    check(
+      "/health answers with a table",
+      any("MICRO_EVENTS" in text and "consumers in total" in text for text in texts),
+      texts,
+    )
+
+
 SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "basics": basics,
   "sync": sync_scenarios,
@@ -1224,6 +1381,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "pkg": pkg_scenarios,
   "service": service_scenarios,
   "routes": route_scenarios,
+  "health": health_scenarios,
 }
 
 

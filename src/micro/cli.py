@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -160,57 +161,59 @@ def _parser() -> argparse.ArgumentParser:
     "list", help="the services here, and which came from a package"
   ).set_defaults(handler=_services, action="list")
 
-  pkg = command("pkg", "packages: services Micro ships, to copy in, edit, and upgrade")
+  pkg = command(
+    "pkg", "packages: examples to copy in from a git source, edit, and upgrade"
+  )
   pkg_actions = pkg.add_subparsers(required=True, metavar="action")
   pkg_list = pkg_actions.add_parser(
     "list",
     help="the packages in each source, and which you have added",
     parents=[config],
   )
-  pkg_list.add_argument(
-    "--source", help="only this source (default: builtin and those in [sources])"
-  )
+  pkg_list.add_argument("source", nargs="?", help="only this source")
   pkg_list.set_defaults(handler=_pkg, action="list")
   pkg_add = pkg_actions.add_parser(
     "add",
     help="copy a package into services/ (a template needs a name)",
     parents=[config],
   )
-  pkg_add.add_argument("package")
+  pkg_add.add_argument("package", help="SOURCE/NAME, as in builtin/chat")
   pkg_add.add_argument(
-    "--source",
-    help="where the package comes from: a name in [sources], or a folder (default: builtin)",
+    "name",
+    nargs="?",
+    help="what to call the copy of a template, as in `builtin/tpl tickets`",
   )
-  pkg_add.add_argument(
-    "name", nargs="?", help="what to call the copy, as in `service tickets`"
-  )
+  pkg_add.add_argument("--ref", help="a branch, tag or commit (default: the source's)")
   pkg_add.set_defaults(handler=_pkg, action="add")
   pkg_status = pkg_actions.add_parser(
-    "status", help="your packages against what this Micro ships", parents=[config]
+    "status", help="your packages against what their sources ship", parents=[config]
   )
   pkg_status.add_argument("names", nargs="*", metavar="name")
   pkg_status.set_defaults(handler=_pkg, action="status")
   pkg_diff = pkg_actions.add_parser(
     "diff",
-    help="a package's files, yours against what this Micro ships",
+    help="a package's files, yours against what its source ships",
     parents=[config],
   )
   pkg_diff.add_argument("name")
   pkg_diff.set_defaults(handler=_pkg, action="diff")
   pkg_upgrade = pkg_actions.add_parser(
     "upgrade",
-    help="bring packages up to what this Micro ships, keeping your edits",
+    help="bring packages up to what their sources ship, merging your edits",
     parents=[config],
   )
   pkg_upgrade.add_argument("names", nargs="*", metavar="name")
+  pkg_upgrade.add_argument(
+    "--ref", help="move one package to this branch, tag or commit"
+  )
   settle = pkg_upgrade.add_mutually_exclusive_group()
   settle.add_argument(
-    "--theirs", action="store_true", help="on a conflict, take Micro's file"
+    "--theirs", action="store_true", help="on a conflict, take the source's file"
   )
   settle.add_argument(
     "--mine",
     action="store_true",
-    help="on a conflict, keep yours and mark Micro's as reviewed",
+    help="on a conflict, keep yours and mark the source's as reviewed",
   )
   pkg_upgrade.set_defaults(handler=_pkg, action="upgrade")
   pkg_forget = pkg_actions.add_parser(
@@ -218,6 +221,31 @@ def _parser() -> argparse.ArgumentParser:
   )
   pkg_forget.add_argument("name")
   pkg_forget.set_defaults(handler=_pkg, action="forget")
+  pkg_source = pkg_actions.add_parser("source", help="where packages come from")
+  source_actions = pkg_source.add_subparsers(required=True, metavar="action")
+  source_add = source_actions.add_parser(
+    "add",
+    help="add or replace a source in micro.toml",
+    description="A git URL (https or ssh; the other form is tried if one fails) or a folder.",
+    parents=[config],
+  )
+  source_add.add_argument("name")
+  source_add.add_argument("location", help="a git URL, or a folder on this machine")
+  source_add.add_argument(
+    "path",
+    nargs="?",
+    help="the folder of packages inside the repository (default: packages)",
+  )
+  source_add.add_argument("--ref", help="a branch, tag or commit to follow")
+  source_add.set_defaults(handler=_pkg, action="source_add")
+  source_actions.add_parser(
+    "list", help="the sources, with where they point", parents=[config]
+  ).set_defaults(handler=_pkg, action="source_list")
+  source_remove = source_actions.add_parser(
+    "remove", help="remove a source from micro.toml", parents=[config]
+  )
+  source_remove.add_argument("name")
+  source_remove.set_defaults(handler=_pkg, action="source_remove")
 
   server = command("server", "the NATS server everything connects to, on its own")
   server_actions = server.add_subparsers(required=True, metavar="action")
@@ -388,23 +416,27 @@ async def _init(args: argparse.Namespace) -> int:
 
   project = init()
   services = project.services.relative_to(project.root)
-  print(f"Added micro.toml and {services}/hello/.\n\n  DISCORD_TOKEN=... micro dev")
+  hello = (project.services / "hello").is_dir()
+  added = f"micro.toml and {services}/hello/" if hello else "micro.toml"
+  print(f"Added {added}.\n\n  DISCORD_TOKEN=... micro dev")
   return 0
 
 
 _WORDS: dict[str, str] = {
   "upgrade": "upgrade",
   "add": "new file",
-  "remove": "removed by Micro",
+  "remove": "removed upstream",
   "refresh": "already matches",
   "orphan": "no longer shipped (yours kept)",
   "dropped": "no longer shipped",
   "modified": "edited by you",
   "deleted": "deleted by you",
-  "conflict": "CONFLICT: changed by you and by Micro",
-  "gone": "CONFLICT: deleted by you, changed by Micro",
-  "theirs": "replaced with Micro's",
-  "mine": "kept yours; Micro's marked reviewed",
+  "conflict": "CONFLICT: changed by you and upstream",
+  "gone": "CONFLICT: deleted by you, changed upstream",
+  "markers": "CONFLICT: fix the <<<<<<< markers",
+  "merged": "merged with your edits",
+  "theirs": "replaced with upstream's",
+  "mine": "kept yours; upstream's marked reviewed",
 }
 
 
@@ -422,30 +454,85 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
   return "\n".join([line(cells[0]), rule, *map(line, cells[1:])])
 
 
+def _is_git(location: str) -> bool:
+  return (
+    "://" in location
+    or location.endswith(".git")
+    or bool(re.fullmatch(r"[\w.-]+@[\w.-]+:.+", location))
+  )
+
+
+async def _pkg_source(args: argparse.Namespace) -> int:
+  from micro.scaffold import _sources, find
+
+  project = find()
+  if args.action == "source_list":
+    sources = _sources.configured(project.root)
+    rows = [
+      [s.name, s.where, s.path if s.url else "", s.ref or "default"]
+      for s in sources.values()
+    ]
+    print(_table(["SOURCE", "WHERE", "PATH", "REF"], rows))
+    return 0
+  if args.action == "source_remove":
+    _sources.remove(project.root, args.name)
+    print(f"Removed source {args.name!r}; packages already added keep their files.")
+    return 0
+  _sources.check_name(args.name)
+  if _is_git(args.location):
+    path = (args.path or _sources.DEFAULT_PATH).strip("/")
+    source = _sources.Source(args.name, args.location, path, args.ref)
+  else:
+    source = _sources.Source(args.name, None, args.location)
+  _sources.save(project.root, source)
+  print(f"Saved source {args.name!r} in micro.toml.")
+  try:
+    resolved = _sources.resolve(source)
+    tree = _sources.tree(source, resolved.commit, project.root)
+  except (OSError, ValueError, RuntimeError) as error:
+    print(f"Could not read it yet: {error}", file=sys.stderr)
+    return 1
+  shipped = _sources.packages_in(tree)
+  at = f" at {resolved.ref}@{resolved.commit[:7]}" if resolved.commit else ""
+  print(
+    f"It has {len(shipped)} package(s){at}: {', '.join(sorted(shipped)) or 'none'}."
+  )
+  return 0
+
+
 async def _pkg(args: argparse.Namespace) -> int:
   from micro.scaffold import find, packages
 
+  if args.action.startswith("source_"):
+    return await _pkg_source(args)
   if args.action == "list":
     try:
       project = find()
     except FileNotFoundError:
       project = None
-    labels = [args.source] if args.source else [packages.BUILTIN]
-    if project is not None and not args.source:
-      labels += sorted(packages.configured_sources(project))
+    root = project.root if project else Path.cwd()
     entries = packages.Lock.load(project).entries.values() if project else ()
-    for label in labels:
-      name, root = packages.resolve(project, label)
-      print(name if name == packages.BUILTIN else f"{name}  ({root})")
+    for found in packages.listing(root, args.source):
+      source = found.source
+      at = ""
+      if found.resolved and found.resolved.commit:
+        at = f"  {found.resolved.ref}@{found.resolved.commit[:7]}"
+      print(f"{source.name}  {source.where}{at}")
+      if found.problem:
+        print(f"  can't read it: {found.problem}")
       rows = [
         [
           package,
           summary,
           ", ".join(
-            sorted(e.path for e in entries if e.package == package and e.source == name)
+            sorted(
+              e.path
+              for e in entries
+              if e.package == package and e.source == source.name
+            )
           ),
         ]
-        for package, summary in packages.available(root).items()
+        for package, summary in found.packages.items()
       ]
       if rows:
         print(_table(["PACKAGE", "WHAT IT IS", "ADDED AS"], rows))
@@ -453,7 +540,7 @@ async def _pkg(args: argparse.Namespace) -> int:
     return 0
   project = find()
   if args.action == "add":
-    folder = packages.add(args.package, project, name=args.name, source=args.source)
+    folder = packages.add(args.package, project, name=args.name, ref=args.ref)
     print(
       f"Added {folder.relative_to(project.root)}/; `micro dev` loads it with the other services."
     )
@@ -465,7 +552,7 @@ async def _pkg(args: argparse.Namespace) -> int:
   if args.action == "diff":
     text = packages.diff(project, args.name)
     print(
-      text or f"{args.name} matches what this Micro ships.", end="" if text else "\n"
+      text or f"{args.name} matches what its source ships.", end="" if text else "\n"
     )
     return 0
   names = args.names or None
@@ -473,37 +560,42 @@ async def _pkg(args: argparse.Namespace) -> int:
     reports = packages.status(project, names)
   else:
     settle = "theirs" if args.theirs else "mine" if args.mine else None
-    reports = packages.upgrade(project, names, settle=settle)
+    reports = packages.upgrade(project, names, settle=settle, ref=args.ref)
   if not reports:
     print("No packages added yet. See `micro pkg list`.")
   open_items = 0
   rows: list[list[str]] = []
   for report in reports:
     notable = [c for c in report.changes if c.kind != "current"]
+    origin = f"{report.source}@{report.ref}" if report.ref else report.source
+    if report.commit:
+      origin += f" ({report.commit[:7]})"
     if not report.shipped:
       reason = (
         report.problem or f"the {report.source} source no longer has {report.package}"
       )
-      rows.append([report.path, f"can't compare: {reason}", ""])
+      rows.append([report.path, origin, f"can't compare: {reason}", ""])
       continue
     headline = "up to date" if not notable else ""
     if report.attention:
       headline = "needs a decision"
     elif any(c.kind in packages.PENDING for c in notable):
       headline = "upgrade available" if args.action == "status" else "upgraded"
+    elif any(c.kind == "merged" for c in notable):
+      headline = "merged"
     elif notable:
       headline = "up to date, with your edits"
-    origin = "" if report.source == packages.BUILTIN else f"  ({report.source})"
-    rows.append([report.path, f"{headline}{origin}", ""])
+    rows.append([report.path, origin, headline, ""])
     for change in notable:
-      rows.append(["", f"  {change.file}", _WORDS.get(change.kind, change.kind)])
+      rows.append(["", "", f"  {change.file}", _WORDS.get(change.kind, change.kind)])
     open_items += len(report.attention)
   if rows:
-    print(_table(["PACKAGE", "STATUS", "CHANGE"], rows))
+    print(_table(["PACKAGE", "SOURCE", "STATUS", "CHANGE"], rows))
   if open_items:
     print(
-      "\nSee `micro pkg diff NAME`, then `micro pkg upgrade --theirs` (take Micro's) or "
-      "`--mine` (keep yours)."
+      "\nResolve the <<<<<<< markers in the files above, or run "
+      "`micro pkg upgrade --theirs` (take upstream's) or `--mine` (keep yours); "
+      "`micro pkg diff NAME` shows the difference."
     )
   return 1 if open_items else 0
 
@@ -674,11 +766,11 @@ async def _operate(args: argparse.Namespace) -> int:
 
 
 async def _services(args: argparse.Namespace) -> int:
-  from micro.scaffold import find, packages
+  from micro.scaffold import add_service, find, packages
 
   project = find()
   if args.action == "add":
-    folder = packages.add("service", project, name=args.name)
+    folder = add_service(project, args.name)
     print(
       f"Added {folder.relative_to(project.root)}/; `micro dev` loads it with the other services."
     )

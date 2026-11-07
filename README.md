@@ -25,7 +25,7 @@ async def hello(ctx: Interaction, name: str = "world") -> None:
 
 Documentation: `micro docs` (sources in [src/micro/docs](src/micro/docs/index.rst)) (quickstart, services,
 Discord, interactions, store, deploying, rolling upgrades, wire reference).
-Examples ship with Micro as packages: `micro pkg list` shows them, `micro pkg add chat` copies one in, and `micro pkg upgrade` brings your copies up to date after a Micro upgrade without overwriting your edits.
+Examples are packages fetched from a git source (needs git): `micro pkg list` shows them, `micro pkg add builtin/chat` copies one in, and `micro pkg upgrade` merges newer versions into your edited copy, leaving conflict markers where you both changed the same lines.
 
 Development: `uv run python scripts/smoke.py` runs the whole stack (NATS, the
 Gateway through hikari's real websocket, interactions, command sync) against a

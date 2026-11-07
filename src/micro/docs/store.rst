@@ -41,7 +41,7 @@ Services declare the graph modules they use; stores serve them.
 
 Modules converge across rollouts like commands; a stopped service's modules
 are retained, and a module set that fails to compose leaves the last good
-graph serving. ``micro pkg add notes`` is a complete example.
+graph serving. ``micro pkg add builtin/notes`` is a complete example.
 
 Files
 -----

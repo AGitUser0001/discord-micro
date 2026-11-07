@@ -20,8 +20,12 @@ Subjects
 ``micro.node.<deployment>.<node>.scale|roll|ps``        node control (``micro dev scale|roll``)
 =====================================================  ==========================================
 
-Routes: ``cmd.<type>.<name>``, ``cmp.<prefix>``, ``mdl.<prefix>``; tokens outside
-``[A-Za-z0-9_-]`` are ``%`` + hex.
+Routes: ``cmd.<type>.<name>`` for commands; ``cmp.p-<hash>`` and ``mdl.p-<hash>``
+for declared custom ID routes (a hash of the route's wire form). A service
+advertises them in its presence metadata: ``interactions`` lists its routes, and
+``component_patterns`` / ``modal_patterns`` map each route to
+``{"kind": "module:Class", "data": ...}``, which the router rebuilds with
+``Route.load``. Tokens outside ``[A-Za-z0-9_-]`` are ``%`` + hex.
 
 Streams and consumers
 ---------------------

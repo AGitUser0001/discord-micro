@@ -1,14 +1,15 @@
 """Add Micro to a Python project, however it is managed (uv, pip, ...).
 
 The packaging tool owns the project (interpreter, dependencies, layout);
-Micro only adds its own pieces. Services that ship with Micro are packages (see
-`micro.scaffold.packages`): copied in, yours to edit, upgradable.
+Micro only adds its own pieces. Examples are packages (see `micro.scaffold.packages`):
+fetched from a git source, copied in, yours to edit, upgradable.
 
     pip install discord-micro    # or: uv add discord-micro
     micro init                   # micro.toml + services/hello/
-    micro services add tickets   # services/tickets/
+    micro services add tickets   # services/tickets/ (a new, empty service)
 """
 
+import logging
 import re
 import tomllib
 from dataclasses import dataclass
@@ -91,8 +92,21 @@ def _render(template: str, values: dict[str, str]) -> str:
   return Template(source.read_text()).substitute(values)
 
 
+def add_service(project: Project, name: str) -> Path:
+  """A new, empty service: services/NAME/ with one slash command. Yours from the start."""
+  key = packages._key(name)  # pyright: ignore[reportPrivateUsage]
+  folder = project.services / key
+  taken = packages.Lock.load(project).entries
+  if key in taken or folder.exists() or (project.services / f"{key}.py").exists():
+    raise FileExistsError(f"{folder} already exists.")
+  values = packages._values(name)  # pyright: ignore[reportPrivateUsage]
+  folder.mkdir(parents=True)
+  (folder / "__init__.py").write_text(_render("service/__init__.py.tmpl", values))
+  return folder
+
+
 def init(start: Path | None = None) -> Project:
-  """Add micro.toml and a `hello` service to the current project."""
+  """Add micro.toml to the current project, and the `hello` package when it can be fetched."""
   project = locate(start)
   config = project.root / "micro.toml"
   if config.exists():
@@ -108,7 +122,14 @@ def init(start: Path | None = None) -> Project:
     package.write_text(_render("services/__init__.py.tmpl", values))
   config.write_text(_render("micro.toml.tmpl", values))
   if not (project.services / "hello").exists():
-    packages.add("hello", project)
+    try:
+      packages.add("builtin/hello", project)
+    except (packages.FETCH_ERRORS, ValueError, OSError) as error:
+      logging.getLogger("micro").warning(
+        "Could not add the hello package (%s). Add it when you are online: "
+        "`micro pkg add builtin/hello`.",
+        error,
+      )
   ignore = project.root / ".gitignore"
   existing = ignore.read_text() if ignore.exists() else ""
   missing = [entry for entry in (".micro/", ".env") if entry not in existing.split()]
@@ -120,6 +141,7 @@ def init(start: Path | None = None) -> Project:
 
 __all__ = (
   "Project",
+  "add_service",
   "find",
   "init",
   "locate",

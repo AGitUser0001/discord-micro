@@ -25,6 +25,13 @@ Next:
    micro services add tickets    # a new service folder, loaded automatically
    micro dev roll app            # deploy your changes without dropping the Gateway
 
-``micro pkg list`` shows the bundled examples (requests and events, work queues,
-buttons and a modal, the store, a background task); ``micro pkg upgrade`` brings
-them up to date after a Micro upgrade. See :doc:`project`.
+``micro pkg list`` shows the examples (requests and events, work queues, buttons
+and a modal, the store, a background task, ``health`` for streams and consumers
+via ``/health``). They are fetched from a git source, so ``micro pkg add`` needs
+git and the network; ``micro pkg upgrade`` merges newer versions into your edited
+copies. See :doc:`project`.
+
+Two examples need a little setup: ``chat``'s ``!ping`` reads message text, so set
+``DISCORD_INTENTS=unprivileged,message_content`` and enable the Message Content
+intent in the developer portal (:doc:`discord`); ``notes`` needs a store process
+in ``micro.toml`` (:doc:`store`).

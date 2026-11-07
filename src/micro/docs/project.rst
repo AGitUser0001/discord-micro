@@ -9,11 +9,13 @@ Micro never manages your Python project; uv, pip, or anything else does.
    micro init                    # in the project directory
    micro services add NAME       # a new, empty service in services/NAME/
    micro services list           # the services here, and where each came from
-   micro pkg add chat            # a bundled example, copied to services/chat/
-   micro pkg list                # everything Micro ships
+   micro pkg add builtin/chat    # an example, fetched and copied to services/chat/
+   micro pkg list                # every package source has
 
 ``micro init`` adds ``micro.toml``, a ``services`` package with a ``hello``
-service, and ``.micro/`` and ``.env`` to ``.gitignore``. It follows your layout:
+service (fetched, so it needs the network and git; offline it adds everything else
+and tells you to run ``micro pkg add builtin/hello`` later), and ``.micro/`` and ``.env`` to
+``.gitignore``. It follows your layout:
 
 * ``src/<package>/`` exists: services go in ``src/<package>/services/``
   (target ``<package>.services.*``).
@@ -67,58 +69,84 @@ the ``services.*`` target never has to guess what is a service.
 Packages
 --------
 
-Everything Micro ships for your services is a *package*: a folder you copy into
-``services/`` and then own. ``hello`` (what ``init`` adds), the blank ``service``
-template (``micro services add tickets`` is ``micro pkg add service tickets``), and the
-examples ``greeter``, ``audit``, ``chat``, ``notes`` and ``ticker``. They share
-nothing: ``audit`` declares the messages it listens for itself, because services
-agree through validated messages, not shared code.
+Examples are *packages*: a folder you copy into ``services/`` and then own.
+``hello`` (what ``init`` adds), and the examples ``greeter``, ``audit``, ``chat``,
+``notes``, ``ticker`` and ``health``. They share nothing: ``audit`` declares the
+messages it listens for itself, because services agree through validated
+messages, not shared code. (``micro services add tickets`` is different: it writes a
+blank service from a built-in template, with nothing to fetch or upgrade.)
 
-A package comes from a *source*, a folder of packages. The default is the builtin
-source inside Micro. Name others in micro.toml, such as a team's shared services:
+A package comes from a *source*: a git repository (or a folder) whose ``packages/``
+folder holds one folder per package. Nothing is bundled with Micro. The default
+source, ``builtin``, is Micro's own repository; the packages need ``git`` and the
+network to ``add``, ``status`` and ``upgrade``.
+
+.. code-block:: console
+
+   micro pkg list                                       # every source, and what you added from it
+   micro pkg add builtin/chat                           # always SOURCE/NAME
+   micro pkg add builtin/tpl tickets                    # a template takes a name
+   micro pkg add builtin/chat --ref v0.3                # a tag, branch or commit
+
+   micro pkg source add team git@github.com:acme/bot-packages.git /packages
+   micro pkg add team/billing                           # from the source you added
+   micro pkg source list
+   micro pkg source remove team                         # added packages keep working
+
+A source is a git URL or a folder on this machine (``micro pkg source add loc
+./team-packages``). Give an https URL or an ssh one: Micro tries the other form of the
+same address if the first fails, so a machine with only an ssh key, or only a
+token, both work. ``micro pkg source add`` writes ``[sources.NAME]`` into
+``micro.toml``, which you can edit by hand:
 
 .. code-block:: toml
 
-   [sources]
-   team = "../team-packages"      # each folder inside it is a package
+   [sources.team]
+   url = "git@github.com:acme/bot-packages.git"
+   path = "packages"          # the folder of packages inside the repository
+   ref = "v2"                 # optional: a branch, tag or commit to follow
+
+Without a ``ref`` a package follows the tag ``v<your Micro version>`` if the
+repository has it, and its default branch otherwise. ``MICRO_PACKAGES_URL``
+replaces the default source's address (a mirror, or a fork).
+
+``micro.lock`` (commit it) records, per package, where it came from: the source, the
+branch or tag it follows, the exact commit, and each file's hash as it was given to
+you. That is how an upgrade can tell your edits from the source's changes:
 
 .. code-block:: console
 
-   micro pkg list                              # every source, and what you added from it
-   micro pkg add billing --source team
-   micro pkg add billing --source ../team-packages   # or a folder directly
-
-``micro.lock`` remembers each package's source, so ``status`` and ``upgrade`` compare
-it with the right one.
-
-Because the copy is yours to edit, ``micro.lock`` (commit it) records each file as
-Micro gave it to you. That is how a newer Micro can offer updates without
-overwriting your work:
-
-.. code-block:: console
-
-   micro pkg status             # each package against what this Micro ships
-   micro pkg diff chat          # your files against Micro's
-   micro pkg upgrade            # apply what is safe
-   micro pkg upgrade --theirs   # on conflicts, take Micro's
-   micro pkg upgrade --mine     # on conflicts, keep yours and mark Micro's as reviewed
+   micro pkg status             # each package against what its source has now
+   micro pkg diff chat          # your files against upstream's
+   micro pkg upgrade            # apply it, merging your edits
+   micro pkg upgrade chat --ref main    # move one package to another branch, tag or commit
+   micro pkg upgrade --theirs   # on a conflict, take upstream's file
+   micro pkg upgrade --mine     # on a conflict, keep yours and mark upstream's as reviewed
    micro pkg forget chat        # stop tracking; the files stay
 
-``upgrade`` compares three things per file: what Micro gave you, what is there now,
-and what this Micro ships.
+``upgrade`` fetches what each package's ref points at now and compares, per file,
+the hash you were given, the file now, and the new version:
 
-=========================================  ==========================================
-you, and Micro                             ``upgrade``
-=========================================  ==========================================
-you did not edit it, Micro changed it      replaces the file
-you edited it, Micro did not change it     keeps yours
-Micro added a file                         adds it
-Micro dropped a file you did not edit      removes it (an edited one is kept)
-you deleted it, Micro did not change it    keeps it deleted
-you and Micro both changed it              **conflict**: left alone until you choose
-you deleted it, Micro changed it           **conflict**: left alone until you choose
-=========================================  ==========================================
+=========================================  ============================================
+you, and upstream                          ``upgrade``
+=========================================  ============================================
+you did not edit it, upstream changed it   replaces the file
+you edited it, upstream did not change it  keeps yours
+upstream added a file                      adds it
+upstream dropped a file you did not edit   removes it (an edited one is kept)
+you deleted it, upstream did not change it keeps it deleted
+you and upstream both changed it           **merged** line by line (see below)
+you deleted it, upstream changed it        **conflict**: left alone until you choose
+=========================================  ============================================
 
-A conflict ends ``upgrade`` with a non-zero exit status and names the files;
-nothing is overwritten until you say ``--theirs`` or ``--mine``. After ``--mine``
-the same Micro version is not raised again; the next change to that file is.
+A file you both changed is merged with git's three-way merge, against the commit you
+installed (fetched again for the purpose; templates are rendered with your saved
+name). Edits on different lines merge on their own. Edits to the same lines are
+left as ``<<<<<<< yours`` / ``>>>>>>>`` markers for you to fix, and ``status`` keeps
+flagging the file until they are gone. A lock without a commit (written by an
+older Micro) has nothing to merge against, so both-changed files stay conflicts.
+
+Markers and conflicts end ``upgrade`` with a non-zero exit status and name the
+files. ``--theirs`` takes upstream's file for each; ``--mine`` keeps yours. After
+``--mine`` the same upstream version is not raised again; the next change to
+that file is.

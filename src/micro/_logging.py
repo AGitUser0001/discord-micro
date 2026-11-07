@@ -44,10 +44,19 @@ class ColorFormatter(logging.Formatter):
     return super().format(record)
 
 
+def _demote_http_requests(record: logging.LogRecord) -> bool:
+  """httpx2 logs every request at INFO; that is DEBUG detail (shown with `-v`)."""
+  if record.name.startswith("httpx2") and record.levelno == logging.INFO:
+    record.levelno, record.levelname = logging.DEBUG, "DEBUG"
+    return logging.getLogger().isEnabledFor(logging.DEBUG)
+  return True
+
+
 def configure(level: str | int) -> None:
   handler = logging.StreamHandler(sys.stderr)
   if wants_color(handler.stream):
     handler.setFormatter(ColorFormatter())
   else:
     handler.setFormatter(logging.Formatter(FORMAT))
+  handler.addFilter(_demote_http_requests)
   logging.basicConfig(level=level, handlers=[handler])

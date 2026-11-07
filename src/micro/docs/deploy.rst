@@ -41,7 +41,8 @@ projects need.
    micro dev roll app             # new replica, wait until ready, drain the old; repeat
    micro nodes list               # the machines running it, their processes, live components (--json for scripts)
 
-Logs go to stderr at ``INFO`` (``MICRO_LOG_LEVEL`` or ``-v`` changes it) and are
+Logs go to stderr at ``INFO`` (``MICRO_LOG_LEVEL`` or ``-v`` changes it; ``-v`` also
+shows every HTTP request to Discord) and are
 colored when stderr is a terminal. ``NO_COLOR=1`` turns the color off and
 ``FORCE_COLOR=1`` turns it on (through a pager, say).
 

@@ -1,18 +1,20 @@
-"""Packages: services Micro ships that you copy into your project and then own.
+"""Packages: services you copy into your project from a source, then own.
 
-A package comes from a source, a folder of packages. The default source is the
-builtin one inside Micro (the examples, the starter `hello`, the blank `service`
-template); `[sources]` in micro.toml names others. `add` copies a package into the
-project's services and
-`micro.lock` records the hash of every file as it was copied. The files are yours
-to edit, so `upgrade` compares three things per file: the recorded hash (what Micro
-last gave you), the file now, and what this Micro ships. It changes only what you
-have not touched and reports the rest, so nothing you wrote is overwritten without
-being asked.
+A package comes from a source: a git repository (or a folder) named in micro.toml;
+`builtin` is Micro's own examples. `add` copies a package into the project's
+services, and `micro.lock` records where it came from (source, ref, the exact
+commit) and the hash of every file as it was copied. The files are yours to edit.
+`upgrade` fetches what the package's ref points at now and, per file, compares the
+recorded hash (what the source last gave you), the file now, and the new version:
 
-    micro pkg add chat                 # services/chat/
-    micro pkg add service tickets      # a template takes a name
-    micro pkg status                   # what a newer Micro would change
+* a file you never touched is replaced, added or removed;
+* a file only you changed stays;
+* a file both of you changed is merged line by line against the commit you
+  installed (git's three-way merge); overlapping edits are left as conflict markers.
+
+    micro pkg add builtin/chat         # services/chat/
+    micro pkg add team/billing         # a package from another source
+    micro pkg status                   # what an upgrade would change
     micro pkg upgrade                  # apply it, keeping your edits
 """
 
@@ -22,81 +24,48 @@ import json
 import re
 import tomllib
 from dataclasses import dataclass, field
-from importlib import resources
-from importlib.resources.abc import Traversable
 from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING, Literal
 
+from . import _git, _sources
+from ._sources import BUILTIN, Resolved, Source
+
 if TYPE_CHECKING:
   from . import Project
 
-BUILTIN = "builtin"
-"""The source that ships inside Micro, and the default."""
 LOCK = "micro.lock"
 """The file, beside micro.toml, recording the packages added to the project."""
 
 _NAME = re.compile(r"[a-z][a-z0-9-]*[a-z0-9]|[a-z]")
-_SKIP = {"__pycache__", "package.toml"}
+_MARKERS = re.compile(rb"^<{7} .*$", re.MULTILINE)
+_UNREADABLE = (_git.GitError, FileNotFoundError, ValueError)
+FETCH_ERRORS = _git.GitError
+"""What a package fetch raises when git is missing or a source cannot be reached."""
 
 type Kind = Literal[
-  "current",  # your file is what Micro ships
+  "current",  # your file is what the source ships
   "refresh",  # same content already; only the record is stale
-  "upgrade",  # you never touched it and Micro changed it
-  "add",  # Micro ships a new file
-  "remove",  # Micro dropped a file you never touched
-  "orphan",  # Micro dropped a file you edited: kept
-  "dropped",  # Micro dropped a file you had already deleted
-  "modified",  # you edited it and Micro did not change it
-  "deleted",  # you deleted it and Micro did not change it
-  "conflict",  # you and Micro both changed it
-  "gone",  # you deleted it and Micro changed it
-  "theirs",  # a conflict settled with Micro's version
+  "upgrade",  # you never touched it and the source changed it
+  "add",  # the source ships a new file
+  "remove",  # the source dropped a file you never touched
+  "orphan",  # the source dropped a file you edited: kept
+  "dropped",  # the source dropped a file you had already deleted
+  "modified",  # you edited it and the source did not change it
+  "deleted",  # you deleted it and the source did not change it
+  "conflict",  # you and the source both changed it (no original to merge with)
+  "gone",  # you deleted it and the source changed it
+  "markers",  # merged with overlapping edits: resolve the markers
+  "merged",  # you and the source both changed it, merged cleanly
+  "theirs",  # a conflict settled with the source's version
   "mine",  # a conflict settled by keeping yours
 ]
-ATTENTION: frozenset[Kind] = frozenset({"conflict", "gone"})
-"""Kinds that need a decision: `--theirs` or `--mine`."""
+ATTENTION: frozenset[Kind] = frozenset({"conflict", "gone", "markers"})
+"""Kinds that need a decision: edit the markers, or `--theirs` / `--mine`."""
 PENDING: frozenset[Kind] = frozenset(
   {"upgrade", "add", "remove", "refresh", "orphan", "dropped"}
 )
 """Kinds `upgrade` applies on its own."""
-
-
-def bundled() -> Traversable:
-  return resources.files("micro") / "packages"
-
-
-def configured_sources(project: Project) -> dict[str, str]:
-  """The named sources in micro.toml's `[sources]`: name to folder."""
-  path = project.root / "micro.toml"
-  if not path.is_file():
-    return {}
-  table = tomllib.loads(path.read_text()).get("sources", {})
-  return {str(name): str(folder) for name, folder in table.items()}
-
-
-def resolve(
-  project: Project | None, source: str | None = None
-) -> tuple[str, Traversable]:
-  """A source's label, as recorded in micro.lock, and its folder of packages.
-
-  The label is `builtin`, a name from `[sources]`, or a folder path.
-  """
-  label = source or BUILTIN
-  if label == BUILTIN:
-    return BUILTIN, bundled()
-  named = configured_sources(project) if project is not None else {}
-  if label not in named and not (set("/\\~.") & {label[0], *label}):
-    raise ValueError(
-      f"No package source named {label!r}. Name one under [sources] in micro.toml, "
-      "or pass a folder."
-    )
-  folder = Path(named.get(label, label)).expanduser()
-  if not folder.is_absolute() and project is not None:
-    folder = project.root / folder
-  if not folder.is_dir():
-    raise FileNotFoundError(f"Package source {label!r}: {folder} is not a folder.")
-  return label, folder
 
 
 def _version() -> str:
@@ -112,45 +81,53 @@ def _hash(data: bytes) -> str:
   return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-# What Micro ships --------------------------------------------------------------
+# What a source ships ---------------------------------------------------------------
 
 
-def available(source: Traversable | None = None) -> dict[str, str]:
-  """Package names and one-line descriptions."""
-  root = source or bundled()
-  found: dict[str, str] = {}
-  for item in sorted(root.iterdir(), key=lambda entry: entry.name):
-    if item.is_dir() and not item.name.startswith(("_", ".")):
-      found[item.name] = _describe(item)
-  return found
-
-
-def _describe(folder: Traversable) -> str:
-  meta = folder / "package.toml"
-  if meta.is_file():
-    text = tomllib.loads(meta.read_text()).get("description")
+def describe(files: dict[str, bytes]) -> str:
+  """A package's one-line description: package.toml's, else its docstring's."""
+  if "package.toml" in files:
+    text = tomllib.loads(files["package.toml"].decode()).get("description")
     if isinstance(text, str):
       return text
-  init = folder / "__init__.py"
-  if init.is_file():
-    text = init.read_text()
-    if text.startswith('"""'):
-      return text.split('"""')[1].strip().splitlines()[0]
+  init = files.get("__init__.py", b"").decode(errors="replace")
+  if init.startswith('"""'):
+    return init.split('"""')[1].strip().splitlines()[0]
   return ""
 
 
-def _files(
-  folder: Traversable, values: dict[str, str], prefix: str = ""
-) -> dict[str, bytes]:
+@dataclass
+class Listing:
+  source: Source
+  resolved: Resolved | None = None
+  packages: dict[str, str] = field(default_factory=dict)
+  """Package names and one-line descriptions."""
+  problem: str | None = None
+
+
+def listing(root: Path, only: str | None = None) -> list[Listing]:
+  """The packages in each source (or just `only`), as they are now."""
+  sources = _sources.configured(root)
+  chosen = [_sources.find(root, only)] if only else list(sources.values())
+  found: list[Listing] = []
+  for source in chosen:
+    try:
+      resolved = _sources.resolve(source)
+      shipped = _sources.packages_in(_sources.tree(source, resolved.commit, root))
+      found.append(
+        Listing(source, resolved, {n: describe(f) for n, f in sorted(shipped.items())})
+      )
+    except _UNREADABLE as error:
+      found.append(Listing(source, problem=str(error)))
+  return found
+
+
+def _render(files: dict[str, bytes], values: dict[str, str]) -> dict[str, bytes]:
   """A package's files as they would be written: `.tmpl` files filled in."""
   found: dict[str, bytes] = {}
-  for item in sorted(folder.iterdir(), key=lambda entry: entry.name):
-    if item.name in _SKIP or item.name.startswith("."):
+  for name, data in sorted(files.items()):
+    if name == "package.toml" or "__pycache__" in name.split("/"):
       continue
-    if item.is_dir():
-      found |= _files(item, values, f"{prefix}{item.name}/")
-      continue
-    data, name = item.read_bytes(), prefix + item.name
     if name.endswith(".tmpl"):
       data = Template(data.decode()).substitute(values).encode()
       name = name.removesuffix(".tmpl")
@@ -158,16 +135,42 @@ def _files(
   return found
 
 
-def _templated(folder: Traversable) -> bool:
-  return any(
-    _templated(item) if item.is_dir() else item.name.endswith(".tmpl")
-    for item in folder.iterdir()
-    if item.name not in _SKIP
-  )
+def _templated(files: dict[str, bytes]) -> bool:
+  return any(name.endswith(".tmpl") for name in files)
 
 
 def _values(name: str) -> dict[str, str]:
   return {"name": name, "command": name, "function": name.replace("-", "_")}
+
+
+class _Fetched:
+  """What one command has already asked a source, so each is fetched once."""
+
+  def __init__(self, project: Project) -> None:
+    self.project = project
+    self._tips: dict[tuple[str, str | None], Resolved] = {}
+    self._packages: dict[tuple[str, str], dict[str, dict[str, bytes]]] = {}
+
+  def source(self, entry: Installed) -> Source:
+    named = _sources.configured(self.project.root).get(entry.source)
+    if named is not None:
+      return named
+    if entry.source == BUILTIN or not (entry.url or entry.root):
+      return _sources.builtin()
+    return Source(entry.source, entry.url or None, entry.root or ".")
+
+  def tip(self, source: Source, ref: str | None) -> Resolved:
+    key = (source.name, ref)
+    if key not in self._tips:
+      self._tips[key] = _sources.resolve(source, ref)
+    return self._tips[key]
+
+  def packages(self, source: Source, commit: str) -> dict[str, dict[str, bytes]]:
+    key = (source.name, commit)
+    if key not in self._packages:
+      files = _sources.tree(source, commit, self.project.root)
+      self._packages[key] = _sources.packages_in(files)
+    return self._packages[key]
 
 
 # What the project has ----------------------------------------------------------
@@ -182,10 +185,18 @@ class Installed:
   """The folder, relative to the project root."""
   version: str
   source: str = BUILTIN
-  """Where the package came from: `builtin`, a `[sources]` name, or a folder."""
+  """The source's name in micro.toml."""
+  url: str = ""
+  """Where that source was (empty for a folder), in case micro.toml forgets it."""
+  root: str = ""
+  """The folder holding packages inside the source."""
+  ref: str = ""
+  """The branch or tag `upgrade` follows (empty for a folder)."""
+  commit: str = ""
+  """The exact commit installed: the original that merges are made against."""
   vars: dict[str, str] = field(default_factory=dict)
   files: dict[str, str] = field(default_factory=dict)
-  """Hash of each file as Micro last gave it to you, by path in the folder."""
+  """Hash of each file as the source last gave it to you, by path in the folder."""
 
 
 class Lock:
@@ -204,6 +215,10 @@ class Lock:
           path=table["path"],
           version=table.get("version", "unknown"),
           source=table.get("source", BUILTIN),
+          url=table.get("url", ""),
+          root=table.get("root", ""),
+          ref=table.get("ref", ""),
+          commit=table.get("commit", ""),
           vars=dict(table.get("vars", {})),
           files=dict(table.get("files", {})),
         )
@@ -215,8 +230,9 @@ class Lock:
       return
     quote = json.dumps  # a JSON string is a valid TOML basic string
     lines = [
-      "# Written by `micro pkg`; commit it. It records each package file as Micro gave it",
-      "# to you, which is how `micro pkg upgrade` tells your edits from Micro's changes.",
+      "# Written by `micro pkg`; commit it. It records where each package came from and",
+      "# each file as the source gave it to you, which is how `micro pkg upgrade` tells your",
+      "# edits from the source's changes.",
       "",
     ]
     for key in sorted(self.entries):
@@ -225,6 +241,10 @@ class Lock:
         f"[{key}]",
         f"package = {quote(entry.package)}",
         f"source = {quote(entry.source)}",
+        *([f"url = {quote(entry.url)}"] if entry.url else []),
+        *([f"root = {quote(entry.root)}"] if entry.root else []),
+        *([f"ref = {quote(entry.ref)}"] if entry.ref else []),
+        *([f"commit = {quote(entry.commit)}"] if entry.commit else []),
         f"path = {quote(entry.path)}",
         f"version = {quote(entry.version)}",
         "",
@@ -250,24 +270,31 @@ def _key(name: str) -> str:
 
 
 def add(
-  package: str,
+  spec: str,
   project: Project,
   *,
   name: str | None = None,
-  source: str | None = None,
+  ref: str | None = None,
 ) -> Path:
-  """Copy a package from a source (default: builtin) into the project's services."""
-  label, root = resolve(project, source)
-  shipped = available(root)
+  """Copy a package into the project's services: `SOURCE/NAME`, as in `builtin/chat`."""
+  source_name, slash, package = spec.partition("/")
+  if not (slash and source_name and package):
+    raise ValueError(
+      f"Name the source as well: SOURCE/NAME, as in `micro pkg add builtin/{spec.strip('/')}`."
+    )
+  source = _sources.find(project.root, source_name)
+  resolved = _sources.resolve(source, ref)
+  shipped = _sources.packages_in(_sources.tree(source, resolved.commit, project.root))
   if package not in shipped:
     raise ValueError(
-      f"No package {package!r} in the {label} source; choose from: {', '.join(shipped)}."
+      f"No package {package!r} in the {source.name} source; "
+      f"choose from: {', '.join(shipped) or 'none'}."
     )
-  templated = _templated(root / package)
+  templated = _templated(shipped[package])
   if templated and name is None:
     raise ValueError(
       f"{package!r} is a template: give the copy a name, "
-      f"as in `micro pkg add {package} tickets`."
+      f"as in `micro pkg add {spec} tickets`."
     )
   installed_as = name or package
   key = _key(installed_as)
@@ -278,7 +305,7 @@ def add(
   ):
     raise FileExistsError(f"{folder} already exists.")
   values = _values(installed_as) if templated else {}
-  files = _files(root / package, values)
+  files = _render(shipped[package], values)
   for relative, data in files.items():
     target = folder / relative
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -287,7 +314,11 @@ def add(
     package=package,
     path=folder.relative_to(project.root).as_posix(),
     version=_version(),
-    source=label,
+    source=source.name,
+    url=source.url or "",
+    root=source.path,
+    ref=resolved.ref,
+    commit=resolved.commit,
     vars=values,
     files={relative: _hash(data) for relative, data in files.items()},
   )
@@ -313,8 +344,13 @@ class Report:
   shipped: bool = True
   """Whether the source still has the package."""
   source: str = BUILTIN
+  ref: str = ""
+  commit: str = ""
+  """What is installed."""
+  tip: str = ""
+  """What the ref points at now."""
   problem: str | None = None
-  """Why the package could not be compared, such as a missing source folder."""
+  """Why the package could not be compared, such as an unreachable source."""
 
   @property
   def pending(self) -> list[Change]:
@@ -331,11 +367,11 @@ class Report:
 
 def classify(base: str | None, mine: str | None, new: str | None) -> Kind:
   """What to do with one file, from its three hashes (None: absent)."""
-  if new is None:  # Micro no longer ships it
+  if new is None:  # the source no longer ships it
     if mine is None:
       return "dropped"
     return "remove" if mine == base else "orphan"
-  if base is None:  # Micro ships a new file
+  if base is None:  # the source ships a new file
     if mine is None:
       return "add"
     return "refresh" if mine == new else "conflict"
@@ -348,26 +384,47 @@ def classify(base: str | None, mine: str | None, new: str | None) -> Kind:
   return "modified" if new == base else "conflict"
 
 
-def _compare(project: Project, entry: Installed) -> tuple[Report, dict[str, bytes]]:
+def _compare(
+  project: Project, entry: Installed, fetched: _Fetched, ref: str | None = None
+) -> tuple[Report, dict[str, bytes], Source | None]:
   name = Path(entry.path).name
-  try:
-    _, root = resolve(project, entry.source)
-  except (FileNotFoundError, ValueError) as error:
+
+  def report(**more: object) -> Report:
     return Report(
-      name, entry.package, entry.path, [], False, entry.source, str(error)
-    ), {}
-  shipped = available(root)
+      name,
+      entry.package,
+      entry.path,
+      [],
+      source=entry.source,
+      ref=entry.ref,
+      commit=entry.commit,
+      **more,  # type: ignore[arg-type]
+    )
+
+  source = fetched.source(entry)
+  try:
+    tip = fetched.tip(source, ref if ref is not None else entry.ref or None)
+    shipped = fetched.packages(source, tip.commit)
+  except _UNREADABLE as error:
+    return report(shipped=False, problem=str(error)), {}, None
   if entry.package not in shipped:
-    return Report(name, entry.package, entry.path, [], False, entry.source), {}
-  files = _files(root / entry.package, entry.vars)
+    return report(shipped=False, tip=tip.commit), {}, source
+  files = _render(shipped[entry.package], entry.vars)
   folder = project.root / entry.path
-  changes = []
+  changes: list[Change] = []
   for relative in sorted(files.keys() | entry.files.keys()):
     path = folder / relative
-    mine = _hash(path.read_bytes()) if path.is_file() else None
+    data = path.read_bytes() if path.is_file() else None
+    mine = _hash(data) if data is not None else None
     new = _hash(files[relative]) if relative in files else None
-    changes.append(Change(relative, classify(entry.files.get(relative), mine, new)))
-  return Report(name, entry.package, entry.path, changes, source=entry.source), files
+    kind = classify(entry.files.get(relative), mine, new)
+    if data is not None and _MARKERS.search(data):
+      kind = "markers"  # unresolved conflict markers, whatever the hashes say
+    changes.append(Change(relative, kind))
+  done = report(tip=tip.commit)
+  done.changes = changes
+  done.ref = tip.ref
+  return done, files, source
 
 
 def _select(lock: Lock, names: list[str] | None) -> list[str]:
@@ -383,9 +440,12 @@ def _select(lock: Lock, names: list[str] | None) -> list[str]:
 
 
 def status(project: Project, names: list[str] | None = None) -> list[Report]:
-  """Each added package compared with its source."""
+  """Each added package compared with what its source ships now."""
   lock = Lock.load(project)
-  return [_compare(project, lock.entries[key])[0] for key in _select(lock, names)]
+  fetched = _Fetched(project)
+  return [
+    _compare(project, lock.entries[key], fetched)[0] for key in _select(lock, names)
+  ]
 
 
 def diff(project: Project, name: str) -> str:
@@ -393,7 +453,7 @@ def diff(project: Project, name: str) -> str:
   lock = Lock.load(project)
   (key,) = _select(lock, [name])
   entry = lock.entries[key]
-  report, files = _compare(project, entry)
+  report, files, _ = _compare(project, entry, _Fetched(project))
   if report.problem:
     raise FileNotFoundError(report.problem)
   folder = project.root / entry.path
@@ -427,20 +487,31 @@ def upgrade(
   names: list[str] | None = None,
   *,
   settle: Literal["theirs", "mine"] | None = None,
+  ref: str | None = None,
 ) -> list[Report]:
   """Bring packages up to what their sources ship, keeping what you changed.
 
   Files you never touched are replaced, added, or removed. Files you edited that
-  Micro did not change stay. A file both of you changed is a conflict and is left
-  alone unless `settle` says: "theirs" writes Micro's, "mine" keeps yours and
-  records Micro's as reviewed, so it is not raised again until Micro changes it.
+  the source did not change stay. A file both of you changed is merged against the
+  commit you installed: clean merges are written, overlapping edits become conflict
+  markers. Without that commit (an older lock) it is a conflict left alone unless
+  `settle` says: "theirs" writes the source's, "mine" keeps yours and records the
+  source's as reviewed. `ref` moves one package to another branch, tag or commit.
   """
   lock = Lock.load(project)
+  keys = _select(lock, names)
+  if ref is not None and len(keys) != 1:
+    raise ValueError("--ref moves one package: name it.")
+  fetched = _Fetched(project)
   reports: list[Report] = []
-  for key in _select(lock, names):
+  for key in keys:
     entry = lock.entries[key]
-    report, files = _compare(project, entry)
+    report, files, source = _compare(project, entry, fetched, ref)
+    if report.problem or source is None or not report.shipped:
+      reports.append(report)
+      continue
     folder = project.root / entry.path
+    original = _original(entry, source, fetched)
     outcome: list[Change] = []
     for change in report.changes:
       path = folder / change.file
@@ -448,6 +519,13 @@ def upgrade(
       if kind in ATTENTION and settle is not None:
         settled = settle
         kind = "upgrade" if settle == "theirs" else "refresh"
+        if kind == "upgrade" and change.file not in files:
+          kind = "remove" if path.is_file() else "dropped"
+      elif kind == "conflict":
+        merged = _merge(path, original, entry, files, change.file, source, report)
+        if merged is not None:
+          outcome.append(Change(change.file, merged))
+          continue
       if kind in ("upgrade", "add"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(files[change.file])
@@ -462,14 +540,53 @@ def upgrade(
         del entry.files[change.file]
       outcome.append(Change(change.file, settled or change.kind))
     report.changes = outcome
-    if (
-      any(c.kind in PENDING or c.kind in ("theirs", "mine") for c in outcome)
-      and not report.attention
-    ):
-      entry.version = _version()
+    # The lock follows the files. What is still undecided stays flagged: merged files
+    # already record the new version, and a deletion or a conflict with no original to
+    # merge against needs your decision, not the old commit.
+    entry.version = _version()
+    entry.ref = report.ref
+    entry.commit = report.tip or entry.commit
+    entry.url = source.url or ""
+    entry.root = source.path
+    report.commit = entry.commit
     reports.append(report)
   lock.save()
   return reports
+
+
+def _merge(
+  path: Path,
+  original: dict[str, bytes],
+  entry: Installed,
+  files: dict[str, bytes],
+  relative: str,
+  source: Source,
+  report: Report,
+) -> Kind | None:
+  """Merge a file both of you changed; None if there is no original to merge against."""
+  base = original.get(relative)
+  if base is None or _hash(base) != entry.files.get(relative):
+    return None
+  label = f"{source.name}/{entry.package}@{report.tip[:7] or 'new'}"
+  merged, conflicts = _git.merge(
+    path.read_bytes(), base, files[relative], ("yours", label)
+  )
+  path.write_bytes(merged)
+  entry.files[relative] = _hash(files[relative])
+  return "markers" if conflicts else "merged"
+
+
+def _original(entry: Installed, source: Source, fetched: _Fetched) -> dict[str, bytes]:
+  """The package's files as installed: what merges are made against."""
+  if not entry.commit:
+    return {}
+  try:
+    shipped = fetched.packages(source, entry.commit)
+  except _UNREADABLE:
+    return {}
+  if entry.package not in shipped:
+    return {}
+  return _render(shipped[entry.package], entry.vars)
 
 
 def _prune(folder: Path, stop: Path) -> None:

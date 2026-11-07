@@ -177,8 +177,9 @@ handler; a plain string owns that prefix and what is nested under it (``.`` or
 
 A route is a literal ``prefix`` plus an optional regex (``PatternRoute``).
 The router indexes routes by prefix, so many routes cost a few dict lookups.
-Declared routes are tried before the plain prefix rule; if several match, the
-longest prefix wins and a warning names them.
+If several routes match one ID, the longest prefix wins and a warning names them.
+An ID no declared route matches falls back to its prefix (before the first
+``:``) and, with nobody handling that, gets the "isn't available" reply.
 
 For logic a pattern cannot express, subclass ``Route`` (``match``, ``dump``,
 ``load``) and pass an instance to ``match``. The router rebuilds it from
@@ -201,11 +202,16 @@ A custom template subclasses ``InteractionTemplate`` (``routes()``,
 Routing and sync
 ----------------
 
-* Each route (command name or custom_id prefix) has one durable consumer on
-  the ``MICRO_INTERACTIONS`` work queue; every replica and version of every
-  service handling it pulls from it. Any number of services may share a route.
+* Each route (a command name, or a declared custom ID route) has one durable
+  consumer on the ``MICRO_INTERACTIONS`` work queue; every replica and version of
+  every service handling it pulls from it. Any number of services may share a
+  route.
 * The router enqueues with a 3 s TTL (never delivered late) and deduplicates by
   interaction ID. If nothing handles a route, it replies ephemerally.
+* ``ctx.age`` is the seconds since Discord created the interaction. A handler that
+  starts more than 2 s into Discord's 3 s window logs a warning, and a failure logs
+  its age, so a ``10062 Unknown interaction`` shows whether the time went before
+  the handler (gateway, NATS, a skewed clock) or after it.
 * ``CommandSync`` registers a definition only when every live replica agrees on
   it; stopping a service never unregisters commands. ``micro commands list``,
   ``micro commands forget TYPE:NAME``.
