@@ -121,9 +121,22 @@ class Table[T]:
     except KeyWrongLastSequenceError:
       return False
 
+  async def _open(self, keys: str) -> KeyValue.KeyWatcher:
+    """Start a watcher that is never left half-made if we are cancelled meanwhile.
+
+    nats-py finishes subscribing in the background; a watcher abandoned mid-setup
+    stays subscribed and logs a timeout on the next change.
+    """
+    creating = asyncio.ensure_future(self._store.watch(keys))
+    try:
+      return await asyncio.shield(creating)
+    except asyncio.CancelledError:
+      creating.add_done_callback(_stop_when_created)
+      raise
+
   async def items(self, keys: str = ">") -> dict[str, Versioned[T]]:
     """Current values of keys matching `keys` (NATS wildcards allowed)."""
-    watcher = await self._store.watch(keys)
+    watcher = await self._open(keys)
     items: dict[str, Versioned[T]] = {}
     try:
       async for entry in watcher:
@@ -138,12 +151,13 @@ class Table[T]:
         if entry.delta == 0:
           break
     finally:
-      await watcher.stop()
+      with suppress(Exception):
+        await asyncio.shield(watcher.stop())
     return items
 
   async def watch(self, keys: str = ">") -> AsyncIterator[Change[T] | None]:
     """Yield current values, then `None` once caught up, then live changes."""
-    watcher = await self._store.watch(keys)
+    watcher = await self._open(keys)
     try:
       async for entry in watcher:
         if entry is None:
@@ -161,6 +175,22 @@ class Table[T]:
 
   def _encode(self, value: T) -> bytes:
     return self._adapter.dump_json(self._adapter.validate_python(value))
+
+
+_stopping: set[asyncio.Task[None]] = set()
+
+
+def _stop_when_created(creating: asyncio.Future[Any]) -> None:
+  if creating.cancelled() or creating.exception() is not None:
+    return
+
+  async def stop() -> None:
+    with suppress(Exception):
+      await creating.result().stop()
+
+  task = asyncio.ensure_future(stop())
+  _stopping.add(task)
+  task.add_done_callback(_stopping.discard)
 
 
 def _ttl(ttl: float | None) -> float | None:
