@@ -449,7 +449,7 @@ async def cli_scenarios() -> None:
     return await check()
 
   async def report(directory: Path) -> dict[str, Any]:
-    code, out = await cli(directory, "nodes", "list", merge=False)
+    code, out = await cli(directory, "nodes", "list", "--json", merge=False)
     return (
       json.loads(out) if code == 0 and out.strip() else {"nodes": {}, "components": []}
     )
@@ -676,7 +676,7 @@ async def pkg_scenarios() -> None:
     code, out = await _micro(d, "pkg", "list")
     check(
       "pkg list shows what ships and what you have",
-      code == 0 and "chat" in out and "service" in out and "[services/hello]" in out,
+      code == 0 and "chat" in out and "service" in out and "services/hello" in out,
       out,
     )
     code, out = await _micro(d, "pkg", "add", "chat")

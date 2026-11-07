@@ -39,7 +39,7 @@ projects need.
    micro dev                      # everything described in micro.toml
    micro dev scale app 4          # change a running group's replicas
    micro dev roll app             # new replica, wait until ready, drain the old; repeat
-   micro nodes list               # the machines running it, their processes, live components
+   micro nodes list               # the machines running it, their processes, live components (--json for scripts)
 
 The pieces underneath, each also usable on its own:
 

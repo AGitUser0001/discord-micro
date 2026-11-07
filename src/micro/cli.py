@@ -264,9 +264,11 @@ def _parser() -> argparse.ArgumentParser:
 
   nodes = command("nodes", "the machines running your bot")
   nodes_actions = nodes.add_subparsers(required=True, metavar="action")
-  nodes_actions.add_parser(
+  nodes_list = nodes_actions.add_parser(
     "list", help="each node, its processes, and the live components", parents=[config]
-  ).set_defaults(handler=_nodes, action="list")
+  )
+  nodes_list.add_argument("--json", action="store_true", help="machine-readable output")
+  nodes_list.set_defaults(handler=_nodes, action="list")
 
   worker = command(
     "worker",
@@ -285,9 +287,11 @@ def _parser() -> argparse.ArgumentParser:
 
   slash = command("commands", "inspect and sync Discord application commands")
   slash_actions = slash.add_subparsers(required=True, metavar="action")
-  slash_actions.add_parser(
+  slash_list = slash_actions.add_parser(
     "list", help="commands, their state, and live versions", parents=[config]
-  ).set_defaults(handler=_commands, action="list")
+  )
+  slash_list.add_argument("--json", action="store_true", help="machine-readable output")
+  slash_list.set_defaults(handler=_commands, action="list")
   slash_actions.add_parser(
     "sync", help="sync now, repairing commands changed outside Micro", parents=[config]
   ).set_defaults(handler=_commands, action="sync")
@@ -405,6 +409,20 @@ _WORDS: dict[str, str] = {
 }
 
 
+def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+  """A Markdown table, padded so it reads as columns in a terminal too."""
+  cells = [[cell.replace("|", "\\|") for cell in row] for row in (headers, *rows)]
+  widths = [max(len(cell) for cell in column) for column in zip(*cells)]
+
+  def line(row: Sequence[str]) -> str:
+    return (
+      "| " + " | ".join(cell.ljust(width) for cell, width in zip(row, widths)) + " |"
+    )
+
+  rule = "| " + " | ".join("-" * width for width in widths) + " |"
+  return "\n".join([line(cells[0]), rule, *map(line, cells[1:])])
+
+
 async def _pkg(args: argparse.Namespace) -> int:
   from micro.scaffold import find, packages
 
@@ -420,13 +438,19 @@ async def _pkg(args: argparse.Namespace) -> int:
     for label in labels:
       name, root = packages.resolve(project, label)
       print(name if name == packages.BUILTIN else f"{name}  ({root})")
-      for package, summary in packages.available(root).items():
-        copies = sorted(
-          e.path for e in entries if e.package == package and e.source == name
-        )
-        print(
-          f"  {package:10s} {summary}" + (f"  [{', '.join(copies)}]" if copies else "")
-        )
+      rows = [
+        [
+          package,
+          summary,
+          ", ".join(
+            sorted(e.path for e in entries if e.package == package and e.source == name)
+          ),
+        ]
+        for package, summary in packages.available(root).items()
+      ]
+      if rows:
+        print(_table(["PACKAGE", "WHAT IT IS", "ADDED AS"], rows))
+      print()
     return 0
   project = find()
   if args.action == "add":
@@ -454,13 +478,14 @@ async def _pkg(args: argparse.Namespace) -> int:
   if not reports:
     print("No packages added yet. See `micro pkg list`.")
   open_items = 0
+  rows: list[list[str]] = []
   for report in reports:
     notable = [c for c in report.changes if c.kind != "current"]
     if not report.shipped:
       reason = (
         report.problem or f"the {report.source} source no longer has {report.package}"
       )
-      print(f"{report.path}  can't compare: {reason}")
+      rows.append([report.path, f"can't compare: {reason}", ""])
       continue
     headline = "up to date" if not notable else ""
     if report.attention:
@@ -470,10 +495,12 @@ async def _pkg(args: argparse.Namespace) -> int:
     elif notable:
       headline = "up to date, with your edits"
     origin = "" if report.source == packages.BUILTIN else f"  ({report.source})"
-    print(f"{report.path}  {headline}{origin}")
+    rows.append([report.path, f"{headline}{origin}", ""])
     for change in notable:
-      print(f"    {change.file}: {_WORDS.get(change.kind, change.kind)}")
+      rows.append(["", f"  {change.file}", _WORDS.get(change.kind, change.kind)])
     open_items += len(report.attention)
+  if rows:
+    print(_table(["PACKAGE", "STATUS", "CHANGE"], rows))
   if open_items:
     print(
       "\nSee `micro pkg diff NAME`, then `micro pkg upgrade --theirs` (take Micro's) or "
@@ -605,8 +632,28 @@ async def _nodes(args: argparse.Namespace) -> int:
         report["components"].append(
           {"kind": entry.kind, "name": entry.name, "runtime": entry.instance[:8]}
         )
-    print(json.dumps(report, indent=2))
+    if args.json:
+      print(json.dumps(report, indent=2))
+      return 0
+    processes = [
+      [node, p["group"], str(p["pid"]), _age(p["uptime"])]
+      for node, body in report["nodes"].items()
+      for p in body["processes"]
+    ]
+    print(_table(["NODE", "GROUP", "PID", "UP"], processes))
+    components = [[c["kind"], c["name"], c["runtime"]] for c in report["components"]]
+    if components:
+      print()
+      print(_table(["KIND", "COMPONENT", "RUNTIME"], components))
   return 0
+
+
+def _age(seconds: int) -> str:
+  hours, rest = divmod(int(seconds), 3600)
+  minutes, seconds = divmod(rest, 60)
+  if hours:
+    return f"{hours}h {minutes}m"
+  return f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
 
 
 async def _operate(args: argparse.Namespace) -> int:
@@ -641,6 +688,7 @@ async def _services(args: argparse.Namespace) -> int:
     Path(entry.path).name: entry
     for entry in packages.Lock.load(project).entries.values()
   }
+  rows: list[list[str]] = []
   for item in sorted(project.services.iterdir()):
     if item.name.startswith(("_", ".")):
       continue
@@ -655,7 +703,9 @@ async def _services(args: argparse.Namespace) -> int:
     origin = (
       "yours" if blank or entry is None else f"from {entry.package} ({entry.source})"
     )
-    print(f"  {key:16s} {origin}")
+    rows.append([key, origin])
+  if rows:
+    print(_table(["SERVICE", "ORIGIN"], rows))
   return 0
 
 
@@ -758,18 +808,34 @@ async def _commands(args: argparse.Namespace) -> int:
     declarations = Declarations(runtime, "commands")
     if args.action == "list":
       view = await declarations.view()
-      print(
-        json.dumps(
-          {
-            key: {
-              "state": declared.state.value,
-              "applied": declared.hash,
-              "live_versions": sorted(declared.live_hashes),
-            }
-            for key, declared in view.items()
-          },
-          indent=2,
+      if args.json:
+        print(
+          json.dumps(
+            {
+              key: {
+                "state": declared.state.value,
+                "applied": declared.hash,
+                "live_versions": sorted(declared.live_hashes),
+              }
+              for key, declared in view.items()
+            },
+            indent=2,
+          )
         )
+        return 0
+      rows = [
+        [
+          key,
+          declared.state.value,
+          str(declared.hash),
+          ", ".join(sorted(declared.live_hashes)),
+        ]
+        for key, declared in view.items()
+      ]
+      print(
+        _table(["COMMAND", "STATE", "APPLIED", "LIVE VERSIONS"], rows)
+        if rows
+        else "No commands declared."
       )
       return 0
     if args.action == "forget" and not await declarations.forget(args.command):
