@@ -52,10 +52,12 @@ The pieces underneath, each also usable on its own:
   ``micro server start`` runs it alone; ``micro server status`` says whether it is
   reachable and which nodes are connected.
 * **worker**: one process that connects to the server and hosts components. It is the
-  server's pair: ``micro worker services.*`` hosts everything in ``services`` until
-  Ctrl-C, and ``micro dev`` starts one for each replica in micro.toml. Run one by hand
-  to debug a single service, or under systemd, Docker, or Kubernetes when they
-  supervise the processes instead.
+  server's pair: ``micro worker app`` hosts a process group from micro.toml until
+  Ctrl-C (``micro worker discord app`` hosts two in one process), and ``micro dev``
+  starts one for each replica. It reads micro.toml for the NATS address, so on another
+  machine ``micro worker app`` joins the same bot. Components work too:
+  ``micro worker services.*``. Run one by hand to debug a single service, or under
+  systemd, Docker, or Kubernetes when they supervise the processes instead.
 * **node**: one machine running ``micro dev``. Name it with ``--name`` (default: the
   hostname) when several machines serve one bot; ``scale`` and ``roll`` take
   ``--node NAME`` when more than one of them runs the group.
@@ -84,7 +86,7 @@ CLI
    micro dev roll PROCESS [--node NAME]
    micro nodes list
    micro server start | status
-   micro worker mybot.services.* micro.discord:DiscordHTTPWorker   # one worker
+   micro worker app | discord app | mybot.services.* micro.discord:DiscordHTTPWorker
 
    micro gateway status | shards N | roll | presence idle --activity "..."
    micro commands list | sync | forget TYPE:NAME

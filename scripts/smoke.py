@@ -518,15 +518,26 @@ async def cli_scenarios() -> None:
         "server status reports JetStream", code == 0 and "streams" in out, (code, out)
       )
 
+      code, out = await cli(d, "worker", "nope")
+      check(
+        "an unknown process group lists the ones micro.toml has",
+        code == 1 and "No process group 'nope'" in out and "app" in out,
+        (code, out),
+      )
+      with tempfile.TemporaryDirectory() as empty:
+        code, out = await cli(Path(empty), "worker", "app")
+        check(
+          "a group name without a micro.toml says to run init",
+          code == 1 and "micro init" in out,
+          (code, out),
+        )
       code, out = await cli(d, "worker")
       check(
         "a worker with nothing to host says so",
         code == 1 and "Nothing to host" in out,
         (code, out),
       )
-      solo = await long_running(
-        d, "worker", "--config", "micro.toml", "--process", "app"
-      )
+      solo = await long_running(d, "worker", "app")
       async with Runtime(f"nats://127.0.0.1:{port}", name="watcher") as watcher:
 
         async def probe_present() -> bool:

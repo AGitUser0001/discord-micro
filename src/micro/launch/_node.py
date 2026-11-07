@@ -177,7 +177,6 @@ class Node:
       "worker",
       "--config",
       str(self.path),
-      "--process",
       group,
       cwd=self.root,
       env=env,

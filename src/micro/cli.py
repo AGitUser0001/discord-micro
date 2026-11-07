@@ -369,13 +369,21 @@ def _parser() -> argparse.ArgumentParser:
     "one process hosting components, connected to the server",
     "Connects to the NATS server and hosts components in this one process until "
     "Ctrl-C. It is the server's pair: `micro dev` starts one worker per process "
-    "group replica in micro.toml and keeps them running. Name components as "
-    "module:attribute, or package.* for every component in a package.",
+    "group replica in micro.toml and keeps them running. Name what to host as a "
+    "process group from micro.toml (`app`), or a component: module:attribute, or "
+    "package.* for every component in a package. micro.toml also supplies the NATS "
+    "address.",
   )
-  worker.add_argument("targets", nargs="*", help="module:attribute components to host")
-  worker.add_argument("--config", help="deployment file to read a process group from")
-  worker.add_argument("--process", help="process group in the deployment file")
-  worker.add_argument("--nats", help="NATS URL(s), comma separated")
+  worker.add_argument(
+    "targets",
+    nargs="*",
+    metavar="target",
+    help="a process group (app), or module:attribute / package.* to host",
+  )
+  worker.add_argument("--config", default=DEFAULT_CONFIG, help="micro.toml to read")
+  worker.add_argument(
+    "--nats", help="NATS URL(s), comma separated (default: micro.toml)"
+  )
   worker.add_argument("--name", help="name shown in presence")
   worker.set_defaults(handler=_worker)
 
@@ -668,29 +676,42 @@ async def _pkg(args: argparse.Namespace) -> int:
   return 1 if open_items else 0
 
 
+def _is_group(target: str) -> bool:
+  """A process group name, not a component target (`module:attribute`, `package.*`)."""
+  return ":" not in target and not target.endswith(".*")
+
+
 async def _worker(args: argparse.Namespace) -> int:
   from micro.launch import load_components, load_config
 
-  targets = list(args.targets)
+  groups = [t for t in args.targets if _is_group(t)]
+  targets = [t for t in args.targets if not _is_group(t)]
+  path = Path(args.config)
+  config = None
+  if path.is_file():
+    config = load_config(path)
+  elif groups:
+    raise FileNotFoundError(f"No {path}: run `micro init`, or pass --config.")
   servers = args.nats.split(",") if args.nats else None
   name = args.name
   replicas = 1
-  if args.config or args.process:
-    if not (args.config and args.process):
-      raise SystemExit("--config and --process are used together.")
-    config = load_config(args.config)
-    group = config.processes[args.process]
-    targets.extend(group.components)
+  if config is not None:
+    for group in groups:
+      if group not in config.processes:
+        known = ", ".join(sorted(config.processes))
+        raise ValueError(f"No process group {group!r} in {path}; it has: {known}.")
+      targets.extend(config.processes[group].components)
     servers = servers or (
       os.environ["MICRO_NATS_URL"].split(",")
       if "MICRO_NATS_URL" in os.environ
       else config.nats
     )
-    name = name or f"{config.name}.{args.process}"
+    name = name or ".".join([config.name, *(["+".join(groups)] if groups else [])])
     replicas = config.jetstream_replicas
   if not targets:
-    raise SystemExit(
-      "Nothing to host: pass module:attribute targets, or --config and --process."
+    raise ValueError(
+      "Nothing to host: name a process group from micro.toml (such as `app`) "
+      "or a component (module:attribute, package.*)."
     )
   components = load_components(targets)
   runtime = Runtime(servers, name=name or "micro", replicas=replicas)
