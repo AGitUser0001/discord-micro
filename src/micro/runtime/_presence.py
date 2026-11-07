@@ -106,10 +106,28 @@ class Directory:
       return tuple(values)
     return tuple(entry for entry in values if entry.kind == kind)
 
-  def on_change(self, listener: Callable[[], Any]) -> Callable[[], None]:
-    """Call `listener` after every change; returns a function removing it."""
-    self._listeners.append(listener)
-    return lambda: self._listeners.remove(listener)
+  def on_change(
+    self, listener: Callable[[], Any], *, watching: Callable[[], Any] | None = None
+  ) -> Callable[[], None]:
+    """Call `listener` after every change; returns a function removing it.
+
+    Presence entries refresh constantly, so a listener that only cares about
+    part of the directory passes `watching`: a function returning that part. The
+    listener then runs only when the returned value changes.
+    """
+    if watching is None:
+      callback = listener
+    else:
+      last = [watching()]
+
+      def callback() -> None:
+        current = watching()
+        if current != last[0]:
+          last[0] = current
+          listener()
+
+    self._listeners.append(callback)
+    return lambda: self._listeners.remove(callback)
 
   async def wait_for(self, predicate: Callable[[Directory], bool]) -> None:
     async with self._changed:

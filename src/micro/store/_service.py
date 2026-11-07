@@ -77,7 +77,10 @@ class Store(Service):
   async def on_start(self) -> None:
     await self.engine.executor.start()
     await super().on_start()
-    self._unwatch = self.runtime.directory.on_change(self._compose_requested.set)
+    self._unwatch = self.runtime.directory.on_change(
+      self._compose_requested.set,
+      watching=Declarations(self.runtime, "modules").live,
+    )
     await self._compose()
     self.spawn(self._compose_loop(), name="compose")
 

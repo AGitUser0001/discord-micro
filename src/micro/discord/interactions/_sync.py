@@ -63,7 +63,10 @@ class CommandSync(Component):
     self._verified = False
 
   async def on_start(self) -> None:
-    self._unwatch = self.runtime.directory.on_change(self._changed.set)
+    declarations = Declarations(self.runtime, "commands")
+    self._unwatch = self.runtime.directory.on_change(
+      self._changed.set, watching=declarations.live
+    )
     self._changed.set()
     self.spawn(self._loop(), name="sync")
 

@@ -75,13 +75,24 @@ class InteractionRouter(Service):
   async def on_start(self) -> None:
     await ensure_interactions_stream(self)
     await super().on_start()
-    self._unwatch = self.runtime.directory.on_change(self._forget_tables)
+    self._unwatch = self.runtime.directory.on_change(
+      self._forget_tables, watching=self._declared_routes
+    )
 
   async def on_close(self) -> None:
     if self._unwatch is not None:
       self._unwatch()
       self._unwatch = None
     await super().on_close()
+
+  def _declared_routes(self) -> list[tuple[str, str]]:
+    """Every declared custom ID route in the directory (what the tables are built from)."""
+    return sorted(
+      (str(queue), json.dumps(wire, sort_keys=True))
+      for entry in self.runtime.directory.entries("service")
+      for name in ("component_patterns", "modal_patterns")
+      for queue, wire in (entry.metadata.get(name) or {}).items()  # type: ignore[union-attr]
+    )
 
   def _forget_tables(self) -> None:
     self._tables = None

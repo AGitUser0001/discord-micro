@@ -131,8 +131,33 @@ class Table[T]:
     try:
       return await asyncio.shield(creating)
     except asyncio.CancelledError:
-      creating.add_done_callback(_stop_when_created)
+      creating.add_done_callback(self._discard_when_created)
       raise
+
+  async def _discard(self, watcher: KeyValue.KeyWatcher) -> None:
+    """Stop a watcher and delete its consumer.
+
+    `stop()` only unsubscribes; the server keeps the (ordered) consumer for
+    minutes, and every read or watch leaves one behind, up to JetStream's limit.
+    """
+    store = self._store
+    with suppress(Exception):
+      sub: Any = watcher._sub  # pyright: ignore[reportPrivateUsage]
+      if sub is None:
+        return
+      name = (await sub.consumer_info()).name
+      await watcher.stop()
+      await store._js.delete_consumer(store._stream, name)  # pyright: ignore[reportPrivateUsage]
+      return
+    with suppress(Exception):
+      await watcher.stop()
+
+  def _discard_when_created(self, creating: asyncio.Future[Any]) -> None:
+    if creating.cancelled() or creating.exception() is not None:
+      return
+    task = asyncio.ensure_future(self._discard(creating.result()))
+    _stopping.add(task)
+    task.add_done_callback(_stopping.discard)
 
   async def items(self, keys: str = ">") -> dict[str, Versioned[T]]:
     """Current values of keys matching `keys` (NATS wildcards allowed)."""
@@ -151,8 +176,7 @@ class Table[T]:
         if entry.delta == 0:
           break
     finally:
-      with suppress(Exception):
-        await asyncio.shield(watcher.stop())
+      await asyncio.shield(self._discard(watcher))
     return items
 
   async def watch(self, keys: str = ">") -> AsyncIterator[Change[T] | None]:
@@ -170,27 +194,13 @@ class Table[T]:
             entry.key, self._adapter.validate_json(entry.value), entry.revision or 0
           )
     finally:
-      with suppress(Exception):
-        await asyncio.shield(watcher.stop())
+      await asyncio.shield(self._discard(watcher))
 
   def _encode(self, value: T) -> bytes:
     return self._adapter.dump_json(self._adapter.validate_python(value))
 
 
 _stopping: set[asyncio.Task[None]] = set()
-
-
-def _stop_when_created(creating: asyncio.Future[Any]) -> None:
-  if creating.cancelled() or creating.exception() is not None:
-    return
-
-  async def stop() -> None:
-    with suppress(Exception):
-      await creating.result().stop()
-
-  task = asyncio.ensure_future(stop())
-  _stopping.add(task)
-  task.add_done_callback(_stopping.discard)
 
 
 def _ttl(ttl: float | None) -> float | None:

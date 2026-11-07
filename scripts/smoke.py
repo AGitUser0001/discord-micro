@@ -386,6 +386,32 @@ async def sync_scenarios() -> None:
       [(c.path, c.status) for c in f.calls if "commands" in c.path],
     )
 
+  async with Stack(App()) as s:
+    from micro.discord.interactions import SYNC_LOCK, sync_commands
+
+    async def consumers() -> int:
+      return (await s.runtime.jetstream.account_info()).consumers
+
+    await asyncio.sleep(2)
+    before = await consumers()
+    http = DiscordHTTPClient(s.runtime)
+    application = str((await http.call("get_my_application"))["id"])
+    locks = await s.runtime.locks()
+    for _ in range(20):
+      async with locks.hold(SYNC_LOCK, ttl=30):
+        await sync_commands(s.runtime, http, application, verify=True)
+    check(
+      "table reads leave no consumers behind",
+      (after := await consumers()) == before,
+      (before, after),
+    )
+    await asyncio.sleep(6)  # presence refreshes; an idle CommandSync must not poll
+    check(
+      "an idle deployment does not accumulate consumers",
+      (idle := await consumers()) == before,
+      (before, idle),
+    )
+
 
 async def cli_scenarios() -> None:
   print("cli: the server and the nodes, as separate processes")
