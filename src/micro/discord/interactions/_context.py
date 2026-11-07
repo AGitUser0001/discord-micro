@@ -37,6 +37,7 @@ if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
 
 TOKEN_LIFETIME = 15 * 60
+_DISCORD_EPOCH_MS = 1420070400000
 """Discord interaction tokens stay valid for 15 minutes."""
 
 
@@ -106,6 +107,8 @@ class Interaction:
     self.payload = payload
     self.http = http
     self.received = time.monotonic() if received is None else received
+    self.created_at: float = ((int(payload["id"]) >> 22) + _DISCORD_EPOCH_MS) / 1000
+    """When Discord created the interaction (from its ID), as a Unix time."""
     self.route: Mapping[str, Any] = {}
     """What the matched `Route` extracted from the custom ID (`components.match`)."""
     self.id: str = payload["id"]
@@ -147,6 +150,11 @@ class Interaction:
         if "custom_id" in component:
           values[component["custom_id"]] = component.get("value", "")
     return values
+
+  @property
+  def age(self) -> float:
+    """Seconds since Discord created the interaction (needs a sane clock)."""
+    return max(0.0, time.time() - self.created_at)
 
   @property
   def expired(self) -> bool:

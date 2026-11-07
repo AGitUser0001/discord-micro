@@ -52,6 +52,9 @@ INTERACTIONS_KEY = "interactions"
 RESPONSE_DEADLINE = 3
 """Seconds Discord allows for an interaction's initial response."""
 
+LATE_WARNING = 2.0
+"""Seconds into Discord's deadline after which a late interaction is worth a warning."""
+
 type Call = Callable[[], Awaitable[Any]]
 
 
@@ -155,6 +158,16 @@ class InteractionTemplate:
       service=self.service,
       received=time.monotonic(),
     )
+    age = flow.interaction.age
+    if age > LATE_WARNING:
+      logger.warning(
+        "Interaction %s reached a handler %.1f s after Discord created it "
+        "(Discord allows %d s to answer); the delay is before the handler "
+        "(gateway, NATS, or this machine's clock).",
+        flow.interaction.id,
+        age,
+        RESPONSE_DEADLINE,
+      )
     await self.handle(flow)
 
   async def handle(self, flow: Flow) -> None:
@@ -162,7 +175,11 @@ class InteractionTemplate:
     try:
       await self._middleware.run(flow, self._dispatch)
     except Exception as error:
-      logger.exception("Interaction handler failed in %s", self.service.name)
+      logger.exception(
+        "Interaction handler failed in %s (%.1f s after Discord created it)",
+        self.service.name,
+        flow.interaction.age,
+      )
       await report_failure(flow, error)
       return
     if not flow.reached and not flow.interaction.responded:
