@@ -26,12 +26,15 @@ from ._context import (
   InteractionExpired,
   InteractionState,
   InvalidResponse,
+  Resolved,
   ResponseType,
 )
 from ._custom_id import CUSTOM_ID_LIMIT, CustomId
+from ._endpoint import InteractionEndpoint
 from ._flow import Flow, Middleware, MiddlewareError, defers
 from ._pattern import PatternRoute, Route
 from ._router import RAW_INTERACTION, InteractionRouter
+from ._runtime_commands import RuntimeCommands, option
 from ._sync import SYNC_LOCK, CommandSync, SyncFailed, sync_commands
 from ._templates import (
   INTERACTIONS_KEY,
@@ -62,6 +65,7 @@ __all__ = (
   "CustomId",
   "Flow",
   "Interaction",
+  "InteractionEndpoint",
   "InteractionExpired",
   "InteractionRouter",
   "InteractionState",
@@ -73,11 +77,14 @@ __all__ = (
   "Modals",
   "Option",
   "PatternRoute",
+  "Resolved",
   "ResponseType",
   "Route",
+  "RuntimeCommands",
   "SyncFailed",
   "defers",
   "ensure_interactions_stream",
+  "option",
   "route_consumer",
   "sync_commands",
 )

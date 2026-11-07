@@ -71,7 +71,8 @@ Packages
 
 Examples are *packages*: a folder you copy into ``services/`` and then own.
 ``hello`` (what ``init`` adds), and the examples ``greeter``, ``audit``, ``chat``,
-``notes``, ``ticker`` and ``health``. They share nothing: ``audit`` declares the
+``notes``, ``ticker``, ``health`` and ``custom`` (members make their own
+commands at runtime; needs a store). They share nothing: ``audit`` declares the
 messages it listens for itself, because services agree through validated
 messages, not shared code. (``micro services add tickets`` is different: it writes a
 blank service from a built-in template, with nothing to fetch or upgrade.)

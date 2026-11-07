@@ -71,6 +71,7 @@ all = [
 
 [dependency-groups]
 dev = [
+    "cryptography>=50.0.2",
     "datamodel-code-generator>=0.72.2",
     "graphglot>=0.14.1,<0.15",
     "graphql-core>=3.2.11,<3.3",

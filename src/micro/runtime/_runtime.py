@@ -297,6 +297,8 @@ class Runtime:
     retention: RetentionPolicy,
     retire: Sequence[str] = (),
     allow_msg_ttl: bool = False,
+    allow_msg_schedules: bool = False,
+    max_msgs_per_subject: int | None = None,
     duplicate_window: float | None = None,
   ) -> None:
     """Create a stream, or bring an existing one up to date without losing data.
@@ -311,6 +313,8 @@ class Runtime:
       storage=self.storage,
       num_replicas=self.replicas,
       allow_msg_ttl=allow_msg_ttl or None,
+      allow_msg_schedules=allow_msg_schedules or None,
+      max_msgs_per_subject=max_msgs_per_subject or -1,
       duplicate_window=duplicate_window or 0,
     )
     try:
@@ -324,6 +328,9 @@ class Runtime:
     changed = wanted != existing
     if allow_msg_ttl and not info.config.allow_msg_ttl:
       info.config.allow_msg_ttl = True
+      changed = True
+    if allow_msg_schedules and not info.config.allow_msg_schedules:
+      info.config.allow_msg_schedules = True
       changed = True
     if changed:
       info.config.subjects = sorted(wanted)

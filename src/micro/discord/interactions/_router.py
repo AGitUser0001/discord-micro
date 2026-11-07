@@ -16,6 +16,7 @@ from micro.discord.routes import (
 )
 from micro.service import DispatchSchema, Service
 
+from ._context import respond_initially
 from ._flow import Flow, Middleware, Middlewares, flow_key
 from ._pattern import RouteTable
 from ._templates import (
@@ -169,11 +170,7 @@ class InteractionRouter(Service):
           "allowed_mentions": {"parse": []},
         },
       }
-    await DiscordHTTPClient(self.runtime).call(
-      "create_interaction_response",
-      path={"interaction_id": payload["id"], "interaction_token": payload["token"]},
-      body=body,
-    )
+    await respond_initially(DiscordHTTPClient(self.runtime), payload, body)
 
   async def _on_interaction(self, payload: dict[str, Any]) -> None:
     from micro.discord import DiscordHTTPClient

@@ -13,6 +13,8 @@ from micro.coordination import Declarations
 from micro.errors import MicroError
 from micro.runtime import Component
 
+from ._runtime_commands import PREFIX, _Stored, runtime_definitions
+
 logger = logging.getLogger("micro")
 
 SYNC_LOCK = "commands.sync"
@@ -69,6 +71,17 @@ class CommandSync(Component):
     )
     self._changed.set()
     self.spawn(self._loop(), name="sync")
+    self.spawn(self._watch_runtime_commands(), name="runtime-commands")
+
+  async def _watch_runtime_commands(self) -> None:
+    """Sync again whenever a runtime command is added, changed, or removed."""
+    table = await self.runtime.table(subjects.STATE_BUCKET, _Stored)
+    caught_up = False
+    async for change in table.watch(PREFIX + ">"):
+      if change is None:
+        caught_up = True
+      elif caught_up:
+        self._changed.set()
 
   async def on_close(self) -> None:
     self._unwatch()
@@ -145,6 +158,15 @@ async def sync_commands(
     guilds = definition.pop("guild_ids", None) or []
     for scope in [str(guild) for guild in guilds] if guilds else ["global"]:
       scopes.setdefault(scope, {})[key] = definition
+      scopes_of.setdefault(key, []).append(scope)
+  for key, definition in (await runtime_definitions(runtime)).items():
+    guilds = cast(list[Any], definition.pop("guild_ids", None) or [])
+    base = key.partition("#")[0]
+    if base in view:
+      logger.warning("Runtime command %s is also declared in code; using that", base)
+      continue
+    for scope in [str(guild) for guild in guilds] if guilds else ["global"]:
+      scopes.setdefault(scope, {}).setdefault(base, definition)
       scopes_of.setdefault(key, []).append(scope)
   synced = await runtime.table(subjects.STATE_BUCKET, _Synced)
   previous = {

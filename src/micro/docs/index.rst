@@ -22,6 +22,7 @@ component keeps working while NATS is up. Python 3.14+.
    project
    runtime
    services
+   scheduler
    coordination
    discord
    interactions

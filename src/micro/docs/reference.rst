@@ -35,6 +35,9 @@ Streams and consumers
 * ``MICRO_INTERACTIONS`` (work queue, per-message TTL, dedup by interaction
   ID): consumer ``ix_<route>`` per route.
 * ``MICRO_WORK_<QUEUE>`` (work queue): consumer ``work_<queue>``.
+* ``MICRO_SCHEDULE`` (limits, one message per subject, message schedules on): a timer
+  waits under ``micro.schedule.<key>`` and the server publishes it to
+  ``micro.due.<key>`` at its time; consumer ``sched_<name>`` per scheduler.
 
 Buckets
 -------
@@ -44,7 +47,7 @@ Buckets
 ``micro_shards``    ``<generation>.<shard>`` → shard lease (TTL)
 ``micro_gateway``   ``generation.desired``, ``generation.active``, ``presence``
 ``micro_locks``     identify gates, ``commands.sync``, application locks
-``micro_state``     ``decl.<kind>.<hash>``, ``applied.<kind>.<key>``, ``synced.commands.<scope>``
+``micro_state``     ``decl.<kind>.<hash>``, ``applied.<kind>.<key>``, ``synced.commands.<scope>``, ``rtcmd.<type>.<name>`` (runtime commands)
 ==================  ===================================================================
 
 The object store ``micro_payloads`` carries request and reply bodies above the

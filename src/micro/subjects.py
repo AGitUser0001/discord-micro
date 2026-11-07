@@ -31,6 +31,11 @@ INTERACTION_SUBJECTS = ("micro.discord.interaction.>",)
 
 WORK_STREAM_PREFIX = "MICRO_WORK_"
 
+SCHEDULE_STREAM = "MICRO_SCHEDULE"
+"""Timers: a message waiting under `micro.schedule.<key>` is published to
+`micro.due.<key>` by the server at its time (NATS 2.12+); see `micro.scheduler`."""
+SCHEDULE_SUBJECTS = ("micro.schedule.>", "micro.due.>")
+
 PRESENCE_BUCKET = "micro_presence"
 """Live component registrations; every key carries a TTL and is renewed."""
 
@@ -118,6 +123,14 @@ def work(queue: str) -> str:
 
 def work_stream(queue: str) -> str:
   return WORK_STREAM_PREFIX + safe_name(queue).upper()
+
+
+def schedule(key: str) -> str:
+  return f"micro.schedule.{safe_name(key)}"
+
+
+def due(key: str) -> str:
+  return f"micro.due.{safe_name(key)}"
 
 
 def node(deployment: str, node: str, operation: str) -> str:

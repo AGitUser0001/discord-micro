@@ -1,9 +1,10 @@
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic, time
 from typing import TYPE_CHECKING, Any, Literal
@@ -30,19 +31,40 @@ from .http_operations import (
 if TYPE_CHECKING:
   import httpx2  # Loaded at runtime only by the worker.
 
+  from micro.discord.api import DiscordAPI
+
 logger = logging.getLogger("micro")
 
 WORKER_KIND = "discord.http"
 _STATUS_HEADER = "Micro-Status"
 
 
+class DiscordHTTPFile(BaseModel):
+  """A file to upload with a request: one part of a multipart body."""
+
+  model_config = ConfigDict(
+    frozen=True, ser_json_bytes="base64", val_json_bytes="base64"
+  )
+  field: str
+  """The multipart field: `files[0]`, `file`, ..."""
+  filename: str
+  data: bytes
+  content_type: str | None = None
+
+
 class DiscordHTTPRequest(BaseModel):
   """One generated Discord OpenAPI operation invocation."""
 
-  model_config = ConfigDict(extra="ignore", frozen=True)
+  model_config = ConfigDict(
+    extra="ignore", frozen=True, ser_json_bytes="base64", val_json_bytes="base64"
+  )
   operation: DiscordOperationId
   data: dict[str, JsonValue]
   idempotency_key: str | None = None
+  files: tuple[DiscordHTTPFile, ...] = ()
+  """Uploads: the request is sent as multipart, the rest of `data`'s body as JSON."""
+  reason: str | None = None
+  """The audit log reason (sent as X-Audit-Log-Reason)."""
 
 
 class DiscordHTTPResponse(BaseModel):
@@ -127,6 +149,22 @@ class RateLimits:
     self._completed[key] = response
 
 
+@dataclass(frozen=True, slots=True)
+class HTTPEvent:
+  """One Discord request attempt, as given to `DiscordHTTPWorker.hook` callbacks."""
+
+  operation: str
+  route: str
+  attempt: int  # 1 for the first try
+  status: int | None  # None when the request never got an answer
+  seconds: float
+  error: BaseException | None = None
+  rate_limited: bool = False
+
+
+HTTPHook = Callable[[HTTPEvent], Awaitable[None] | None]
+
+
 class DiscordHTTPWorker(Component):
   """Executes generated Discord operations for one partition of rate-limit buckets.
 
@@ -162,6 +200,7 @@ class DiscordHTTPWorker(Component):
     self._max_attempts = max_attempts
     self._slots = asyncio.Semaphore(concurrency)
     self.rate_limits = RateLimits()
+    self._hooks: list[HTTPHook] = []
     self._http: httpx2.AsyncClient | None = None
     self._subscriptions: list[Subscription] = []
     self._presence: Presence | None = None
@@ -200,6 +239,26 @@ class DiscordHTTPWorker(Component):
     if self._http is not None:
       await self._http.aclose()
       self._http = None
+
+  def hook(self, callback: HTTPHook) -> Callable[[], None]:
+    """Call `callback(event)` after every Discord request this worker makes.
+
+    One call per attempt (a retry after a 429 is its own event). The callback may
+    be sync or async; its errors are logged and never affect the request. Hooks
+    are local to this worker. With none registered the request path does no extra
+    work. Returns a function that removes the hook.
+    """
+    self._hooks.append(callback)
+    return lambda: self._hooks.remove(callback) if callback in self._hooks else None
+
+  async def _notify(self, event: HTTPEvent) -> None:
+    for callback in tuple(self._hooks):
+      try:
+        outcome = callback(event)
+        if inspect.isawaitable(outcome):
+          await outcome
+      except Exception:
+        logger.exception("HTTP hook failed")
 
   async def _unsubscribe(self) -> None:
     subscriptions, self._subscriptions = self._subscriptions, []
@@ -255,12 +314,36 @@ class DiscordHTTPWorker(Component):
     route = route_key(operation, data)
     for attempt in range(self._max_attempts):
       await self.rate_limits.acquire(route)
-      response = await self._execute_operation(operation, data)
+      started = monotonic()
+      try:
+        response = await self._execute_operation(
+          operation, data, request.files, request.reason
+        )
+      except Exception as exc:
+        if self._hooks:
+          await self._notify(
+            HTTPEvent(
+              operation.id, route, attempt + 1, None, monotonic() - started, exc
+            )
+          )
+        raise
       result = DiscordHTTPResponse(
         status=response.status_code,
         headers=tuple(response.headers.multi_items()),
         body=response.content,
       )
+      if self._hooks:
+        await self._notify(
+          HTTPEvent(
+            operation.id,
+            route,
+            attempt + 1,
+            result.status,
+            monotonic() - started,
+            None,
+            _is_discord_rate_limit(result),
+          )
+        )
       blocked_until = await self.rate_limits.observe(route, result)
       if blocked_until is not None:
         await self.runtime.nats.publish(
@@ -274,7 +357,11 @@ class DiscordHTTPWorker(Component):
     raise AssertionError("Discord HTTP retry loop did not return.")
 
   async def _execute_operation(
-    self, operation: DiscordHTTPOperation, request: BaseModel
+    self,
+    operation: DiscordHTTPOperation,
+    request: BaseModel,
+    files: Sequence[DiscordHTTPFile] = (),
+    reason: str | None = None,
   ) -> httpx2.Response:
     path_value = getattr(request, "path", None)
     query_value = getattr(request, "query", None)
@@ -302,9 +389,13 @@ class DiscordHTTPWorker(Component):
       if isinstance(header_value, BaseModel)
       else {}
     )
+    if reason is not None:
+      headers["X-Audit-Log-Reason"] = quote(reason, safe="")
     body = getattr(request, "body", None)
     content_type = getattr(request, "content_type", None)
-    if body is None:
+    if files:
+      content_type = "multipart/form-data"
+    if body is None and not files:
       return await self._client().request(
         operation.method, path, params=query, headers=headers
       )
@@ -327,14 +418,14 @@ class DiscordHTTPWorker(Component):
         content=urlencode(_body_mapping(body, mode="json"), doseq=True),
       )
     if content_type == "multipart/form-data":
-      form, files = _multipart(_body_mapping(body, mode="python"))
+      form, parts = _multipart(operation, body, files)
       return await self._client().request(
         operation.method,
         path,
         params=query,
         headers=headers,
         data=form,
-        files=files,
+        files=parts,
       )
     raise ValueError(
       f"Operation {operation.id!r} has unsupported content type {content_type!r}."
@@ -368,6 +459,13 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
   def __init__(self, runtime: Runtime, *, timeout: float = 60.0) -> None:
     self.runtime = runtime
     self.timeout = timeout
+
+  @property
+  def api(self) -> DiscordAPI:
+    """Every operation as a method with plain arguments (see `micro.discord.api`)."""
+    from micro.discord.api import DiscordAPI
+
+    return DiscordAPI(self)
 
   def workers(self) -> tuple[Registration, ...]:
     return self.runtime.directory.entries(WORKER_KIND)
@@ -428,12 +526,18 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
     return from_json(response.body) if response.body else None
 
   async def _request_operation(
-    self, operation: DiscordOperationId, request: BaseModel
+    self,
+    operation: DiscordOperationId,
+    request: BaseModel,
+    files: Sequence[DiscordHTTPFile] = (),
+    reason: str | None = None,
   ) -> BaseModel:
     raw = await self.request(
       DiscordHTTPRequest(
         operation=operation,
-        data=request.model_dump(mode="json", by_alias=True),
+        data=request.model_dump(mode="json", by_alias=True, exclude_unset=True),
+        files=tuple(files),
+        reason=reason,
       )
     )
     definition = HTTP_OPERATIONS[operation]
@@ -497,22 +601,45 @@ def rank_workers(key: str, workers: Sequence[Registration]) -> list[Registration
   return sorted(workers, key=weight, reverse=True)
 
 
-def _multipart(body: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-  if not isinstance(body, dict):
-    raise TypeError("Multipart Discord request bodies must be objects.")
-  form: dict[str, Any] = {}
-  files: dict[str, Any] = {}
-  for name, value in body.items():
+def _multipart(
+  operation: DiscordHTTPOperation, body: Any, files: Sequence[DiscordHTTPFile]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+  """The form fields and file parts of a multipart request.
+
+  A message-like operation (it also takes JSON) sends everything but the files as
+  `payload_json`, the way Discord reads uploads; the others (stickers, invites,
+  attachments) send each field as a plain form field. Bytes left in the body are files
+  named after their field; `files` carry real file names and types.
+  """
+  mapping = _body_mapping(body, mode="python") if body is not None else {}
+  parts: dict[str, Any] = {}
+  for item in files:
+    mapping.pop(item.field, None)
+    parts[item.field] = (
+      (item.filename, item.data, item.content_type)
+      if item.content_type
+      else (item.filename, item.data)
+    )
+  fields: dict[str, Any] = {}
+  for name, value in mapping.items():
     if isinstance(value, bytes):
-      files[name] = (name, value)
+      parts[name] = (name, value)
     else:
-      form[name] = value
-  return form, files
+      fields[name] = value
+  if "application/json" in operation.content_types:
+    return {"payload_json": to_json(fields).decode()}, parts
+  return {
+    name: value
+    if isinstance(value, str)
+    else json.dumps(value, default=str, separators=(",", ":"))
+    for name, value in fields.items()
+  }, parts
 
 
 def _body_mapping(body: Any, *, mode: Literal["json", "python"]) -> dict[str, Any]:
   if isinstance(body, BaseModel):
-    return body.model_dump(mode=mode, by_alias=True, exclude_none=True)
+    # What was set, so an explicit null (clearing a topic, say) is sent as null.
+    return body.model_dump(mode=mode, by_alias=True, exclude_unset=True)
   if isinstance(body, dict):
     return body
   raise TypeError("Discord request bodies must be objects.")

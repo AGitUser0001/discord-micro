@@ -1,13 +1,36 @@
 """Typed views of Discord objects: just the fields bots use, extras kept."""
 
+from typing import Any, ClassVar
+
 from pydantic import BaseModel, ConfigDict
 
 
 class _View(BaseModel):
+  """A slim, forgiving view of a Discord object. Every other field Discord sent stays
+  on it as an attribute (`message.pinned`, `user.accent_color`); `full()` types them all."""
+
   model_config = ConfigDict(extra="allow", frozen=True)
+  _full: ClassVar[str | None] = None
+
+  def full(self) -> Any:
+    """Everything Discord sent, as Discord's own generated model for this object.
+
+    Raises `ValidationError` if the payload was partial (a resolved member has no
+    `user` of its own, for instance).
+    """
+    from pydantic import TypeAdapter
+
+    from micro.discord.models import http
+
+    if self._full is None:
+      raise TypeError(f"{type(self).__name__} has no full model.")
+    return TypeAdapter(getattr(http, self._full)).validate_python(
+      self.model_dump(mode="json")
+    )
 
 
 class User(_View):
+  _full = "UserResponse"
   id: str
   username: str = ""
   global_name: str | None = None
@@ -23,6 +46,7 @@ class User(_View):
 
 
 class Member(_View):
+  _full = "GuildMemberResponse"
   """A guild member; `user` is filled from the interaction when resolved."""
 
   user: User | None = None
@@ -40,6 +64,7 @@ class Member(_View):
 
 
 class Role(_View):
+  _full = "GuildRoleResponse"
   id: str
   name: str = ""
   permissions: str = "0"
@@ -58,6 +83,7 @@ class PermissionOverwrite(_View):
 
 
 class Channel(_View):
+  _full = "GetChannelResponse200"
   id: str
   type: int = 0
   name: str | None = None
@@ -71,6 +97,7 @@ class Channel(_View):
 
 
 class Guild(_View):
+  _full = "GuildResponse"
   id: str
   name: str = ""
   owner_id: str | None = None
@@ -78,6 +105,7 @@ class Guild(_View):
 
 
 class Attachment(_View):
+  _full = "MessageAttachmentResponse"
   id: str
   filename: str = ""
   url: str = ""
@@ -86,6 +114,7 @@ class Attachment(_View):
 
 
 class Message(_View):
+  _full = "MessageResponse"
   id: str
   channel_id: str
   guild_id: str | None = None

@@ -47,7 +47,7 @@ class GQLExpression:
     if not rendered.startswith("RETURN "):
       raise TypeError("GQL expression wrapper was not preserved.")
     return rendered.removeprefix("RETURN "), {
-      f"{parameter_prefix}_{name}": arguments[name]  # type: ignore[dict-item]
+      f"{parameter_prefix}_{name}": arguments.get(name)  # type: ignore[dict-item]
       for name in self.parameters
     }
 
@@ -236,6 +236,8 @@ def _compile_entity_mutation(context: DirectiveCompileContext) -> DirectiveResul
   for assignment in binding.assignments:
     physical = physical_field(f"{binding.entity.name}.{assignment.field}")
     if assignment.argument is not None:
+      if assignment.argument not in context.arguments:
+        continue  # not passed: an insert leaves it unset, an update leaves it as it is
       parameter = f"{context.parameter_prefix}_{assignment.argument}"
       parameters[parameter] = cast(JsonValue, context.arguments[assignment.argument])
       value = f"${parameter}"
@@ -271,7 +273,8 @@ def _compile_entity_mutation(context: DirectiveCompileContext) -> DirectiveResul
       )
       parameters.update(where_parameters)
       clauses_list[-1] += f" AND ({where})"
-    clauses_list.append(f"SET {', '.join(assignments)}")
+    if assignments:
+      clauses_list.append(f"SET {', '.join(assignments)}")
     clauses = tuple(clauses_list)
   return DirectiveResult(clauses, parameters, binding.entity.name)
 

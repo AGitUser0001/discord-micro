@@ -101,6 +101,9 @@ class FakeDiscord:
     """Guild command routes answer 50001 (Missing Access) for these."""
     self.sessions: dict[str, Session] = {}
     self.identifies = 0
+    self.members: dict[str, list[dict[str, Any]]] = {}
+    """Members Discord returns for a guild when asked (op 8)."""
+    self.member_requests: list[dict[str, Any]] = []
     self.resumes = 0
     self._faults: list[Fault] = []
     self._acked: set[str] = set()
@@ -245,6 +248,21 @@ class FakeDiscord:
         session.identify = d
         self.sessions[session.id] = session
         await self._ready(session)
+      elif op == 8:
+        d = frame["d"]
+        self.member_requests.append(d)
+        guild = str(d["guild_id"])
+        await self._dispatch(
+          session,
+          "GUILD_MEMBERS_CHUNK",
+          {
+            "guild_id": guild,
+            "members": self.members.get(guild, []),
+            "chunk_index": 0,
+            "chunk_count": 1,
+            "nonce": d.get("nonce"),
+          },
+        )
       elif op == 6:
         d = frame["d"]
         known = self.sessions.get(d.get("session_id", ""))
@@ -547,6 +565,10 @@ class FakeDiscord:
         "flags": 0,
       },
     }
+
+  def acknowledge(self, payload: dict[str, Any]) -> None:
+    """Treat an interaction as answered, as Discord does once its HTTP reply is sent."""
+    self._acked.add(payload["token"])
 
   async def send(self, payload: dict[str, Any]) -> None:
     await self.dispatch("INTERACTION_CREATE", payload)

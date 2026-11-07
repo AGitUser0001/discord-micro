@@ -18,6 +18,7 @@ from micro.service import Service
 service = Service("hello")
 commands = Commands(service)
 
+
 @commands.slash("hello", description="Say hello")
 async def hello(ctx: Interaction, name: str = "world") -> None:
   await ctx.respond(f"Hello, {name}!")

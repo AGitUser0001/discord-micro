@@ -58,6 +58,7 @@ class HikariShard:
     self.connection_id: str | None = None
     self.bot: hikari.GatewayBot | None = None
     self._lock = asyncio.Lock()
+    self._chunked: set[str] = set()
 
   async def start(self) -> None:
     import hikari
@@ -150,13 +151,17 @@ class HikariShard:
   # ruff's UP037 would unquote them and bring back a NameError.
   async def _on_dispatch(self, event: "hikari.ShardPayloadEvent") -> None:  # noqa: UP037
     if event.name == "READY":
+      self._chunked = set()  # before any await: GUILD_CREATEs are handled alongside
       if self.connection_id is not None:
         await self.host.on_connection(self, ConnectionEventKind.INVALIDATED)
       self.connection_id = str(uuid7())
       await self.host.on_connection(self, ConnectionEventKind.READY)
-      await self._request_initial_members(event.payload)
+      await self._request_initial_members(event.shard, event.payload)
     elif event.name == "RESUMED":
       await self.host.on_connection(self, ConnectionEventKind.RESUMED)
+    elif event.name == "GUILD_CREATE":
+      # A guild joined after READY is never in READY's list.
+      await self._request_members(event.shard, event.payload.get("id"))
     await self.host.on_dispatch(self, event.name, event.payload)
 
   async def _on_connected(self, event: "hikari.ShardConnectedEvent") -> None:  # noqa: UP037
@@ -165,23 +170,38 @@ class HikariShard:
   async def _on_disconnected(self, event: "hikari.ShardDisconnectedEvent") -> None:  # noqa: UP037
     await self.host.on_connection(self, ConnectionEventKind.DISCONNECTED)
 
-  async def _request_initial_members(self, payload: Mapping[str, Any]) -> None:
+  async def _request_initial_members(
+    self,
+    shard: hikari.api.GatewayShard,
+    payload: Mapping[str, Any],
+  ) -> None:
+    guilds = payload.get("guilds")
+    for guild in guilds if isinstance(guilds, list) else ():
+      if isinstance(guild, Mapping):
+        await self._request_members(shard, guild.get("id"))
+
+  async def _request_members(
+    self,
+    shard: hikari.api.GatewayShard,
+    guild_id: object,
+  ) -> None:
+    """Ask Discord for every member of a guild once per connection, so the
+    member cache is complete and no lookup needs a rate-limited REST call."""
     import hikari
 
-    if not self.host.intents & hikari.Intents.GUILD_MEMBERS or self.bot is None:
+    if (
+      not self.host.intents & hikari.Intents.GUILD_MEMBERS
+      or not isinstance(guild_id, str)
+      or not guild_id.isdecimal()
+      or guild_id in self._chunked
+    ):
       return
-    guilds = payload.get("guilds")
-    if not isinstance(guilds, list):
-      return
-    for guild in guilds:
-      if not isinstance(guild, Mapping):
-        continue
-      guild_id = guild.get("id")
-      if isinstance(guild_id, str) and guild_id.isdecimal():
-        await self.bot.request_guild_members(
-          int(guild_id),
-          include_presences=bool(self.host.intents & hikari.Intents.GUILD_PRESENCES),
-          query="",
-          limit=0,
-          nonce=f"micro:{guild_id}",
-        )
+    self._chunked.add(guild_id)
+    # The shard itself: the bot's shard count is not known yet during READY.
+    await shard.request_guild_members(
+      int(guild_id),
+      include_presences=bool(self.host.intents & hikari.Intents.GUILD_PRESENCES),
+      query="",
+      limit=0,
+      nonce=f"micro:{guild_id}",
+    )

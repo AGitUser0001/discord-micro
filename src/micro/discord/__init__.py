@@ -22,6 +22,7 @@ if TYPE_CHECKING:
   from micro.discord.http_service import DiscordHTTPRequest as DiscordHTTPRequest
   from micro.discord.http_service import DiscordHTTPResponse as DiscordHTTPResponse
   from micro.discord.http_service import DiscordHTTPWorker as DiscordHTTPWorker
+  from micro.discord.http_service import HTTPEvent as HTTPEvent
   from micro.discord.http_service import RateLimits as RateLimits
   from micro.discord.http_service import partition_key as partition_key
   from micro.discord.http_service import rank_workers as rank_workers
@@ -47,6 +48,7 @@ __getattr__, __dir__ = exports(
     "DiscordHTTPRequest": ".http_service",
     "DiscordHTTPResponse": ".http_service",
     "DiscordHTTPWorker": ".http_service",
+    "HTTPEvent": ".http_service",
     "RateLimits": ".http_service",
     "partition_key": ".http_service",
     "rank_workers": ".http_service",
@@ -63,6 +65,7 @@ __all__ = [
   "DiscordHTTPResponse",
   "DiscordHTTPWorker",
   "DiscordOperationId",
+  "HTTPEvent",
   "RateLimits",
   "filters",
   "interactions",

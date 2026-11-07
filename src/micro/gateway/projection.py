@@ -14,7 +14,12 @@ from micro.schemas.gateway import GATEWAY_PROJECTION
 from micro.service import Service
 from micro.store import StoreClient
 
-from ._events import CONNECTION_HEADER, ConnectionEvent, ConnectionEventKind
+from ._events import (
+  CONNECTION_HEADER,
+  SHARD_HEADER,
+  ConnectionEvent,
+  ConnectionEventKind,
+)
 
 logger = logging.getLogger("micro")
 
@@ -51,6 +56,7 @@ class GatewayProjection(Service):
     self.uses(GATEWAY_PROJECTION)
     self._batch_size = batch_size
     self._store: StoreClient | None = None
+    self._known: set[str] = set()
 
   @property
   def store(self) -> StoreClient:
@@ -97,9 +103,11 @@ class GatewayProjection(Service):
   async def project_messages(self, messages: Sequence[Msg]) -> None:
     """Project stream messages in order, batching adjacent dispatches."""
     pending: list[tuple[str, str, dict[str, JsonValue]]] = []
+    shards: dict[str, int] = {}
     for message in messages:
       if message.subject.startswith("micro.gateway.connection."):
         if pending:
+          await self._ensure_connections(shards)
           await self.project_events(pending)
           pending = []
         try:
@@ -115,8 +123,37 @@ class GatewayProjection(Service):
       if connection_id is None or not isinstance(payload, dict):
         continue
       pending.append((connection_id, name, cast(dict[str, JsonValue], payload)))
+      shard = (message.headers or {}).get(SHARD_HEADER, "")
+      if shard.isdecimal():
+        shards[connection_id] = int(shard)
     if pending:
+      await self._ensure_connections(shards)
       await self.project_events(pending)
+
+  async def _ensure_connections(self, shards: Mapping[str, int]) -> None:
+    """Create connections whose READY this projection never saw.
+
+    A projection started (or restarted) after a connection's READY would
+    otherwise drop everything that connection publishes until it reconnects.
+    Dispatches only flow from a live connection, so it is created active.
+    """
+    for connection_id, shard_id in shards.items():
+      if connection_id in self._known:
+        continue
+      existing = await self._execute(
+        "query Connection($id: ID!) { gatewayConnection(id: $id) { id } }",
+        {"id": connection_id},
+      )
+      if existing.get("gatewayConnection") is None:
+        await self._execute(
+          """
+          mutation Adopt($id: ID!, $shard: Int!) {
+            createGatewayConnection(id: $id, shardId: $shard, active: true, state: "adopted") { id }
+          }
+          """,
+          {"id": connection_id, "shard": shard_id},
+        )
+      self._known.add(connection_id)
 
   async def project_events(
     self, items: Sequence[tuple[str, str, dict[str, JsonValue]]]
@@ -229,11 +266,11 @@ class GatewayProjection(Service):
           """,
           {"id": connection_id, "state": kind.value},
         )
-    elif kind in {
-      ConnectionEventKind.DISCONNECTED,
-      ConnectionEventKind.RESUMED,
-      ConnectionEventKind.CONNECTED,
-    }:
+    elif kind is ConnectionEventKind.CONNECTED:
+      # The socket opened; READY or RESUMED (which can arrive on either side
+      # of this) decide whether the connection serves.
+      return
+    elif kind in {ConnectionEventKind.DISCONNECTED, ConnectionEventKind.RESUMED}:
       await self._execute(
         """
         mutation State($id: ID!, $active: Boolean!, $state: String!) {
@@ -250,6 +287,7 @@ class GatewayProjection(Service):
       await self.purge_connection(connection_id)
 
   async def purge_connection(self, connection_id: str) -> None:
+    self._known.discard(connection_id)
     result = await self._execute(
       """
       query Owned($id: ID!) {
@@ -302,17 +340,23 @@ class GatewayProjection(Service):
 def _project_dispatch(
   name: str, payload: dict[str, JsonValue]
 ) -> tuple[ProjectedObject, ...]:
-  deleted = name.endswith("_DELETE") or name in {"GUILD_DELETE", "THREAD_DELETE"}
+  deleted = name.endswith("_DELETE") or name in {
+    "GUILD_DELETE",
+    "THREAD_DELETE",
+    "GUILD_MEMBER_REMOVE",
+  }
   guild_id = _string_id(payload.get("guild_id"))
+  if guild_id is None and name in {"GUILD_CREATE", "GUILD_UPDATE"}:
+    guild_id = _string_id(payload.get("id"))
   objects: list[ProjectedObject] = []
 
   def add(kind: str, value: JsonValue, *, is_deleted: bool = False) -> None:
     if not isinstance(value, dict):
       return
-    object_id = _object_id(kind, value)
+    object_guild = _string_id(value.get("guild_id")) or guild_id
+    object_id = _object_id(kind, value, object_guild)
     if object_id is None:
       return
-    object_guild = _string_id(value.get("guild_id")) or guild_id
     objects.append(ProjectedObject(kind, object_id, object_guild, value, is_deleted))
 
   root_kind = _dispatch_kind(name)
@@ -351,10 +395,14 @@ def _dispatch_kind(name: str) -> str:
   )
 
 
-def _object_id(kind: str, value: Mapping[str, JsonValue]) -> str | None:
+def _object_id(
+  kind: str, value: Mapping[str, JsonValue], guild_id: str | None = None
+) -> str | None:
   if kind in {"member", "presence"} and isinstance(value.get("user"), dict):
+    # A user is a different member in every guild, so the id carries the guild.
     user = cast(dict[str, JsonValue], value["user"])
-    return _string_id(user.get("id"))
+    user_id = _string_id(user.get("id"))
+    return f"{guild_id}:{user_id}" if guild_id and user_id else user_id
   if kind == "voice_state":
     user_id = _string_id(value.get("user_id"))
     guild_id = _string_id(value.get("guild_id"))

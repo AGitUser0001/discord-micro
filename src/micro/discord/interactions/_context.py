@@ -10,12 +10,15 @@ error for a sequence Discord would reject.
 """
 
 import asyncio
+import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
-from micro.discord.objects import Member, Message, User
+from micro.discord.objects import Attachment, Channel, Member, Message, Role, User
 from micro.discord.routes import (
   APPLICATION_COMMAND,
   AUTOCOMPLETE,
@@ -35,6 +38,8 @@ from micro.errors import MicroError
 
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
+  from micro.discord.api import DiscordAPI
+  from micro.discord.refs import ChannelRef, GuildRef, MemberRef, MessageRef, UserRef
 
 TOKEN_LIFETIME = 15 * 60
 _DISCORD_EPOCH_MS = 1420070400000
@@ -50,6 +55,88 @@ class ResponseType(IntEnum):
   MESSAGE_UPDATE = 7
   AUTOCOMPLETE = 8
   MODAL = 9
+
+
+type InputValue = str | bool | list[str] | None
+"""What one modal field holds; see `Interaction.inputs`."""
+
+CHECKBOX = 23
+_MULTI = frozenset({3, 5, 6, 7, 8, 19, 22})
+"""Component types that submit a list: selects, file upload, checkbox group."""
+
+
+def _submitted(components: Sequence[Any] | None) -> Iterator[Mapping[str, Any]]:
+  """Every field of a modal submission, through rows, labels and containers."""
+  for item in components or ():
+    if not isinstance(item, Mapping):
+      continue
+    if "custom_id" in item:
+      yield item
+    if isinstance(item.get("component"), Mapping):
+      yield from _submitted([item["component"]])
+    yield from _submitted(item.get("components"))
+
+
+@dataclass(frozen=True)
+class Resolved:
+  """Discord's lookup table for the ids in an interaction, as typed objects."""
+
+  users: dict[str, User] = field(default_factory=dict)
+  members: dict[str, Member] = field(default_factory=dict)
+  roles: dict[str, Role] = field(default_factory=dict)
+  channels: dict[str, Channel] = field(default_factory=dict)
+  attachments: dict[str, Attachment] = field(default_factory=dict)
+  messages: dict[str, Message] = field(default_factory=dict)
+
+  @classmethod
+  def parse(cls, data: Mapping[str, Any] | None) -> Resolved:
+    data = data or {}
+    raw_users = data.get("users") or {}
+    users = {k: User.model_validate(v) for k, v in raw_users.items()}
+    members = {
+      k: Member.model_validate({**v, "user": v.get("user") or raw_users.get(k)})
+      for k, v in (data.get("members") or {}).items()
+    }
+    return cls(
+      users=users,
+      members=members,
+      roles={k: Role.model_validate(v) for k, v in (data.get("roles") or {}).items()},
+      channels={
+        k: Channel.model_validate(v) for k, v in (data.get("channels") or {}).items()
+      },
+      attachments={
+        k: Attachment.model_validate(v)
+        for k, v in (data.get("attachments") or {}).items()
+      },
+      messages={
+        k: Message.model_validate(v) for k, v in (data.get("messages") or {}).items()
+      },
+    )
+
+
+REPLY_KEY = "micro_reply"
+"""Set by `InteractionEndpoint` on an interaction it is holding open: the NATS subject
+on which the first response is the HTTP response Discord is waiting for."""
+
+
+async def respond_initially(
+  http: DiscordHTTPClient, payload: Mapping[str, Any], body: Json
+) -> None:
+  """Send an interaction's first response.
+
+  Interactions from the Gateway are answered with Discord's callback endpoint.
+  One that arrived over HTTP (see `InteractionEndpoint`) is answered in the
+  reply to that very request, which the endpoint is holding open.
+  """
+  reply = payload.get(REPLY_KEY)
+  if isinstance(reply, str):
+    await http.runtime.nats.publish(reply, json.dumps(body).encode())
+    return
+  await http.call(
+    "create_interaction_response",
+    path={"interaction_id": payload["id"], "interaction_token": payload["token"]},
+    body=body,
+  )
 
 
 class InteractionState(StrEnum):
@@ -137,19 +224,152 @@ class Interaction:
     return self.data.get("custom_id")
 
   @property
+  def command_name(self) -> str | None:
+    """The invoked command's name (the top-level one for subcommands)."""
+    return self.data.get("name") if self.is_command or self.is_autocomplete else None
+
+  @property
+  def option_values(self) -> dict[str, Any]:
+    """A command's submitted options by name (subcommand options included).
+
+    Raw values: ids stay strings, see `resolved` for the entities they name.
+    """
+    values: dict[str, Any] = {}
+
+    def collect(options: Any) -> None:
+      for item in options or ():
+        if "value" in item:
+          values[item["name"]] = item["value"]
+        else:
+          collect(item.get("options"))
+
+    collect(self.data.get("options"))
+    return values
+
+  # The rest of Discord, from here ----------------------------------------------------
+
+  @property
+  def api(self) -> DiscordAPI:
+    """Every Discord operation as a method (`await ctx.api.create_message(...)`)."""
+    return self.http.api
+
+  @property
+  def channel_ref(self) -> ChannelRef:
+    """This interaction's channel, to send to, pin in, start a thread from, ..."""
+    if self.channel_id is None:
+      raise ValueError("This interaction has no channel.")
+    return self.api.channel(self.channel_id)
+
+  @property
+  def guild_ref(self) -> GuildRef:
+    """This interaction's server: ban, roles, channels, emojis, events, ..."""
+    if self.guild_id is None:
+      raise ValueError("This interaction did not happen in a server.")
+    return self.api.guild(self.guild_id)
+
+  @property
+  def user_ref(self) -> UserRef:
+    """The user who triggered this, to direct-message and so on."""
+    return self.api.user(self.user.id)
+
+  @property
+  def member_ref(self) -> MemberRef:
+    """The triggering user as a member of this server: kick, timeout, roles, ..."""
+    if self.guild_id is None:
+      raise ValueError("This interaction did not happen in a server.")
+    return self.api.member(self.guild_id, self.user.id)
+
+  @property
+  def message_ref(self) -> MessageRef:
+    """The message a component is on (edit it, pin it, react, start a thread, ...)."""
+    if self.message is None or self.channel_id is None:
+      raise ValueError("This interaction did not come from a message.")
+    return self.api.message(self.channel_id, self.message.id)
+
+  @property
   def values(self) -> list[str]:
     """Selected values of a select menu interaction."""
     return list(self.data.get("values") or [])
 
   @property
+  def inputs(self) -> dict[str, InputValue]:
+    """Everything a modal submission holds, by custom_id.
+
+    Text inputs and radio groups give a string (None: nothing chosen), selects,
+    checkbox groups and file uploads a list of strings (ids, for the entity selects
+    and uploads: see `users`, `roles`, `channels`, `attachments`), a checkbox a bool.
+    """
+    found: dict[str, InputValue] = {}
+    for component in _submitted(self.data.get("components")):
+      key = component["custom_id"]
+      kind = component.get("type")
+      if kind in _MULTI:
+        found[key] = [str(item) for item in component.get("values") or []]
+      elif kind == CHECKBOX:
+        found[key] = bool(component.get("value"))
+      else:
+        found[key] = component.get("value")
+    return found
+
+  @property
   def fields(self) -> dict[str, str]:
-    """Text input values of a modal submission, by custom_id."""
-    values: dict[str, str] = {}
-    for row in self.data.get("components") or []:
-      for component in row.get("components") or [row.get("component") or {}]:
-        if "custom_id" in component:
-          values[component["custom_id"]] = component.get("value", "")
-    return values
+    """The text inputs and radio groups of a modal submission, as strings."""
+    return {
+      key: value or ""
+      for key, value in self.inputs.items()
+      if not isinstance(value, bool | list)
+    }
+
+  def choices(self, custom_id: str | None = None) -> list[str]:
+    """What a select, checkbox group or upload picked: raw values, or ids.
+
+    Without a `custom_id`, the select a button-like interaction came from.
+    """
+    if custom_id is None:
+      return self.values
+    value = self.inputs.get(custom_id)
+    return list(value) if isinstance(value, list) else []
+
+  @cached_property
+  def resolved(self) -> Resolved:
+    """The users, members, roles, channels, attachments and messages the
+    interaction's selected values or options refer to."""
+    return Resolved.parse(self.data.get("resolved"))
+
+  def users(self, custom_id: str | None = None) -> list[User]:
+    """The users picked in a user or mentionable select."""
+    return [
+      self.resolved.users[i]
+      for i in self.choices(custom_id)
+      if i in self.resolved.users
+    ]
+
+  def members(self, custom_id: str | None = None) -> list[Member]:
+    """The picked users as guild members, where Discord resolved them."""
+    return [
+      self.resolved.members[i]
+      for i in self.choices(custom_id)
+      if i in self.resolved.members
+    ]
+
+  def roles(self, custom_id: str | None = None) -> list[Role]:
+    return [
+      self.resolved.roles[i]
+      for i in self.choices(custom_id)
+      if i in self.resolved.roles
+    ]
+
+  def channels(self, custom_id: str | None = None) -> list[Channel]:
+    return [
+      self.resolved.channels[i]
+      for i in self.choices(custom_id)
+      if i in self.resolved.channels
+    ]
+
+  def attachments(self, custom_id: str | None = None) -> list[Attachment]:
+    """The files uploaded to a file upload field."""
+    found = self.resolved.attachments
+    return [found[i] for i in self.choices(custom_id) if i in found]
 
   @property
   def age(self) -> float:
@@ -380,11 +600,7 @@ class Interaction:
     body: Json = {"type": int(kind)}
     if data is not None:
       body["data"] = data
-    await self.http.call(
-      "create_interaction_response",
-      path={"interaction_id": self.id, "interaction_token": self.token},
-      body=body,
-    )
+    await respond_initially(self.http, self.payload, body)
     self.state = _AFTER[kind]
 
   async def _followup(self, body: Json) -> Message:

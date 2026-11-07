@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, Self
 
@@ -41,6 +41,8 @@ from micro.discord.interactions import (
   InteractionRouter,
   Modals,
   Route,
+  RuntimeCommands,
+  option,
 )
 from micro.discord.messages import reply_to
 from micro.discord.ui import Button, Modal, TextInput
@@ -113,6 +115,12 @@ class App:
       await asyncio.sleep(0.2)
       await ctx.respond("done")
 
+    self.dynamic = RuntimeCommands(service)
+
+    @self.dynamic.handler
+    async def custom(ctx: Interaction) -> None:
+      await ctx.respond(f"{ctx.command_name}@{ctx.guild_id} {ctx.option_values}")
+
     if guild_commands:
       guilded = Commands(service, guild_ids=guild_commands)
 
@@ -130,13 +138,25 @@ def free_port() -> int:
 class Stack:
   """NATS, the fake Discord, and every Micro component, wired together."""
 
-  def __init__(self, app: App, *, guilds: tuple[str, ...] = ("500",)) -> None:
+  def __init__(
+    self,
+    app: App,
+    *,
+    guilds: tuple[str, ...] = ("500",),
+    intents: hikari.Intents | None = None,
+    first: Sequence[Any] = (),
+    members: dict[str, list[dict[str, Any]]] | None = None,
+  ) -> None:
+    self.members = members or {}
     self.app = app
+    self.first = tuple(first)
+    self.intents = intents
     self.guilds = guilds
     self.connection_events: list[dict[str, Any]] = []
 
   async def __aenter__(self) -> Self:
     self.fake = FakeDiscord(TOKEN, guilds=self.guilds)
+    self.fake.members = self.members
     api = await self.fake.start()
     self._dir = tempfile.TemporaryDirectory()
     port = free_port()
@@ -161,9 +181,12 @@ class Stack:
       self.connection_events.append(json.loads(message.data))
 
     await self.runtime.nats.subscribe("micro.gateway.connection.>", cb=note)
-    intents = hikari.Intents.ALL_UNPRIVILEGED | hikari.Intents.MESSAGE_CONTENT
+    intents = self.intents or (
+      hikari.Intents.ALL_UNPRIVILEGED | hikari.Intents.MESSAGE_CONTENT
+    )
     self.sync = CommandSync()
     await self.runtime.add(
+      *self.first,
       DiscordHTTPWorker(TOKEN, api_url=api),
       GatewayWorker(TOKEN, api_url=api, intents=intents, shard_count=1),
       InteractionRouter(),
@@ -330,6 +353,323 @@ async def basics() -> None:
       "429 on a callback is retried and then succeeds", statuses == [429, 204], statuses
     )
     check("the retry waited out Retry-After", time.monotonic() - started >= 0.3)
+
+
+async def runtime_command_scenarios() -> None:
+  print("runtime commands: created, served, and removed while running")
+  app = App()
+  async with Stack(app, guilds=("500", "600")) as s:
+    f = s.fake
+    base = ["feedback", "hello", "slow"]
+    await f.until(lambda: s.names() == base, 10)
+    await app.dynamic.add("greet", "Custom", options=[option("who")], guild_id=500)
+    check(
+      "a runtime command is registered in its guild only",
+      await f.until(lambda: s.names("500") == ["greet"], 10) and s.names() == base,
+      (s.names("500"), s.names()),
+    )
+    await asyncio.sleep(0.5)
+    calls = await s.interact(
+      f.slash("greet", [{"name": "who", "type": 3, "value": "bo"}])
+    )
+    kind, data = reply_of(calls)
+    check(
+      "it runs the shared handler with name, guild and options",
+      kind == 4
+      and "greet@" in data.get("content", "")
+      and "'who': 'bo'" in data["content"],
+      data,
+    )
+    await app.dynamic.add("greet", "Changed", guild_id=600)
+    check(
+      "the same name in another guild is one command in two scopes",
+      await f.until(lambda: s.names("600") == ["greet"], 10)
+      and s.names("500") == ["greet"],
+      (s.names("500"), s.names("600")),
+    )
+    await app.dynamic.add("wide", "Everywhere")
+    check(
+      "no guild means global, next to the declared commands",
+      await f.until(lambda: s.names() == sorted([*base, "wide"]), 10),
+      s.names(),
+    )
+    await app.dynamic.add("hello", "Clash", guild_id=500)
+    await asyncio.sleep(1)
+    check(
+      "a name declared in code is not overridden",
+      s.names("500") == ["greet"],
+      s.names("500"),
+    )
+    await app.dynamic.remove("hello", guild_id=500)
+    check(
+      "removing from one guild keeps the others",
+      await app.dynamic.remove("greet", guild_id=500)
+      and await f.until(lambda: s.names("500") == [], 10)
+      and s.names("600") == ["greet"],
+      (s.names("500"), s.names("600")),
+    )
+    check(
+      "removing the last scope forgets the command",
+      await app.dynamic.remove("greet", guild_id=600)
+      and not await app.dynamic.remove("greet", guild_id=600)
+      and await f.until(lambda: s.names("600") == [], 10),
+      s.names("600"),
+    )
+    check(
+      "commands() lists what is left",
+      sorted(await app.dynamic.commands()) == ["1:wide"],
+      await app.dynamic.commands(),
+    )
+
+
+async def member_cache_scenarios() -> None:
+  print("member cache: every member, from every shard, without REST")
+  from micro.discord.state import DiscordState
+  from micro.gateway.projection import GatewayProjection
+  from micro.store import Store
+  from micro.store.sqlite import SQLiteGraph
+
+  def member(user_id: str, name: str, roles: list[str]) -> dict[str, Any]:
+    return {
+      "user": {"id": user_id, "username": name, "discriminator": "0", "avatar": None},
+      "roles": roles,
+      "joined_at": "2024-01-01T00:00:00+00:00",
+      "deaf": False,
+      "mute": False,
+      "flags": 0,
+    }
+
+  intents = (
+    hikari.Intents.ALL_UNPRIVILEGED
+    | hikari.Intents.MESSAGE_CONTENT
+    | hikari.Intents.GUILD_MEMBERS
+  )
+  cache_dir = tempfile.TemporaryDirectory()
+  fake_members = {
+    "500": [member("1", "ann", ["10"]), member("2", "bob", ["11"])],
+    "600": [member("1", "ann", ["20"])],
+  }
+  async with Stack(
+    App(),
+    guilds=("500", "600"),
+    intents=intents,
+    first=[
+      Store(SQLiteGraph(os.path.join(cache_dir.name, "cache.db"))),
+      GatewayProjection(),
+    ],
+    members=fake_members,
+  ) as s:
+    f = s.fake
+    await f.until(lambda: len(f.member_requests) >= 2, 15)
+    state = DiscordState(s.runtime)
+
+    async def cached() -> bool:
+      try:
+        return await state._projected(600, "member", "600:1") is not None
+      except Exception:
+        return False
+
+    for _ in range(40):
+      if await cached():
+        break
+      await asyncio.sleep(0.5)
+    rest = len(f.where("GET", r"/members/"))
+    ann_500 = await state.member(500, 1)
+    ann_600 = await state.member(600, 1)
+    bob = await state.member(500, 2)
+    check(
+      "every guild is asked for all its members once per connection",
+      sorted(r["guild_id"] for r in f.member_requests) == ["500", "600"]
+      and all(r["query"] == "" and r["limit"] == 0 for r in f.member_requests),
+      (f.member_requests, f.identifies, [e.get("kind") for e in s.connection_events]),
+    )
+    check(
+      "members are answered from the cache, not REST",
+      {ann_500.source, ann_600.source, bob.source} == {"projection"}
+      and len(f.where("GET", r"/members/")) == rest,
+      (ann_500.source, ann_600.source, bob.source),
+    )
+    check(
+      "one user keeps a different member record in each guild",
+      ann_500.value.roles == ["10"] and ann_600.value.roles == ["20"],
+      (ann_500.value.roles, ann_600.value.roles),
+    )
+    await f.dispatch(
+      "GUILD_MEMBER_UPDATE", {"guild_id": "500", **member("2", "bob", ["11", "12"])}
+    )
+    await f.dispatch("GUILD_MEMBER_ADD", {"guild_id": "600", **member("3", "cy", [])})
+    await asyncio.sleep(1.5)
+    check(
+      "member updates and joins reach the cache",
+      (await state.member(500, 2)).value.roles == ["11", "12"]
+      and (await state.member(600, 3)).source == "projection",
+    )
+    await f.dispatch(
+      "GUILD_MEMBER_REMOVE", {"guild_id": "500", "user": member("2", "bob", [])["user"]}
+    )
+    await asyncio.sleep(1.5)
+    check(
+      "a member who left leaves the cache",
+      (await state._projected(500, "member", "500:2")) is None
+      and (await state._projected(600, "member", "600:1")) is not None,
+    )
+  cache_dir.cleanup()
+
+
+async def custom_package_scenarios() -> None:
+  print("custom package: members make commands, text lives in the store")
+  import importlib.util
+  from types import SimpleNamespace
+
+  from micro.store import Store
+  from micro.store.sqlite import SQLiteGraph
+
+  spec = importlib.util.spec_from_file_location(
+    "custom_pkg", ROOT / "packages/custom/__init__.py"
+  )
+  assert spec and spec.loader
+  module = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+  with tempfile.TemporaryDirectory() as raw:
+    async with Stack(
+      SimpleNamespace(service=module.service),  # type: ignore[arg-type]
+      first=[Store(SQLiteGraph(os.path.join(raw, "custom.db")))],
+    ) as s:
+      f = s.fake
+      await f.until(lambda: s.names() == ["custom"], 15)
+
+      async def say(name: str, options: list[dict[str, Any]] | None = None) -> str:
+        calls = await s.interact(f.slash(name, options))
+        return reply_of(calls)[1].get("content", "")
+
+      def custom(sub: str, **values: str) -> list[dict[str, Any]]:
+        return [
+          {
+            "name": sub,
+            "type": 1,
+            "options": [{"name": k, "type": 3, "value": v} for k, v in values.items()],
+          }
+        ]
+
+      check(
+        "/custom add makes a command",
+        "Made /hello" in await say("custom", custom("add", name="hello", text="Hi!")),
+      )
+      check(
+        "it is registered in the guild",
+        await f.until(lambda: s.names("500") == ["hello"], 15),
+        s.names("500"),
+      )
+      await asyncio.sleep(0.5)
+      check("the new command answers with its text", await say("hello") == "Hi!")
+      await say("custom", custom("add", name="hello", text="Hello again"))
+      await asyncio.sleep(0.3)
+      check("adding it again changes the text", await say("hello") == "Hello again")
+      check("/custom list shows it", "/hello" in await say("custom", custom("list")))
+      check(
+        "/custom remove deletes it",
+        "Removed" in await say("custom", custom("remove", name="hello"))
+        and await f.until(lambda: s.names("500") == [], 15),
+        s.names("500"),
+      )
+
+
+async def endpoint_scenarios() -> None:
+  print("http endpoint: signed interactions answered in the HTTP reply")
+  import httpx2
+  from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+  from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+  from micro._ed25519 import verify
+  from micro.discord.interactions import InteractionEndpoint
+
+  # RFC 8032 test vector 2 (one-byte message), then random keys against the C library.
+  vector_key = bytes.fromhex(
+    "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+  )
+  vector_sig = bytes.fromhex(
+    "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
+    "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+  )
+  agrees = verify(vector_key, b"\x72", vector_sig) and not verify(
+    vector_key, b"\x73", vector_sig
+  )
+  for index in range(20):
+    key = Ed25519PrivateKey.generate()
+    raw = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    message = os.urandom(index * 7)
+    signature = key.sign(message)
+    broken = bytes([signature[0] ^ 1]) + signature[1:]
+    agrees = (
+      agrees and verify(raw, message, signature) and not verify(raw, message, broken)
+    )
+    agrees = agrees and not verify(raw, message + b"x", signature)
+  agrees = agrees and not verify(vector_key, b"\x72", vector_sig[:-1])
+  check("pure-Python Ed25519 agrees with RFC 8032 and the C library", agrees)
+
+  private = Ed25519PrivateKey.generate()
+  public = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+  port = free_port()
+  async with Stack(App()) as s:
+    f = s.fake
+    await s.runtime.add(InteractionEndpoint(public_key=public, port=port))
+    await f.until(lambda: s.names() == ["feedback", "hello", "slow"], 10)
+    url = f"http://127.0.0.1:{port}/interactions"
+
+    async def post(payload: dict[str, Any], *, sign: bool = True) -> httpx2.Response:
+      body = json.dumps(payload).encode()
+      stamp = "1700000000"
+      signature = private.sign(stamp.encode() + body).hex() if sign else "00" * 64
+      async with httpx2.AsyncClient() as client:
+        return await client.post(
+          url,
+          content=body,
+          headers={"x-signature-ed25519": signature, "x-signature-timestamp": stamp},
+          timeout=15,
+        )
+
+    check(
+      "a bad signature is refused",
+      (await post({"type": 1}, sign=False)).status_code == 401,
+    )
+    pong = await post({"type": 1})
+    check(
+      "PING is answered with PONG",
+      pong.status_code == 200 and pong.json() == {"type": 1},
+      pong.text,
+    )
+
+    callbacks = len(f.where("POST", r"/callback$"))
+    reply = await post(f.slash("hello", [{"name": "name", "type": 3, "value": "bo"}]))
+    body = reply.json()
+    check(
+      "the handler's first response is the HTTP reply",
+      reply.status_code == 200
+      and body["type"] == 4
+      and "Hello, bo" in body["data"]["content"],
+      reply.text,
+    )
+    check(
+      "no callback request was needed",
+      len(f.where("POST", r"/callback$")) == callbacks,
+    )
+    modal = await post(f.slash("feedback"))
+    check("a modal is returned the same way", modal.json()["type"] == 9, modal.text)
+    unknown = await post(f.component("nobody.handles:1"))
+    check(
+      "an interaction nobody handles is answered too",
+      "isn't available" in unknown.json()["data"]["content"],
+      unknown.text,
+    )
+    slow_payload = f.slash("slow")
+    reply = await post(slow_payload)
+    f.acknowledge(slow_payload)
+    await f.until(lambda: len(f.where("PATCH", r"/messages/@original")) == 1, 8)
+    check(
+      "a deferral is the reply and the final answer edits the original",
+      reply.json()["type"] == 5 and len(f.where("PATCH", r"/messages/@original")) == 1,
+      reply.text,
+    )
 
 
 async def sync_scenarios() -> None:
@@ -1473,14 +1813,1387 @@ async def health_scenarios() -> None:
     )
 
 
+async def ui_scenarios() -> None:
+  print("ui: every component, validated against Discord's own request models")
+  from micro.discord import ui
+  from micro.discord.ui import (
+    EPHEMERAL,
+    IS_COMPONENTS_V2,
+    ActionRow,
+    Button,
+    ChannelSelect,
+    Checkbox,
+    CheckboxGroup,
+    Container,
+    Default,
+    Emoji,
+    File,
+    FileUpload,
+    GroupOption,
+    Label,
+    MediaGallery,
+    MediaItem,
+    MentionableSelect,
+    Modal,
+    RadioGroup,
+    RoleSelect,
+    Section,
+    SelectOption,
+    Separator,
+    StringSelect,
+    TextDisplay,
+    TextInput,
+    Thumbnail,
+    UserSelect,
+    embed,
+    message_body,
+  )  # fmt: skip
+
+  problems: list[tuple[str, str]] = []
+  count = [0]
+
+  def case(name: str, components: Any, modal: bool = False) -> None:
+    count[0] += 1
+    try:
+      ui.validate(components, modal=modal)
+    except ValueError as error:
+      problems.append((name, str(error)[:200]))
+
+  # --- message components, every field
+  case(
+    "button primary",
+    Button("Go", custom_id="a", style="primary", emoji="🙂", disabled=True, id=1),
+  )
+  for st in ("secondary", "success", "danger"):
+    case(f"button {st}", Button("x", custom_id="a", style=st))
+  case("button custom emoji", Button("x", custom_id="a", emoji="<a:wave:1234567890>"))
+  case("button link", Button("Docs", url="https://example.com/x", emoji=Emoji("📖")))
+  case("button premium", Button(sku_id=123456789012345678))
+  case(
+    "action row of buttons",
+    ActionRow(*[Button(str(i), custom_id=f"b{i}") for i in range(5)], id=2),
+  )
+  opts = [
+    SelectOption("A", "a", "first", True, "🅰"),
+    "b",
+    SelectOption("C", "c", emoji="<:c:123456789>"),
+  ]
+  case(
+    "string select",
+    ActionRow(StringSelect("s", opts, "pick", 1, 2, disabled=False, id=3)),
+  )
+  case("user select", ActionRow(UserSelect("u", "who", 1, 3, defaults=[1, 2])))
+  case("role select", ActionRow(RoleSelect("r", defaults=[Default.role(5)])))
+  case(
+    "mentionable select",
+    ActionRow(MentionableSelect("m", defaults=[Default.user(1), Default.role(2)])),
+  )
+  case(
+    "channel select",
+    ActionRow(
+      ChannelSelect(
+        "c",
+        channel_types=[
+          "text",
+          "voice",
+          "category",
+          "announcement",
+          "public_thread",
+          "forum",
+        ],
+        defaults=[9],
+      )
+    ),
+  )
+  # --- v2
+  case("text display", TextDisplay("**hi** there", id=10))
+  case(
+    "thumbnail",
+    Section(
+      "a",
+      "b",
+      TextDisplay("c"),
+      accessory=Thumbnail("https://e.com/i.png", "alt", True),
+    ),
+  )
+  case("section + button", Section("click", accessory=Button("Go", custom_id="x")))
+  case(
+    "media gallery",
+    MediaGallery("https://e.com/a.png", MediaItem("attachment://b.png", "desc", True)),
+  )
+  case("file", File("attachment://report.pdf", spoiler=True))
+  case("separator", [Separator(), Separator(divider=False, spacing="large")])
+  case(
+    "container",
+    Container(
+      TextDisplay("hello"),
+      Separator(),
+      Section("s", accessory=Thumbnail("https://e.com/i.png")),
+      MediaGallery("https://e.com/a.png"),
+      File("attachment://f.txt"),
+      ActionRow(Button("b", custom_id="b")),
+      Button("loose", custom_id="l"),
+      UserSelect("loose-select"),
+      accent_color=0xFF8800,
+      spoiler=True,
+    ),
+  )
+  # --- modal
+  case(
+    "modal label+text",
+    Label(
+      "Name",
+      TextInput(
+        "name",
+        style="paragraph",
+        placeholder="p",
+        value="v",
+        min_length=1,
+        max_length=50,
+        required=False,
+      ),
+      "your name",
+    ),
+    modal=True,
+  )
+  case(
+    "modal string select",
+    Label("Pick", StringSelect("p", ["x", "y"], required=True)),
+    modal=True,
+  )
+  case("modal user select", Label("User", UserSelect("u", defaults=[1])), modal=True)
+  case("modal role select", Label("Role", RoleSelect("r")), modal=True)
+  case(
+    "modal mentionable",
+    Label("Mention", MentionableSelect("m", defaults=[Default.role(1)])),
+    modal=True,
+  )
+  case(
+    "modal channel select",
+    Label("Chan", ChannelSelect("c", channel_types=["text"])),
+    modal=True,
+  )
+  case(
+    "modal file upload",
+    Label("Files", FileUpload("f", 1, 3, False, [".png", ".jpg"])),
+    modal=True,
+  )
+  case(
+    "modal radio",
+    Label(
+      "One",
+      RadioGroup("rg", [GroupOption("A", "a", "d", True), "b", "c"], required=True),
+    ),
+    modal=True,
+  )
+  case(
+    "modal checkbox group",
+    Label("Many", CheckboxGroup("cg", ["a", GroupOption("B", "b")], 0, 2, False)),
+    modal=True,
+  )
+  case("modal checkbox", Label("Agree", Checkbox("ck", default=True)), modal=True)
+  case("modal text display", TextDisplay("Read this first"), modal=True)
+  # --- whole modal
+  m = Modal(
+    "form",
+    "Everything",
+    [
+      TextDisplay("intro"),
+      Label("Name", TextInput("n")),
+      Label("Role", RoleSelect("r")),
+      Label("Opts", CheckboxGroup("c", ["a", "b"])),
+      Label("Go?", Checkbox("g")),
+    ],
+  )
+  case("whole modal", m.to_dict()["components"], modal=True)
+  legacy = Modal("old", "Legacy", [TextInput("t", "Label")]).to_dict()
+  case("legacy bare TextInput", legacy["components"], modal=True)
+
+  check(
+    f"{count[0]} component payloads are valid, every type with its fields",
+    not problems,
+    problems,
+  )
+  body = message_body(components=[Container(TextDisplay("x"))], ephemeral=True)
+  check(
+    "layout components set IS_COMPONENTS_V2 (and ephemeral still works)",
+    body["flags"] == (EPHEMERAL | IS_COMPONENTS_V2),
+    body,
+  )
+  rejected = 0
+  for extra in ({"content": "hi"}, {"embeds": [embed("t")]}):
+    try:
+      message_body(components=[TextDisplay("x")], **extra)  # pyright: ignore[reportArgumentType]
+    except ValueError:
+      rejected += 1
+  check("a layout message with content or embeds is refused early", rejected == 2)
+  check(
+    "a classic message sets no v2 flag",
+    "flags" not in message_body("hi", components=[Button("b", custom_id="b")]),
+  )
+  refused = []
+  for label, make in (
+    ("premium with a label", lambda: Button("x", sku_id=1)),
+    ("two targets", lambda: Button("x", custom_id="a", url="https://e.com")),
+    ("file without attachment://", lambda: File("https://e.com/x")),
+    (
+      "bare TextInput without a label",
+      lambda: Modal("m", "t", [TextInput("x")]).to_dict(),
+    ),
+  ):
+    try:
+      make()
+    except ValueError:
+      refused.append(label)
+  check("invalid builders are refused at construction", len(refused) == 4, refused)
+  from micro.discord.interactions import Interaction
+
+  def interaction_of(data: dict[str, Any], kind: int = 5) -> Interaction:
+    payload = {
+      "id": "1",
+      "token": "t",
+      "application_id": "1",
+      "type": kind,
+      "data": data,
+    }
+    return Interaction(payload, None)  # type: ignore[arg-type]
+
+  people = {
+    "10": {"id": "10", "username": "ann"},
+    "11": {"id": "11", "username": "bob"},
+  }
+
+  def field(kind: int, custom_id: str, **value: Any) -> dict[str, Any]:
+    return {"type": 18, "component": {"type": kind, "custom_id": custom_id, **value}}
+
+  submitted = interaction_of(
+    {
+      "custom_id": "form",
+      "components": [
+        {"type": 10},
+        field(4, "name", value="Ada"),
+        field(3, "color", values=["red", "blue"]),
+        field(5, "who", values=["10", "11"]),
+        field(6, "role", values=["20"]),
+        field(8, "chan", values=["30"]),
+        field(19, "files", values=["40", "41"]),
+        field(21, "radio", value="b"),
+        field(21, "radio_none", value=None),
+        field(22, "boxes", values=["x", "z"]),
+        field(23, "agree", value=True),
+        {"type": 1, "components": [{"type": 4, "custom_id": "legacy", "value": "old"}]},
+      ],
+      "resolved": {
+        "users": people,
+        "members": {"10": {"roles": ["20"], "nick": "A"}},
+        "roles": {"20": {"id": "20", "name": "mods"}},
+        "channels": {"30": {"id": "30", "type": 0, "name": "general"}},
+        "attachments": {
+          "40": {"id": "40", "filename": "a.png", "size": 5},
+          "41": {"id": "41", "filename": "b.txt", "size": 7},
+        },
+      },
+    }
+  )
+  check(
+    "a modal submission: every field type reads back, through labels and rows",
+    submitted.inputs
+    == {
+      "name": "Ada",
+      "color": ["red", "blue"],
+      "who": ["10", "11"],
+      "role": ["20"],
+      "chan": ["30"],
+      "files": ["40", "41"],
+      "radio": "b",
+      "radio_none": None,
+      "boxes": ["x", "z"],
+      "agree": True,
+      "legacy": "old",
+    },
+    submitted.inputs,
+  )
+  check(
+    "fields keeps to text inputs and radios, as strings",
+    submitted.fields
+    == {"name": "Ada", "radio": "b", "radio_none": "", "legacy": "old"},
+    submitted.fields,
+  )
+  check(
+    "selected entities resolve to typed objects",
+    [u.username for u in submitted.users("who")] == ["ann", "bob"]
+    and [m.nick for m in submitted.members("who")] == ["A"]
+    and [r.name for r in submitted.roles("role")] == ["mods"]
+    and [c.name for c in submitted.channels("chan")] == ["general"]
+    and [(a.filename, a.size) for a in submitted.attachments("files")]
+    == [("a.png", 5), ("b.txt", 7)]
+    and submitted.choices("color") == ["red", "blue"],
+  )
+  menu = interaction_of(
+    {
+      "custom_id": "pick",
+      "component_type": 7,
+      "values": ["10", "20"],
+      "resolved": {
+        "users": {"10": people["10"]},
+        "roles": {"20": {"id": "20", "name": "mods"}},
+      },
+    },
+    kind=3,
+  )
+  check(
+    "a mentionable select gives users and roles from ctx directly",
+    [u.username for u in menu.users()] == ["ann"]
+    and [r.name for r in menu.roles()] == ["mods"],
+  )
+  from pydantic import ValidationError
+
+  from micro.discord.objects import User
+
+  user = {
+    "id": "1", "username": "ann", "avatar": None, "discriminator": "0",
+    "public_flags": 0, "flags": 0, "global_name": None, "primary_guild": None,
+    "accent_color": 123,
+  }  # fmt: skip
+  full = User.model_validate(user).full()
+  try:
+    User(id="1").full()
+    partial_refused = False
+  except ValidationError:
+    partial_refused = True
+  check(
+    "a view's other fields stay on it, and .full() gives Discord's typed model",
+    User.model_validate(user).accent_color == 123  # type: ignore[attr-defined]
+    and type(full).__name__ == "UserResponse"
+    and partial_refused,
+  )
+  try:
+    ui.validate(Button("x", custom_id="a" * 101))
+    caught = False
+  except ValueError as error:
+    caught = "at most 100" in str(error)
+  check("validate() reports Discord's own limits", caught)
+
+
+async def api_scenarios() -> None:
+  print("api: every operation as a method, checked on the wire")
+  import inspect
+  from email import message_from_bytes
+  from email.policy import default as email_policy
+
+  import httpx2
+  from pydantic import ValidationError
+
+  from micro.discord import ui
+
+  # Structure: every operation is a method whose parameters match its request model.
+  from micro.discord._api import _body_fields  # pyright: ignore[reportPrivateUsage]
+  from micro.discord.api import DiscordAPI, Upload
+  from micro.discord.http_operations import HTTP_OPERATIONS
+  from micro.discord.http_service import DiscordAPIError
+
+  gaps: list[str] = []
+  for op in HTTP_OPERATIONS.values():
+    method = getattr(DiscordAPI, op.id, None)
+    if method is None:
+      gaps.append(f"{op.id}: missing")
+      continue
+    params = inspect.signature(method).parameters
+    request = op.request_model.model_fields
+    positional = [
+      n
+      for n, p in params.items()
+      if n not in ("self", "body", "content") and p.kind is p.POSITIONAL_OR_KEYWORD
+    ]
+    if positional != list(op.path_fields):
+      gaps.append(f"{op.id}: positional {positional} != {list(op.path_fields)}")
+    wanted = (
+      set(_body_fields(request["query"].annotation)) if "query" in request else set()
+    )
+    if "body" in request and "body" not in params:  # a list body is the `body` argument
+      wanted |= {
+        name
+        for name, info in _body_fields(request["body"].annotation).items()
+        if "root" not in name and not (info.alias or "").startswith("files[")
+      }
+    for name in wanted:
+      if name not in params and name + "_" not in params:
+        gaps.append(f"{op.id}: {name} missing")
+    if op.method != "GET" and "reason" not in params:
+      gaps.append(f"{op.id}: no reason=")
+  check(
+    f"all {len(HTTP_OPERATIONS)} operations are methods taking their path, query and body fields",
+    not gaps,
+    gaps[:6],
+  )
+
+  # Every ref method calls its operation with the ref's ids in the right places.
+  import dataclasses
+
+  import gen_api  # scripts/gen_api.py: the table the refs were generated from
+
+  from micro.discord import refs as ref_module
+  from micro.discord.http_operations import HTTP_OPERATIONS as OPS
+
+  class Recorder:
+    def __init__(self) -> None:
+      self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def __getattr__(self, name: str) -> Any:
+      async def record(*args: Any, **kwargs: Any) -> None:
+        self.calls.append((name, args, kwargs))
+
+      return record
+
+  wrong: list[str] = []
+  total = 0
+  for ref_name, spec in gen_api.REFS.items():
+    ref_class = getattr(ref_module, ref_name)
+    recorder = Recorder()
+    ids = [f"ID{n}" for n in range(len(spec.ids))]
+    ref = ref_class(recorder, *ids)
+    for method_name, entry in spec.methods.items():
+      op_id = entry if isinstance(entry, str) else entry[0]
+      operation = OPS[op_id]  # pyright: ignore[reportArgumentType]  # type: ignore[index]
+      method = getattr(ref, method_name)
+      sig = inspect.signature(method)
+      args = [
+        f"ARG{n}"
+        for n, p in enumerate(sig.parameters.values())
+        if p.kind is p.POSITIONAL_OR_KEYWORD
+      ]
+      kwargs = {
+        n: "KW"
+        for n, p in sig.parameters.items()
+        if p.kind is p.KEYWORD_ONLY and p.default is p.empty
+      }
+      recorder.calls.clear()
+      await method(*args, **kwargs)
+      total += 1
+      called, positional, _ = recorder.calls[-1]
+      expected_positional = []
+      free = iter(args)
+      for field_name in operation.path_fields:
+        expected_positional.append(
+          ids[spec.ids.index(field_name)] if field_name in spec.ids else next(free)
+        )
+      if (
+        called != op_id
+        or list(positional[: len(expected_positional)]) != expected_positional
+      ):
+        wrong.append(
+          f"{ref_name}.{method_name}: {called}{positional} != {op_id}{tuple(expected_positional)}"
+        )
+    for link, (target, new_ids) in spec.links.items():
+      made = getattr(ref, link)(*[f"N{n}" for n in range(len(new_ids))])
+      total += 1
+      if type(made).__name__ != target or [
+        getattr(made, i) for i in gen_api.REFS[target].ids
+      ] != [*ids, *[f"N{n}" for n in range(len(new_ids))]]:
+        wrong.append(f"{ref_name}.{link}")
+    if {f.name for f in dataclasses.fields(ref_class)} != {"api", *spec.ids}:
+      wrong.append(f"{ref_name}: fields")
+  check(
+    f"all {total} ref methods call their operation with the ref's ids bound in place",
+    not wrong and total > 100,
+    wrong[:4],
+  )
+
+  seen: list[dict[str, Any]] = []
+  answers: dict[str, tuple[int, Any]] = {}
+
+  def discord(request: httpx2.Request) -> httpx2.Response:
+    seen.append(
+      {
+        "method": request.method,
+        "path": request.url.path.removeprefix("/api/v10"),
+        "query": dict(request.url.params),
+        "headers": dict(request.headers),
+        "body": request.content,
+      }
+    )
+    status, body = answers.get(f"{request.method} {seen[-1]['path']}", (204, None))
+    headers = {"via": "1.1 google"} if status == 429 else {}
+    return (
+      httpx2.Response(status, json=body, headers=headers)
+      if body is not None
+      else httpx2.Response(status, headers=headers)
+    )
+
+  def json_of(call: dict[str, Any]) -> Any:
+    return json.loads(call["body"])
+
+  port = free_port()
+  binary = shutil.which("nats-server") or str(ROOT / ".venv/bin/nats-server")
+  with tempfile.TemporaryDirectory() as store:
+    server = await asyncio.create_subprocess_exec(
+      binary, "-js", "-p", str(port), "-sd", store,
+      stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )  # fmt: skip
+    try:
+      await asyncio.sleep(0.8)
+      async with Runtime(
+        f"nats://127.0.0.1:{port}", name="api", storage=StorageType.MEMORY
+      ) as runtime:
+        http_worker = DiscordHTTPWorker(
+          TOKEN,
+          transport=httpx2.MockTransport(discord),
+          api_url="http://discord.test/api/v10",
+        )
+        hooked: list[Any] = []
+        late: list[Any] = []
+
+        async def late_hook(event: Any) -> None:
+          late.append(event)
+          raise RuntimeError("hooks must not break requests")
+
+        http_worker.hook(hooked.append)
+        unhook = http_worker.hook(late_hook)
+        await runtime.add(http_worker)
+        await asyncio.sleep(0.5)
+        api = DiscordHTTPClient(runtime).api
+
+        message = {
+          "id": "9", "channel_id": "5", "content": "hi", "components": [],
+          "author": {"id": "1", "username": "bot", "avatar": None, "discriminator": "0", "public_flags": 0, "flags": 0, "global_name": None, "primary_guild": None},
+          "attachments": [], "embeds": [], "mentions": [], "mention_roles": [], "pinned": False,
+          "mention_everyone": False, "tts": False, "timestamp": "2024-01-01T00:00:00+00:00",
+          "edited_timestamp": None, "flags": 0, "type": 0,
+        }  # fmt: skip
+        answers["POST /channels/5/messages"] = (200, message)
+        sent = await api.create_message(
+          5,
+          content="@everyone hello",
+          embeds=[
+            ui.embed(
+              "T",
+              "D",
+              timestamp="2024-01-01T00:00:00+00:00",
+              footer="f",
+              footer_icon="https://e.com/i.png",
+            )
+          ],
+          components=[
+            ui.Button("Go", custom_id="go"),
+            ui.StringSelect("s", ["a", "b"]),
+          ],
+        )
+        call = seen[-1]
+        body = json_of(call)
+        check(
+          "create_message: a typed message comes back",
+          getattr(sent, "content", None) == "hi"
+          and type(sent).__name__ == "MessageResponse",
+          type(sent),
+        )
+        check(
+          "create_message: path, JSON body, builders laid out into rows",
+          call["method"] == "POST"
+          and call["path"] == "/channels/5/messages"
+          and body["content"] == "@everyone hello"
+          and [row["type"] for row in body["components"]] == [1, 1]
+          and body["embeds"][0]["footer"]["icon_url"] == "https://e.com/i.png",
+          body,
+        )
+        check(
+          "create_message: mentions are safe unless you say otherwise",
+          body["allowed_mentions"] == {"parse": [], "replied_user": False},
+          body.get("allowed_mentions"),
+        )
+        await api.create_message(
+          5, components=[ui.Container(ui.TextDisplay("hi"), accent_color=0xFF0000)]
+        )
+        body = json_of(seen[-1])
+        check(
+          "create_message: layout components set IS_COMPONENTS_V2 on their own",
+          body["flags"] & ui.IS_COMPONENTS_V2 and body["components"][0]["type"] == 17,
+          body,
+        )
+        await api.create_message(
+          5,
+          content="with files",
+          embeds=[ui.embed("T")],
+          files=[
+            Upload("cat.png", b"\x89PNG-data", "image/png"),
+            Upload("notes.txt", b"plain"),
+          ],
+          reason="because",
+        )
+        call = seen[-1]
+        envelope = message_from_bytes(
+          b"Content-Type: "
+          + call["headers"]["content-type"].encode()
+          + b"\r\n\r\n"
+          + call["body"],
+          policy=email_policy,
+        )
+        parts = {
+          part.get_param("name", header="content-disposition"): part
+          for part in envelope.iter_parts()
+        }
+        payload = json.loads(parts["payload_json"].get_content())
+        check(
+          "create_message with files: multipart, payload_json for the rest, real file names",
+          call["headers"]["content-type"].startswith("multipart/form-data")
+          and payload["content"] == "with files"
+          and payload["embeds"][0]["title"] == "T"
+          and parts["files[0]"].get_filename() == "cat.png"
+          and parts["files[0]"].get_content_type() == "image/png"
+          and parts["files[0]"].get_payload(decode=True) == b"\x89PNG-data"
+          and parts["files[1]"].get_filename() == "notes.txt",
+          list(parts),
+        )
+        check(
+          "a reason goes to the audit log header, percent-encoded",
+          call["headers"]["x-audit-log-reason"] == "because",
+        )
+
+        await api.update_message(5, 9, content="edited")
+        call = seen[-1]
+        check(
+          "update_message: PATCH with only what you passed",
+          call["method"] == "PATCH"
+          and call["path"] == "/channels/5/messages/9"
+          and json_of(call)["content"] == "edited"
+          and "embeds" not in json_of(call),
+          json_of(call),
+        )
+        gone = await api.delete_message(5, 9, reason="spam & ünïcode")
+        call = seen[-1]
+        check(
+          "delete_message: DELETE, no body, None back, reason encoded",
+          call["method"] == "DELETE"
+          and call["path"] == "/channels/5/messages/9"
+          and gone is None
+          and call["headers"]["x-audit-log-reason"] == "spam%20%26%20%C3%BCn%C3%AFcode",
+          call["headers"],
+        )
+        answers["GET /channels/5/messages"] = (200, [message])
+        listed = await api.list_messages(5, limit=3, before=7)
+        check(
+          "list_messages: query parameters, a typed list back",
+          seen[-1]["query"] == {"limit": "3", "before": "7"}
+          and isinstance(listed, list)
+          and len(listed) == 1,
+          (seen[-1]["query"], type(listed)),
+        )
+        await api.bulk_set_application_commands(
+          100, [{"name": "ping", "description": "p", "type": 1}]
+        )
+        body = json_of(seen[-1])
+        check(
+          "a list body is passed as `body`",
+          seen[-1]["method"] == "PUT"
+          and isinstance(body, list)
+          and body[0]["name"] == "ping",
+          body,
+        )
+        await api.update_channel(5, topic=None)
+        check(
+          "None is sent as null; what you leave out is not sent",
+          json_of(seen[-1]) == {"topic": None},
+          json_of(seen[-1]),
+        )
+        answers["POST /guilds/7/stickers"] = (
+          200,
+          {
+            "id": "1",
+            "name": "n",
+            "tags": "t",
+            "type": 2,
+            "format_type": 1,
+            "guild_id": "7",
+            "available": True,
+            "description": None,
+          },
+        )
+        await api.create_guild_sticker(
+          7,
+          name="wave",
+          tags="wave",
+          description="d",
+          file=Upload("wave.png", b"png", "image/png"),
+        )
+        call = seen[-1]
+        envelope = message_from_bytes(
+          b"Content-Type: "
+          + call["headers"]["content-type"].encode()
+          + b"\r\n\r\n"
+          + call["body"],
+          policy=email_policy,
+        )
+        parts = {
+          part.get_param("name", header="content-disposition"): part
+          for part in envelope.iter_parts()
+        }
+        check(
+          "a multipart-only operation sends plain form fields and the file",
+          parts["name"].get_content() == "wave"
+          and "payload_json" not in parts
+          and parts["file"].get_filename() == "wave.png",
+          list(parts),
+        )
+        answers["PUT /guilds/7/bans/8"] = (
+          403,
+          {"code": 50013, "message": "Missing Permissions"},
+        )
+        try:
+          await api.ban_user_from_guild(7, 8, delete_message_seconds=60, reason="r")
+          caught = None
+        except DiscordAPIError as error:
+          caught = error
+        check(
+          "a Discord error raises DiscordAPIError with the status and body",
+          caught is not None and caught.status == 403 and caught.body["code"] == 50013,
+          caught,
+        )
+        # Refs: an object by id, with its ids bound.
+        from datetime import UTC
+        from datetime import datetime as when
+
+        await api.channel(5).send("via ref", embeds=[ui.embed("E")])
+        check(
+          "api.channel(5).send: POST to that channel",
+          seen[-1]["method"] == "POST"
+          and seen[-1]["path"] == "/channels/5/messages"
+          and json_of(seen[-1])["content"] == "via ref",
+        )
+        await api.message(5, 9).reply("yo")
+        check(
+          "message.reply sets message_reference to the message",
+          json_of(seen[-1])["message_reference"] == {"message_id": "9"}
+          and seen[-1]["path"] == "/channels/5/messages",
+          json_of(seen[-1]),
+        )
+        await api.message(5, 9).react("👍")
+        check(
+          "message.react: PUT .../reactions/<emoji>/@me",
+          seen[-1]["method"] == "PUT"
+          and seen[-1]["path"] == "/channels/5/messages/9/reactions/👍/@me",
+          seen[-1]["path"],
+        )
+        await api.message(5, 9).react(ui.Emoji("wave", 123456))
+        check(
+          "a custom Emoji is written name:id in the path",
+          seen[-1]["path"] == "/channels/5/messages/9/reactions/wave:123456/@me",
+          seen[-1]["path"],
+        )
+        await api.member(7, 8).kick(reason="rule 1")
+        check(
+          "member.kick: DELETE with the audit reason",
+          seen[-1]["method"] == "DELETE"
+          and seen[-1]["path"] == "/guilds/7/members/8"
+          and seen[-1]["headers"]["x-audit-log-reason"] == "rule%201",
+        )
+        await api.member(7, 8).add_role(20)
+        check(
+          "member.add_role: PUT .../roles/20",
+          seen[-1]["method"] == "PUT"
+          and seen[-1]["path"] == "/guilds/7/members/8/roles/20",
+        )
+        until = when(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
+        await api.member(7, 8).timeout(until, reason="cool off")
+        check(
+          "member.timeout: PATCH communication_disabled_until",
+          seen[-1]["method"] == "PATCH"
+          and json_of(seen[-1])["communication_disabled_until"].startswith(
+            "2030-01-02T03:04:05"
+          ),
+          json_of(seen[-1]),
+        )
+        await api.member(7, 8).timeout(None)
+        check(
+          "member.timeout(None) lifts it with a real null",
+          json_of(seen[-1]) == {"communication_disabled_until": None},
+          json_of(seen[-1]),
+        )
+        answers.pop("PUT /guilds/7/bans/8", None)  # it answered 403 for the error check
+        await api.guild(7).ban(8, delete_message_seconds=60, reason="r")
+        check(
+          "guild.ban: PUT /guilds/7/bans/8",
+          seen[-1]["method"] == "PUT"
+          and seen[-1]["path"] == "/guilds/7/bans/8"
+          and json_of(seen[-1])["delete_message_seconds"] == 60,
+          (seen[-1]["path"], json_of(seen[-1])),
+        )
+        check(
+          "links carry ids: guild.member(8) is the same as api.member(7, 8)",
+          api.guild(7).member(8) == api.member(7, 8)
+          and api.channel(5).message(9) == api.message(5, 9),
+        )
+        answers["POST /users/@me/channels"] = (
+          200,
+          {"id": "55", "type": 1, "recipients": []},
+        )
+        await api.user(8).send("hello there")
+        opened, sent_dm = seen[-2], seen[-1]
+        check(
+          "user.send opens the DM, then sends to it",
+          opened["path"] == "/users/@me/channels"
+          and json_of(opened) == {"recipient_id": "8"}
+          and sent_dm["path"] == "/channels/55/messages",
+          (opened["path"], sent_dm["path"]),
+        )
+        await api.webhook_token(3, "tok").execute(content="hook", wait=True)
+        check(
+          "webhook_token(...).execute: id and token in the path, query kept",
+          seen[-1]["path"] == "/webhooks/3/tok"
+          and seen[-1]["query"] == {"wait": "true"},
+          (seen[-1]["path"], seen[-1]["query"]),
+        )
+        await api.channel(5).edit(topic=None, name="renamed")
+        check(
+          "channel.edit sends only what was given, nulls included",
+          json_of(seen[-1]) == {"topic": None, "name": "renamed"},
+          json_of(seen[-1]),
+        )
+
+        # Interaction shortcuts reach the same methods.
+        payload = {
+          "id": "1", "token": "tk", "application_id": "100", "type": 2, "guild_id": "7",
+          "channel_id": "5", "data": {"name": "x"}, "member": {"user": {"id": "8", "username": "u"}, "roles": []},
+          "message": {"id": "9", "channel_id": "5"},
+        }  # fmt: skip
+        from micro.discord.interactions import Interaction
+
+        ctx = Interaction(payload, DiscordHTTPClient(runtime))
+        await ctx.channel_ref.send("from ctx")
+        await ctx.member_ref.add_role(30)
+        await ctx.message_ref.pin()
+        await ctx.guild_ref.unban(8)
+        check(
+          "ctx.channel_ref / member_ref / message_ref / guild_ref act on this interaction's objects",
+          [c["path"] for c in seen[-4:]]
+          == [
+            "/channels/5/messages",
+            "/guilds/7/members/8/roles/30",
+            "/channels/5/pins/9",
+            "/guilds/7/bans/8",
+          ]
+          or [c["path"] for c in seen[-4:]]
+          == [
+            "/channels/5/messages",
+            "/guilds/7/members/8/roles/30",
+            "/channels/5/messages/pins/9",
+            "/guilds/7/bans/8",
+          ],
+          [c["path"] for c in seen[-4:]],
+        )
+
+        before = len(seen)
+        try:
+          await api.create_message(5, tts="maybe")  # type: ignore[arg-type]
+          refused = False
+        except ValidationError:
+          refused = True
+        check(
+          "a bad argument fails before anything is sent",
+          refused and len(seen) == before,
+        )
+
+        answers["GET /channels/5"] = (429, {"retry_after": 0.01, "global": False})
+        try:
+          await api.channel(5).get()  # retried until attempts run out
+        except DiscordAPIError:
+          pass
+        limited = [e for e in hooked if e.rate_limited]
+        check(
+          "http hooks see every attempt with operation, status and duration",
+          len(hooked) == len(seen)
+          and len(limited) >= 2
+          and [e.attempt for e in limited][:2] == [1, 2]
+          and all(e.seconds >= 0 and e.operation and e.route for e in hooked)
+          and hooked[0].status is not None,
+          (len(hooked), len(seen)),
+        )
+        check(
+          "a failing hook is logged and never breaks the request",
+          len(late) == len(hooked) and len(late) > 0,
+        )
+        unhook()
+        count = len(late)
+        answers.pop("GET /channels/5")
+        await api.channel(5).get()
+        check(
+          "a removed hook stops being called",
+          len(late) == count and len(hooked) > count,
+        )
+    finally:
+      server.terminate()
+      await server.wait()
+
+
+async def scheduler_scenarios() -> None:
+  print("scheduler: timers fire once, at their time, and survive a missing scheduler")
+  from datetime import UTC, timedelta
+  from datetime import datetime as when
+
+  from pydantic import BaseModel
+
+  from micro.queue import WorkQueue
+  from micro.scheduler import Scheduler, Timers
+  from micro.service import EventSchema
+
+  class Note(BaseModel):
+    text: str
+
+  REMIND = EventSchema[Note](id="smoke.remind", payload=Note)
+  CHORE = WorkQueue[Note]("smoke.chore", Note)
+  arrivals: list[tuple[str, str, float]] = []
+  started = time.monotonic()
+  service = Service("sched-demo")
+
+  @service.listen(REMIND)
+  async def on_remind(note: Note) -> None:
+    arrivals.append(("event", note.text, time.monotonic() - started))
+
+  @service.work(CHORE)
+  async def on_chore(note: Note) -> None:
+    arrivals.append(("job", note.text, time.monotonic() - started))
+
+  def got(kind: str, text: str) -> list[float]:
+    return [at for k, t, at in arrivals if k == kind and t == text]
+
+  async def waited(kind: str, text: str, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+      if got(kind, text):
+        return True
+      await asyncio.sleep(0.05)
+    return False
+
+  async with Stack(App()) as s:
+    runtime = s.runtime
+    await runtime.add(service)
+    timers = Timers(runtime)
+    scheduler = Scheduler()
+    await runtime.add(scheduler)
+    await asyncio.sleep(0.5)
+
+    now = time.monotonic() - started
+    await timers.event("t.event", REMIND, Note(text="soon"), after=1.5)
+    await timers.job("t.job", CHORE, Note(text="chore"), after=2.0)
+    check(
+      "an event timer fires at its time",
+      await waited("event", "soon", 6) and 1.0 <= got("event", "soon")[0] - now <= 3.5,
+      got("event", "soon"),
+    )
+    check("a job timer reaches a worker", await waited("job", "chore", 6), arrivals)
+
+    await timers.event("t.replace", REMIND, Note(text="first"), after=1.5)
+    await timers.event("t.replace", REMIND, Note(text="second"), after=3.0)
+    await asyncio.sleep(5)
+    check(
+      "scheduling a key again replaces it: only the new one fires",
+      got("event", "first") == [] and len(got("event", "second")) == 1,
+      arrivals,
+    )
+
+    await timers.event("t.cancel", REMIND, Note(text="never"), after=1.5)
+    check("cancel removes a timer", await timers.cancel("t.cancel") is True)
+    check(
+      "cancel says when there was nothing", await timers.cancel("t.cancel") is False
+    )
+    await asyncio.sleep(3)
+    check("a cancelled timer does not fire", got("event", "never") == [], arrivals)
+
+    await timers.event(
+      "t.past", REMIND, Note(text="late"), at=when.now(UTC) - timedelta(minutes=5)
+    )
+    check("a time in the past fires at once", await waited("event", "late", 3))
+
+    # No scheduler running: timers wait, then are delivered when one starts.
+    await scheduler.close()
+    await timers.event("t.catchup", REMIND, Note(text="caught"), after=1.0)
+    await asyncio.sleep(3)
+    check(
+      "with no scheduler, a due timer waits", got("event", "caught") == [], arrivals
+    )
+    pending = await timers.pending("t.")
+    check(
+      "pending is what is not yet due: a timer that came due is no longer listed",
+      all(t.key != "t.catchup" for t in pending),
+      pending,
+    )
+    replacement = Scheduler("scheduler")
+    await runtime.add(replacement)
+    check(
+      "a new scheduler delivers what came due meanwhile",
+      await waited("event", "caught", 4),
+      arrivals,
+    )
+
+    # Two schedulers share the work: every timer is delivered exactly once.
+    second = Scheduler("scheduler")
+    await runtime.add(second)
+    for n in range(8):
+      await timers.event(f"t.many.{n}", REMIND, Note(text=f"m{n}"), after=1.0)
+    await asyncio.sleep(4)
+    counts = [len(got("event", f"m{n}")) for n in range(8)]
+    check("two schedulers deliver each timer exactly once", counts == [1] * 8, counts)
+
+    # Listing and lookup.
+    soon = when.now(UTC) + timedelta(hours=1)
+    later = when.now(UTC) + timedelta(hours=2)
+    await timers.job("list.b", CHORE, Note(text="b"), at=later)
+    await timers.event("list.a", REMIND, Note(text="a"), at=soon)
+    listed = await timers.pending("list.")
+    check(
+      "pending: soonest first, with kind, target and payload",
+      [t.key for t in listed] == ["list.a", "list.b"]
+      and [t.kind for t in listed] == ["event", "job"]
+      and [t.target for t in listed] == ["smoke.remind", "smoke.chore"]
+      and listed[0].payload == {"text": "a"}
+      and abs((listed[0].at - soon).total_seconds()) < 1,
+      listed,
+    )
+    one = await timers.get("list.b")
+    check(
+      "get finds a timer, or None",
+      one is not None and one.key == "list.b" and await timers.get("list.zzz") is None,
+    )
+    for key in ("list.a", "list.b"):
+      await timers.cancel(key)
+
+
+async def store_scenarios() -> None:
+  print("store: the behavior docs/store.rst promises")
+  from micro.store import GraphEngine, GraphModule, GraphQLBody, Store, StoreClient
+  from micro.store.sqlite import SQLiteGraph
+
+  commands = """
+    type Guild @entity(key: ["id"]) {
+      id: ID!
+      name: String!
+      prefix: String
+      commands: [Command!]!
+    }
+    type Command @entity(key: ["guildId", "name"]) {
+      guildId: ID!
+      name: String!
+      body: String!
+      uses: Int!
+      tags: [String!]!
+      enabled: Boolean!
+    }
+    type Query {
+      guild(id: ID!): Guild @from(key: {id: id})
+      command(guildId: ID!, name: String!): Command @from(key: {guildId: guildId, name: name})
+      allCommands(first: Int!, offset: Int!): [Command!]! @scan
+    }
+    type Mutation {
+      addGuild(id: ID!, name: String!, prefix: String): Guild!
+        @insert(key: {id: id}, set: {id: id, name: name, prefix: prefix})
+      addCommand(guildId: ID!, name: String!, body: String!, tags: [String!] = []): Command!
+        @insert(key: {guildId: guildId, name: name},
+                set: {guildId: guildId, name: name, body: body, uses: "0", tags: tags, enabled: "TRUE"})
+      attach(guildId: ID!, name: String!): Boolean
+        @connect(fromType: "Guild", fromKey: {id: guildId}, toType: "Command",
+                 toKey: {guildId: guildId, name: name}, field: "commands")
+      detach(guildId: ID!, name: String!): Boolean
+        @disconnect(fromType: "Guild", fromKey: {id: guildId}, toType: "Command",
+                    toKey: {guildId: guildId, name: name}, field: "commands")
+      editBody(guildId: ID!, name: String!, body: String): Command
+        @update(key: {guildId: guildId, name: name}, set: {body: body})
+      setEnabled(guildId: ID!, name: String!, enabled: Boolean!): Command
+        @update(key: {guildId: guildId, name: name}, set: {enabled: enabled})
+      bump(guildId: ID!, name: String!): Command
+        @update(key: {guildId: guildId, name: name}, where: "current.enabled = TRUE",
+                set: {uses: "current.uses + 1"})
+      removeCommand(guildId: ID!, name: String!): Boolean
+        @delete(type: "Command", key: {guildId: guildId, name: name})
+    }
+  """
+
+  async def ask(
+    engine: GraphEngine, query: str, variables: dict[str, Any] | None = None
+  ) -> dict[str, Any]:
+    return await engine.execute(GraphQLBody(query=query, variables=variables))  # type: ignore[arg-type]
+
+  with tempfile.TemporaryDirectory() as raw:
+    executor = SQLiteGraph(os.path.join(raw, "store.db"))
+    await executor.start()
+    engine = GraphEngine(executor)
+    await engine.apply_modules([GraphModule(id="cmds", schema=commands)])
+    check(
+      "a module with every directive composes",
+      engine.composition_error is None and engine.available,
+    )
+
+    made = await ask(
+      engine, 'mutation { addGuild(id: "1", name: "Home") { id name prefix } }'
+    )
+    check(
+      "an optional argument left out is unset (null), not an error",
+      made["data"]["addGuild"] == {"id": "1", "name": "Home", "prefix": None},
+      made,
+    )
+    dup = await ask(engine, 'mutation { addGuild(id: "1", name: "Again") { id } }')
+    check(
+      "inserting an existing key is a CONFLICT error",
+      dup["data"] is None and dup["errors"][0]["extensions"]["code"] == "CONFLICT",
+      dup,
+    )
+    added = await ask(
+      engine,
+      'mutation { addCommand(guildId: "1", name: "hello", body: "hi") { uses tags enabled } }',
+    )
+    check(
+      "GQL literals and GraphQL argument defaults fill fields",
+      added["data"]["addCommand"] == {"uses": 0, "tags": [], "enabled": True},
+      added,
+    )
+    await ask(
+      engine,
+      'mutation { addCommand(guildId: "1", name: "bye", body: "bye", tags: ["x"]) { name } }',
+    )
+    await ask(
+      engine,
+      'mutation { a: attach(guildId: "1", name: "hello") b: attach(guildId: "1", name: "bye") }',
+    )
+    listing = await ask(engine, '{ guild(id: "1") { commands { name } } }')
+    check(
+      "a list-valued edge lists a guild's commands",
+      sorted(c["name"] for c in listing["data"]["guild"]["commands"])
+      == ["bye", "hello"],
+      listing,
+    )
+
+    bumped = await ask(
+      engine, 'mutation { bump(guildId: "1", name: "hello") { uses } }'
+    )
+    again = await ask(engine, 'mutation { bump(guildId: "1", name: "hello") { uses } }')
+    check(
+      "current.uses + 1 increments in place",
+      (bumped["data"]["bump"], again["data"]["bump"]) == ({"uses": 1}, {"uses": 2}),
+    )
+    await ask(
+      engine,
+      'mutation { setEnabled(guildId: "1", name: "hello", enabled: false) { enabled } }',
+    )
+    blocked = await ask(
+      engine, 'mutation { bump(guildId: "1", name: "hello") { uses } }'
+    )
+    check(
+      "an update whose where is false changes nothing and returns null",
+      blocked["data"]["bump"] is None,
+      blocked,
+    )
+
+    await ask(
+      engine, 'mutation { editBody(guildId: "1", name: "hello", body: "hey") { body } }'
+    )
+    left = await ask(
+      engine, 'mutation { editBody(guildId: "1", name: "hello") { body uses } }'
+    )
+    check(
+      "an update leaves out-of-request fields alone, including arguments not passed",
+      left["data"]["editBody"] == {"body": "hey", "uses": 2},
+      left,
+    )
+    cleared = await ask(
+      engine, 'mutation { editBody(guildId: "1", name: "hello", body: null) { body } }'
+    )
+    check(
+      "an explicit null clears a field",
+      cleared["data"]["editBody"]["body"] is None,
+      cleared,
+    )
+    missing = await ask(
+      engine, 'mutation { editBody(guildId: "1", name: "nope", body: "x") { body } }'
+    )
+    check(
+      "updating something that is not there returns null",
+      missing["data"]["editBody"] is None,
+      missing,
+    )
+    gone = await ask(engine, 'mutation { removeCommand(guildId: "1", name: "bye") }')
+    after = await ask(engine, '{ guild(id: "1") { commands { name } } }')
+    check(
+      "delete removes the entity and its edges",
+      gone["data"]["removeCommand"] is True
+      and [c["name"] for c in after["data"]["guild"]["commands"]] == ["hello"],
+      after,
+    )
+    await ask(engine, 'mutation { detach(guildId: "1", name: "hello") }')
+    detached = await ask(engine, '{ guild(id: "1") { commands { name } } }')
+    check(
+      "disconnect removes just the edge",
+      detached["data"]["guild"]["commands"] == [],
+      detached,
+    )
+
+    atomic = await ask(
+      engine,
+      'mutation { ok: addCommand(guildId: "1", name: "atomic", body: "a") { name } '
+      'bad: addCommand(guildId: "1", name: "atomic", body: "b") { name } }',
+    )
+    kept = await ask(engine, '{ command(guildId: "1", name: "atomic") { name } }')
+    check(
+      "the steps of one mutation request are all-or-nothing",
+      atomic["data"] is None and kept["data"]["command"] is None,
+      (atomic, kept),
+    )
+
+    for n in range(5):
+      await ask(
+        engine,
+        f'mutation {{ addCommand(guildId: "2", name: "c{n}", body: "b") {{ name }} }}',
+      )
+    page = [
+      [
+        c["name"]
+        for c in (
+          await ask(engine, f'{{ allCommands(first: 2, offset: {o}) {{ name }} }}')
+        )["data"]["allCommands"]
+      ]
+      for o in (0, 2, 4, 6)
+    ]
+    flat = [name for chunk in page for name in chunk]
+    again = [
+      [
+        c["name"]
+        for c in (
+          await ask(engine, f"{{ allCommands(first: 2, offset: {o}) {{ name }} }}")
+        )["data"]["allCommands"]
+      ]
+      for o in (0, 2, 4, 6)
+    ]
+    check(
+      "scan pages cover every entity once, in a stable order that is not the key order",
+      sorted(flat) == ["c0", "c1", "c2", "c3", "c4", "hello"]
+      and page == again
+      and flat != sorted(flat),
+      (page, again),
+    )
+    wide = await ask(engine, '{ allCommands(first: 5000, offset: 0) { name } }')
+    check(
+      "scan allows at most 1000 per page",
+      wide["data"] is None and "1000" in wide["errors"][0]["message"],
+      wide,
+    )
+
+    # Evolving a schema: adding is safe, and removing only hides.
+    v1 = 'type Note @entity(key: ["id"]) { id: ID! text: String! } type Query { note(id: ID!): Note @from(key: {id: id}) } type Mutation { addNote(id: ID!, text: String!): Note! @insert(key: {id: id}, set: {id: id, text: text}) }'
+    v2 = 'type Note @entity(key: ["id"]) { id: ID! text: String! pinned: Boolean } type Query { note(id: ID!): Note @from(key: {id: id}) }'
+    v3 = 'type Note @entity(key: ["id"]) { id: ID! } type Query { note(id: ID!): Note @from(key: {id: id}) }'
+    await engine.apply_modules(
+      [GraphModule(id="cmds", schema=commands), GraphModule(id="notes", schema=v1)]
+    )
+    await ask(engine, 'mutation { addNote(id: "1", text: "kept") { id } }')
+    await engine.apply_modules(
+      [GraphModule(id="cmds", schema=commands), GraphModule(id="notes", schema=v2)]
+    )
+    grown = await ask(engine, '{ note(id: "1") { text pinned } }')
+    await engine.apply_modules(
+      [GraphModule(id="cmds", schema=commands), GraphModule(id="notes", schema=v3)]
+    )
+    await engine.apply_modules(
+      [GraphModule(id="cmds", schema=commands), GraphModule(id="notes", schema=v2)]
+    )
+    back = await ask(engine, '{ note(id: "1") { text } }')
+    check(
+      "a field added later reads null on old rows; one removed and restored keeps its data",
+      grown["data"]["note"] == {"text": "kept", "pinned": None}
+      and back["data"]["note"] == {"text": "kept"},
+      (grown, back),
+    )
+    await executor.close()
+
+  # The first module in docs/store.rst, taken from the page itself and run as written.
+  import re
+
+  page = (ROOT / "src/micro/docs/store.rst").read_text()
+  documented = re.search(r'schema="""(.*?)"""', page, re.DOTALL)
+  assert documented is not None
+  with tempfile.TemporaryDirectory() as raw:
+    executor = SQLiteGraph(os.path.join(raw, "docs.db"))
+    await executor.start()
+    engine = GraphEngine(executor)
+    await engine.apply_modules(
+      [GraphModule(id="myapp.commands", schema=documented.group(1))]
+    )
+    await ask(
+      engine, 'mutation { addGuild(id: "1234", name: "Home", prefix: "!") { id } }'
+    )
+    flow = await ask(
+      engine,
+      'mutation($g: ID!, $n: String!, $b: String!) {'
+      '  c: addCommand(guildId: $g, name: $n, body: $b) { name }'
+      '  a: attach(guildId: $g, name: $n)'
+      '}',
+      {"g": "1234", "n": "hello", "b": "Hi!"},
+    )
+    used = await ask(
+      engine, 'mutation { used(guildId: "1234", name: "hello") { uses } }'
+    )
+    shown = await ask(engine, '{ guild(id: "1234") { name commands { name uses } } }')
+    check(
+      "the module on the docs page composes and its flow works as written",
+      engine.composition_error is None
+      and flow["data"]["a"] is True
+      and used["data"]["used"] == {"uses": 1}
+      and shown["data"]["guild"]
+      == {"name": "Home", "commands": [{"name": "hello", "uses": 1}]},
+      (flow, used, shown),
+    )
+    await executor.close()
+
+  # The documented flow: a service declares the module, a Store process serves it.
+  async with Stack(App()) as stack:
+    module = GraphModule(
+      id="smoke.tags",
+      schema="""
+      type Tag @entity(key: ["name"]) { name: ID! uses: Int }
+      type Query { tag(name: ID!): Tag @from(key: {name: name}) }
+      type Mutation { addTag(name: ID!, uses: Int): Tag! @insert(key: {name: name}, set: {name: name, uses: uses}) }
+    """,
+    )
+    owner = Service("tags")
+    owner.uses(module)
+    with tempfile.TemporaryDirectory() as raw:
+      store = Store(SQLiteGraph(os.path.join(raw, "store.db")))
+      await stack.runtime.add(store, owner)
+      client = StoreClient(owner.client)
+      deadline = time.monotonic() + 10
+      result: dict[str, Any] = {}
+      while time.monotonic() < deadline:
+        try:
+          result = await client.execute(
+            'mutation { addTag(name: "py", uses: 3) { name uses } }'
+          )
+          if result.get("data"):
+            break
+        except Exception as error:  # the Store is still composing the module
+          result = {"error": str(error)}
+        await asyncio.sleep(0.2)
+      check(
+        "service.uses(module) + a Store process: StoreClient.execute works",
+        (result.get("data") or {}).get("addTag") == {"name": "py", "uses": 3},
+        result,
+      )
+      read = await client.execute(
+        'query($n: ID!) { tag(name: $n) { uses } }', variables={"n": "py"}
+      )
+      check("variables work", read["data"]["tag"] == {"uses": 3}, read)
+
+
 SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "basics": basics,
   "sync": sync_scenarios,
+  "runtime-commands": runtime_command_scenarios,
+  "members": member_cache_scenarios,
+  "endpoint": endpoint_scenarios,
+  "custom": custom_package_scenarios,
   "cli": cli_scenarios,
   "pkg": pkg_scenarios,
   "service": service_scenarios,
   "routes": route_scenarios,
   "health": health_scenarios,
+  "ui": ui_scenarios,
+  "api": api_scenarios,
+  "scheduler": scheduler_scenarios,
+  "store": store_scenarios,
 }
 
 

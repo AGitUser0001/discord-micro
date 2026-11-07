@@ -1,5 +1,6 @@
 """Typed reads of Discord state: the projection when it can answer, else HTTP."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -41,6 +42,7 @@ class DiscordState:
 
     self.runtime = runtime
     self.http = http or DiscordHTTPClient(runtime)
+    self._fetching: dict[tuple[str, str], asyncio.Future[Any]] = {}
 
   async def guild(self, guild_id: int | str) -> StateRead[Guild]:
     projected = await self._projected(guild_id, "guild", str(guild_id))
@@ -71,13 +73,22 @@ class DiscordState:
     return StateRead(Channel.model_validate(channel), "http")
 
   async def member(self, guild_id: int | str, user_id: int | str) -> StateRead[Member]:
-    projected = await self._projected(guild_id, "member", str(user_id))
+    projected = await self._projected(guild_id, "member", f"{guild_id}:{user_id}")
     if projected is not None:
       return StateRead(Member.model_validate(projected), "projection")
-    member = await self.http.call(
-      "get_guild_member", path={"guild_id": str(guild_id), "user_id": str(user_id)}
-    )
-    return StateRead(Member.model_validate(member), "http")
+    key = (str(guild_id), str(user_id))
+    pending = self._fetching.get(key)
+    if pending is None:
+      # Concurrent lookups of one member share a single REST call.
+      pending = asyncio.ensure_future(
+        self.http.call(
+          "get_guild_member",
+          path={"guild_id": key[0], "user_id": key[1]},
+        )
+      )
+      self._fetching[key] = pending
+      pending.add_done_callback(lambda _: self._fetching.pop(key, None))
+    return StateRead(Member.model_validate(await asyncio.shield(pending)), "http")
 
   async def permissions(
     self,
