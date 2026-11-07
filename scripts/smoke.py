@@ -145,11 +145,13 @@ class Stack:
     guilds: tuple[str, ...] = ("500",),
     intents: hikari.Intents | None = None,
     first: Sequence[Any] = (),
+    router: InteractionRouter | None = None,
     members: dict[str, list[dict[str, Any]]] | None = None,
   ) -> None:
     self.members = members or {}
     self.app = app
     self.first = tuple(first)
+    self.router = router
     self.intents = intents
     self.guilds = guilds
     self.connection_events: list[dict[str, Any]] = []
@@ -189,7 +191,7 @@ class Stack:
       *self.first,
       DiscordHTTPWorker(TOKEN, api_url=api),
       GatewayWorker(TOKEN, api_url=api, intents=intents, shard_count=1),
-      InteractionRouter(),
+      self.router or InteractionRouter(),
       self.sync,
       self.app.service,
     )
@@ -690,6 +692,67 @@ async def docs_scenarios() -> None:
   check("every public name has a reference entry", not missing, missing[:10])
   bare = _docs_api.missing_descriptions()
   check("every documented object has a description", not bare, bare[:10])
+
+
+async def signed_ids_scenarios() -> None:
+  print("signed custom ids: the middleware example from the docs, as written")
+  import re
+
+  from micro import _docs
+
+  source = (_docs._source() / "middleware.rst").read_text()  # pyright: ignore[reportPrivateUsage]
+  blocks = re.findall(
+    r"\.\. code-block:: python\n\n   # (myapp/\w+\.py)[^\n]*\n((?:   .*\n|\n)+)", source
+  )
+  files = {
+    name: "\n".join(line[3:] for line in body.splitlines()) for name, body in blocks
+  }
+  check(
+    "the docs give the signing module and the router",
+    set(files) >= {"myapp/signing.py", "myapp/router.py"},
+    list(files),
+  )
+  os.environ["CUSTOM_ID_SECRET"] = "s3cret"
+  import sys
+  import types
+
+  package = types.ModuleType("myapp")
+  package.__path__ = []  # type: ignore[attr-defined]
+  sys.modules["myapp"] = package
+  for name in ("signing", "router"):
+    module = types.ModuleType(f"myapp.{name}")
+    module.__package__ = "myapp"
+    sys.modules[f"myapp.{name}"] = module
+    exec(  # noqa: S102
+      compile(files[f"myapp/{name}.py"], f"myapp/{name}.py", "exec"), module.__dict__
+    )
+  signing, built = sys.modules["myapp.signing"], sys.modules["myapp.router"]
+  async with Stack(App(), router=built.router) as s:
+    f = s.fake
+    await f.until(lambda: s.names() == ["feedback", "hello", "slow"], 10)
+    plain = WAVE.encode(Wave(name="bo"))
+    calls = await s.interact(f.component(signing.sign(plain)))
+    kind, data = reply_of(calls)
+    check(
+      "a signed id reaches its handler under the plain id",
+      kind == 4 and "waves at bo" in data.get("content", ""),
+      data,
+    )
+    calls = await s.interact(f.component(plain))
+    kind, data = reply_of(calls)
+    check(
+      "an unsigned id is refused and never routed",
+      "no longer valid" in data.get("content", ""),
+      data,
+    )
+    forged = plain + "~" + "0" * 16
+    calls = await s.interact(f.component(forged))
+    check(
+      "a forged signature is refused",
+      "no longer valid" in reply_of(calls)[1].get("content", ""),
+    )
+    calls = await s.interact(f.slash("hello"))
+    check("commands pass through untouched", reply_of(calls)[0] == 4)
 
 
 async def sync_scenarios() -> None:
@@ -3237,6 +3300,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "sync": sync_scenarios,
   "runtime-commands": runtime_command_scenarios,
   "docs": docs_scenarios,
+  "signed-ids": signed_ids_scenarios,
   "members": member_cache_scenarios,
   "endpoint": endpoint_scenarios,
   "custom": custom_package_scenarios,

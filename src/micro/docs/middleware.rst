@@ -42,17 +42,79 @@ and ``.`` or ``:`` both separate levels, so the scope ``"ticket"`` matches ``tic
 The router: before routing
 --------------------------
 
-``InteractionRouter.use`` runs **before routing**, and may change the payload. That is how
-you unwrap a signed or encrypted custom ID so it routes by its real prefix:
+``InteractionRouter.use`` runs **before routing** and may change the payload, so it can change
+which service gets an interaction. A real use is **signing custom IDs**: anyone can forge the
+``custom_id`` of a button (it is just a string the client sends back), so you sign the ones you
+create and refuse any that do not verify. The router strips the signature, so the handlers
+behind it keep matching their plain ``ticket.close:[42]`` ids and never see it.
+
+The whole thing is three pieces: how IDs are signed, the router that checks them, and the
+place you sign when sending.
 
 .. code-block:: python
 
+   # myapp/signing.py
+   import hashlib
+   import hmac
+   import os
+
+   SECRET = os.environ["CUSTOM_ID_SECRET"].encode()
+
+   def _mac(custom_id: str) -> str:
+     return hmac.new(SECRET, custom_id.encode(), hashlib.sha256).hexdigest()[:16]
+
+   def sign(custom_id: str) -> str:
+     """`ticket.close:[42]` becomes `ticket.close:[42]~<mac>` (still under Discord's 100)."""
+     return f"{custom_id}~{_mac(custom_id)}"
+
+   def verify(signed: str) -> str | None:
+     """The original custom ID, or None if the signature does not match."""
+     custom_id, _, mac = signed.rpartition("~")
+     return custom_id if hmac.compare_digest(mac, _mac(custom_id)) else None
+
+.. code-block:: python
+
+   # myapp/router.py: the router, with the check as middleware
+   from micro.discord.interactions import InteractionRouter
+
+   from .signing import verify
+
+   router = InteractionRouter()
+
    @router.use
-   async def unwrap(ctx, next, end):
+   async def check_signature(ctx, next, end):
      data = ctx.payload.get("data") or {}
-     if "custom_id" in data:
-       data["custom_id"] = codec.decode(data["custom_id"])   # routes by the real prefix
+     signed = data.get("custom_id")
+     if signed is not None:                      # a component or a modal submit
+       custom_id = verify(signed)
+       if custom_id is None:
+         await ctx.interaction.respond("That button is no longer valid.", ephemeral=True)
+         return await end()                      # never routed, no handler runs
+       data["custom_id"] = custom_id             # routed (and delivered) as the real id
      await next()
+
+.. code-block:: toml
+
+   # micro.toml: run that router instead of the stock one
+   [processes.interactions]
+   components = ["myapp.router:router", "micro.discord.interactions:CommandSync"]
+
+.. code-block:: python
+
+   # in any service: sign when you send, nothing changes in the handlers
+   from myapp.signing import sign
+
+   await ctx.respond("Close it?", components=[
+     Button("Close", custom_id=sign(CLOSE.encode(Ticket(id=42)))),
+   ])
+
+   @components.match(CLOSE)                      # still matches plain "ticket.close:[42]"
+   async def close(ctx: Interaction, ticket: Ticket) -> None: ...
+
+Notes: the signature counts toward Discord's 100-character limit (``CustomId.encode`` checks
+its own part, so leave room); every component and modal you send must then be signed, because
+the middleware refuses unsigned ids; commands and autocomplete have no ``custom_id`` and pass
+straight through; and the secret must be the same in every process that signs or checks.
 
 Deferring
 ---------
