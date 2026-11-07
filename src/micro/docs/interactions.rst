@@ -66,11 +66,11 @@ Components and modals
 
    components, modals = Components(service), Modals(service)
 
-   @components.on(CLOSE)
+   @components.match(CLOSE)
    async def close(ctx: Interaction, ticket: Ticket) -> None:
      await ctx.update_message(f"Ticket {ticket.id} closed.", components=[])
 
-   @modals.on(NOTE)
+   @modals.match(NOTE)
    async def note(ctx: Interaction) -> None:
      await ctx.respond(ctx.fields["text"], ephemeral=True)
 
@@ -155,6 +155,36 @@ An error anywhere (middleware, a custom ID that will not decode, a handler)
 gets one ephemeral "Something went wrong." and a log entry; catch it in your own
 middleware with ``try/except`` around ``next()`` to say something else. A flow
 that ends without responding is logged.
+
+Routing custom IDs
+------------------
+
+``components.match(route)`` (and ``modals.match``) is how a handler claims
+custom IDs. The service declares the route, but the **router** evaluates it, so
+the right service's queue gets the interaction. A ``CustomId`` is a route that
+owns its prefix (before the first ``:``) and hands its decoded state to the
+handler; a plain string owns that prefix and what is nested under it (``.`` or
+``:``).
+
+.. code-block:: python
+
+   import re
+
+   @components.match("ticket.{action}:{id:\\d+}")     # template; {name} is one segment
+   async def ticket(ctx): ctx.route                  # {"action": "close", "id": "42"}
+
+   components.match(re.compile(r"report\.(?P<kind>spam|abuse)"))(report)
+
+A route is a literal ``prefix`` plus an optional regex (``PatternRoute``).
+The router indexes routes by prefix, so many routes cost a few dict lookups.
+Declared routes are tried before the plain prefix rule; if several match, the
+longest prefix wins and a warning names them.
+
+For logic a pattern cannot express, subclass ``Route`` (``match``, ``dump``,
+``load``) and pass an instance to ``match``. The router rebuilds it from
+``dump()`` by importing its class, so **the router needs the same package**
+(an unimportable route is logged and skipped) and ``dump()`` must not hold
+secrets: ``load()`` reads them from the router's own environment.
 
 Customizing the router
 ----------------------

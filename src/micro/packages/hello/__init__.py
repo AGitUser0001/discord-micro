@@ -26,6 +26,6 @@ async def hello(ctx: Interaction, name: str = "world") -> None:
   )
 
 
-@components.on(WAVE)
+@components.match(WAVE)
 async def wave(ctx: Interaction, state: Wave) -> None:
   await ctx.respond(f"{ctx.user.display_name} waves at {state.name}.", ephemeral=True)

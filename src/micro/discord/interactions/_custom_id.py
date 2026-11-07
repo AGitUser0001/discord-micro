@@ -1,15 +1,17 @@
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, JsonValue, TypeAdapter
+
+from ._pattern import Route
 
 CUSTOM_ID_LIMIT = 100
 """Discord's maximum custom_id length."""
 
 
 @dataclass(frozen=True, slots=True)
-class CustomId[T: BaseModel]:
+class CustomId[T: BaseModel](Route):
   """A routed custom_id prefix carrying typed state.
 
   `encode` writes `prefix:[v1,v2,...]` (field values in declaration order, as
@@ -59,6 +61,21 @@ class CustomId[T: BaseModel]:
       return None
     values = self._adapter.validate_json(payload) if separator else []
     return self.state.model_validate(dict(zip(self._fields, values)))
+
+  def match(self, custom_id: str) -> dict[str, Any] | None:
+    """A custom ID belongs to this one when its part before the first ':' is the prefix."""
+    return {} if custom_id.partition(":")[0] == self.prefix else None
+
+  def dump(self) -> JsonValue:
+    return {
+      "prefix": self.prefix
+    }  # the router routes by prefix; state is decoded by the service
+
+  @classmethod
+  def load(cls, data: JsonValue) -> Self:
+    if not isinstance(data, dict):
+      raise TypeError("A custom ID route is an object.")
+    return cls(str(data.get("prefix", "")))
 
   def _optional(self, index: int) -> bool:
     assert self.state is not None

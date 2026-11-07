@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, overload
@@ -20,7 +21,6 @@ from micro.discord.routes import (
   USER,
   command_route,
   component_route,
-  custom_id_prefix,
   modal_route,
 )
 from micro.runtime import StreamConsumer
@@ -38,6 +38,7 @@ from ._commands import (
 from ._context import Interaction
 from ._custom_id import CustomId
 from ._flow import Flow, Middleware, Middlewares, flow_key
+from ._pattern import Route, as_route, route_id, wire_of
 
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
@@ -386,51 +387,72 @@ class Commands(InteractionTemplate):
 
 class _CustomIdTemplate(InteractionTemplate):
   _route: Callable[[str], str] = staticmethod(component_route)
+  _patterns_key = "component_patterns"
 
   def __init__(self, service: Service) -> None:
     super().__init__(service)
-    self._handlers: dict[str, tuple[CustomId[Any] | None, Handler]] = {}
+    self._matchers: dict[str, tuple[Route, Handler]] = {}
 
-  def on(self, custom_id: CustomId[Any] | str) -> Callable[[Handler], Handler]:
-    """Handle every custom_id with this prefix.
+  def match(
+    self, route: Route | str | re.Pattern[str], *, prefix: str | None = None
+  ) -> Callable[[Handler], Handler]:
+    """Handle every custom_id a route matches (see `Route`, `PatternRoute`).
 
-    The handler is `async def f(ctx)`, or `async def f(ctx, state)` for a
-    stateful `CustomId`.
+    A `CustomId` owns its prefix (before the first ':') and hands its decoded
+    state to `async def f(ctx, state)`. A plain string owns that prefix and
+    what is nested under it (`.` or `:`); with `{name}` placeholders it is a
+    template. A compiled regex is used as is (`prefix=` sets its literal head
+    if it cannot be derived). Otherwise the handler is `async def f(ctx)` and
+    the route's result is `ctx.route`.
     """
-    codec = custom_id if isinstance(custom_id, CustomId) else None
-    prefix = custom_id.prefix if isinstance(custom_id, CustomId) else custom_id
+    declared = as_route(route, prefix)
 
     def register(handler: Handler) -> Handler:
       _require_async(handler)
-      if prefix in self._handlers:
-        raise ValueError(f"custom_id prefix {prefix!r} is already handled here.")
-      self._handlers[prefix] = (codec, handler)
+      queue = self._route(route_id(declared))
+      if queue in self._matchers:
+        raise ValueError(f"Route {declared!r} is already handled here.")
+      self._matchers[queue] = (declared, handler)
       return handler
 
     return register
 
   def routes(self) -> list[str]:
-    return sorted(self._route(prefix) for prefix in self._handlers)
+    return sorted(self._matchers)
+
+  def metadata(self) -> dict[str, JsonValue]:
+    metadata = super().metadata()
+    if self._matchers:
+      declared: dict[str, JsonValue] = {
+        queue: wire_of(route) for queue, (route, _) in self._matchers.items()
+      }
+      metadata[self._patterns_key] = declared
+    return metadata
 
   def resolve(self, ctx: Interaction) -> Call | None:
     custom_id = ctx.custom_id or ""
-    entry = self._handlers.get(custom_id_prefix(custom_id))
-    if entry is None:
-      return None
-    codec, handler = entry
-    if codec is not None and codec.state is not None:
-      state = codec.decode(custom_id)
-      return lambda: handler(ctx, state)
-    return lambda: handler(ctx)
+    for route, handler in sorted(
+      self._matchers.values(), key=lambda entry: -len(entry[0].prefix)
+    ):
+      params = route.match(custom_id)
+      if params is None:
+        continue
+      ctx.route = params
+      if isinstance(route, CustomId) and route.state is not None:
+        state = route.decode(custom_id)
+        return lambda handler=handler: handler(ctx, state)
+      return lambda handler=handler: handler(ctx)
+    return None
 
 
 class Components(_CustomIdTemplate):
-  """Buttons and select menus, owned by custom_id prefix: `@components.on(VOTE)`."""
+  """Buttons and select menus, routed by custom ID: `@components.match(VOTE)`."""
 
   _route = staticmethod(component_route)
 
 
 class Modals(_CustomIdTemplate):
-  """Modal submissions, owned by custom_id prefix: `@modals.on(FEEDBACK)`."""
+  """Modal submissions, routed by custom ID: `@modals.match(FEEDBACK)`."""
 
   _route = staticmethod(modal_route)
+  _patterns_key = "modal_patterns"

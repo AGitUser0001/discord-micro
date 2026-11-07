@@ -11,6 +11,7 @@ then drives them the way Discord would. Exit status is the number of failures.
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -26,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import hikari
 from fake_discord import FakeDiscord
 from nats.js.api import StorageType
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from micro.discord import DiscordHTTPClient, DiscordHTTPWorker
 from micro.discord.filters import all_of, content_startswith, ignore_bots
@@ -38,6 +39,7 @@ from micro.discord.interactions import (
   Interaction,
   InteractionRouter,
   Modals,
+  Route,
 )
 from micro.discord.messages import reply_to
 from micro.discord.ui import Button, Modal, TextInput
@@ -83,7 +85,7 @@ class App:
         components=[Button("Wave back", custom_id=WAVE.encode(Wave(name=name)))],
       )
 
-    @components.on(WAVE)
+    @components.match(WAVE)
     async def wave(ctx: Interaction, state: Wave) -> None:
       await ctx.respond(
         f"{ctx.user.display_name} waves at {state.name}.", ephemeral=True
@@ -99,7 +101,7 @@ class App:
         )
       )
 
-    @modals.on(FEEDBACK)
+    @modals.match(FEEDBACK)
     async def got(ctx: Interaction) -> None:
       self.feedback.append(ctx.fields["text"])
       await ctx.respond("Thanks!", ephemeral=True)
@@ -1105,12 +1107,84 @@ async def service_scenarios() -> None:
     check("work runs through middleware", "outer>work:mw.jobs" in trace, trace)
 
 
+class SignedRoute(Route):
+  """A custom route: `sig.<anything>!` carries `n` before the bang."""
+
+  prefix = "sig."
+
+  def match(self, custom_id: str) -> dict[str, str] | None:
+    if custom_id.startswith("sig.") and custom_id.endswith("!"):
+      return {"n": custom_id[4:-1]}
+    return None
+
+  def dump(self) -> JsonValue:
+    return {}
+
+  @classmethod
+  def load(cls, data: Any) -> SignedRoute:
+    return cls()
+
+
+async def route_scenarios() -> None:
+  print("routes: declared custom ID routes (template, regex, custom, legacy)")
+  from micro.discord.interactions import PatternRoute
+  from micro.discord.interactions._pattern import literal_head
+
+  check("literal head of a regex", literal_head(r"ticket\.(?P<a>\w+)") == "ticket.")
+  check("quantified literal is not part of the head", literal_head(r"abc?d") == "ab")
+  check("no head for a leading class", literal_head(r"\d+x") == "")
+  check("template prefix", PatternRoute.template("a.{b}:{c}").prefix == "a.")
+
+  service = Service("panel")
+  components = Components(service)
+
+  def says(text: str) -> Callable[[Interaction], Awaitable[None]]:
+    async def handler(ctx: Interaction) -> None:
+      await ctx.respond(f"{text} {dict(ctx.route)}")
+
+    return handler
+
+  components.match("ticket.{action}:{id:\\d+}")(says("template"))
+  components.match(re.compile(r"report\.(?P<kind>spam|abuse)"))(says("regex"))
+  components.match(SignedRoute())(says("custom"))
+  components.match(CustomId("legacy"))(says("legacy"))
+
+  async with Stack(App()) as s:
+    await s.runtime.add(service)
+    await s.fake.until(lambda: len(s.runtime.directory.entries("service")) >= 4, 8)
+    await asyncio.sleep(0.5)
+    f = s.fake
+    cases = [
+      ("ticket.close:42", "template", {"action": "close", "id": "42"}),
+      ("report.spam", "regex", {"kind": "spam"}),
+      ("sig.77!", "custom", {"n": "77"}),
+      ("legacy:anything", "legacy", {}),
+    ]
+    for custom_id, word, params in cases:
+      calls = await s.interact(f.component(custom_id))
+      _, data = reply_of(calls)
+      content = data.get("content", "")
+      check(
+        f"{custom_id} -> {word}",
+        content.startswith(word) and str(params) in content,
+        content,
+      )
+    calls = await s.interact(f.component("ticket.close:nope"))
+    _, data = reply_of(calls)
+    check(
+      "a non-matching ID is unavailable, not misrouted",
+      "isn't available" in data.get("content", ""),
+      data,
+    )
+
+
 SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "basics": basics,
   "sync": sync_scenarios,
   "cli": cli_scenarios,
   "pkg": pkg_scenarios,
   "service": service_scenarios,
+  "routes": route_scenarios,
 }
 
 

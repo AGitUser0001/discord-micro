@@ -8,10 +8,16 @@ from typing import TYPE_CHECKING, Any, overload
 from nats.js.errors import NotFoundError
 
 from micro import subjects
-from micro.discord.routes import AUTOCOMPLETE, interaction_route
+from micro.discord.routes import (
+  AUTOCOMPLETE,
+  MESSAGE_COMPONENT,
+  MODAL_SUBMIT,
+  interaction_route,
+)
 from micro.service import DispatchSchema, Service
 
 from ._flow import Flow, Middleware, Middlewares, flow_key
+from ._pattern import RouteTable
 from ._templates import (
   INTERACTIONS_KEY,
   RESPONSE_DEADLINE,
@@ -49,6 +55,8 @@ class InteractionRouter(Service):
     super().__init__(name, **settings)
     self._middleware: Middlewares[Flow] = Middlewares()
     self._http: DiscordHTTPClient | None = None
+    self._tables: dict[str, RouteTable] | None = None
+    self._unwatch: Callable[[], None] | None = None
     self.listen(RAW_INTERACTION)(self._on_interaction)
 
   @overload
@@ -67,9 +75,54 @@ class InteractionRouter(Service):
   async def on_start(self) -> None:
     await ensure_interactions_stream(self)
     await super().on_start()
+    self._unwatch = self.runtime.directory.on_change(self._forget_tables)
+
+  async def on_close(self) -> None:
+    if self._unwatch is not None:
+      self._unwatch()
+      self._unwatch = None
+    await super().on_close()
+
+  def _forget_tables(self) -> None:
+    self._tables = None
+
+  def _table(self, key: str) -> RouteTable:
+    """Routes declared by services (`components.match`), rebuilt when presence changes."""
+    if self._tables is None:
+      declared: dict[str, dict[str, dict[str, Any]]] = {
+        "component_patterns": {},
+        "modal_patterns": {},
+      }
+      for entry in self.runtime.directory.entries("service"):
+        for name, routes in declared.items():
+          found = entry.metadata.get(name)
+          if isinstance(found, dict):
+            routes.update({str(q): w for q, w in found.items() if isinstance(w, dict)})
+      self._tables = {
+        name: RouteTable.build(routes) for name, routes in declared.items()
+      }
+    return self._tables[key]
 
   def route(self, payload: Mapping[str, Any]) -> str | None:
-    """The route of an interaction (None drops it)."""
+    """The route of an interaction (None drops it).
+
+    A custom ID that a declared `Route` matches goes to that route; anything
+    else routes by its prefix (the part before the first ":").
+    """
+    data = payload.get("data")
+    custom_id = data.get("custom_id") if isinstance(data, Mapping) else None
+    kind = payload.get("type")
+    if isinstance(custom_id, str) and kind in (MESSAGE_COMPONENT, MODAL_SUBMIT):
+      key, scope = (
+        ("component_patterns", "cmp.")
+        if kind == MESSAGE_COMPONENT
+        else ("modal_patterns", "mdl.")
+      )
+      table = self._table(key)
+      if table:
+        found = table.find(custom_id, scope)
+        if found is not None:
+          return found
     return interaction_route(payload)
 
   async def owned(self, route: str) -> bool:

@@ -106,6 +106,8 @@ class Interaction:
     self.payload = payload
     self.http = http
     self.received = time.monotonic() if received is None else received
+    self.route: Mapping[str, Any] = {}
+    """What the matched `Route` extracted from the custom ID (`components.match`)."""
     self.id: str = payload["id"]
     self.token: str = payload["token"]
     self.application_id: str = payload["application_id"]

@@ -74,7 +74,7 @@ async def start_poll(
   )
 
 
-@components.on(VOTE)
+@components.match(VOTE)
 async def vote(ctx: Interaction, poll: Poll) -> None:
   answer = "yes" if poll.choice else "no"
   await ctx.respond(
@@ -88,7 +88,7 @@ async def ask_feedback(ctx: Interaction) -> None:
   await ctx.modal(Modal(FEEDBACK.encode(), "Feedback", [text]))
 
 
-@modals.on(FEEDBACK)
+@modals.match(FEEDBACK)
 async def feedback(ctx: Interaction) -> None:
   await service.client.enqueue(
     AUDIT, Greeting(name=f"feedback: {ctx.fields['text'][:40]}")
