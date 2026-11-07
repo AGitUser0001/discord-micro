@@ -653,6 +653,74 @@ async def cli_scenarios() -> None:
       code == 0 and word in out,
       (code, out[-200:]),
     )
+  from contextlib import redirect_stdout
+  from io import StringIO
+
+  from micro import cli as micro_cli
+
+  root = micro_cli._parser()  # pyright: ignore[reportPrivateUsage]
+
+  def walk(parser: Any, path: tuple[str, ...] = ()) -> Any:
+    yield path, parser
+    if (actions := parser.commands()) is not None:
+      for name, child in actions.choices.items():
+        yield from walk(child, (*path, name))
+
+  everything = list(walk(root))
+  groups = [(path, p) for path, p in everything if p.commands() is not None]
+  leaves = [(path, p) for path, p in everything if p.commands() is None]
+  check(
+    "every command with subcommands ends in a `help` subcommand",
+    all("help" in p.commands().choices for _, p in groups),
+    [path for path, p in groups if "help" not in p.commands().choices],
+  )
+  check(
+    "every command, group or leaf, takes -h/--help",
+    all(any("-h" in a.option_strings for a in p._actions) for _, p in everything),  # pyright: ignore[reportPrivateUsage]
+  )
+  check(
+    "leaves have only -h: no `help` subcommand",
+    all(p.commands() is None for _, p in leaves),
+  )
+  bare_ok, help_ok, same_ok = [], [], []
+  for path, group in groups:
+    parsed = root.parse_args([*path])
+    runs_itself = path == ("dev",)  # `micro dev` starts the bot; the rest show help
+    bare_ok.append(
+      runs_itself
+      if runs_itself
+      else parsed.handler is micro_cli._help_handler and parsed.target is group  # pyright: ignore[reportPrivateUsage]
+    )
+    asked = root.parse_args([*path, "help"])
+    help_ok.append(asked.handler is micro_cli._help_handler and asked.target is group)  # pyright: ignore[reportPrivateUsage]
+    shown = StringIO()
+    with redirect_stdout(shown):
+      await micro_cli._help_handler(asked)  # pyright: ignore[reportPrivateUsage]
+    same_ok.append(shown.getvalue() == group.format_help())
+  check(
+    "a group run without a command falls back to its help",
+    all(bare_ok),
+    [g[0] for g, ok in zip(groups, bare_ok) if not ok],
+  )
+  check("`help` on every group shows that group's help", all(help_ok) and all(same_ok))
+  code, out = await cli(here, "pkg")
+  check(
+    "micro pkg with no command shows its help and exits 0",
+    code == 0 and "source" in out and "help" in out,
+    out,
+  )
+  code, out = await cli(here, "pkg", "help", "source", "add")
+  check(
+    "`help` follows a path to a leaf",
+    code == 0 and "--ref" in out and "name" in out,
+    out,
+  )
+  code, out = await cli(here, "help", "pkg", "nope")
+  check(
+    "an unknown help topic says where to look",
+    code == 1 and "No command 'nope'" in out and "micro pkg help" in out,
+    out,
+  )
   code, out = await cli(here, "--help")
   check(
     "the help is grouped",

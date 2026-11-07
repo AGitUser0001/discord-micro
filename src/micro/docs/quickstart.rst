@@ -25,6 +25,10 @@ Next:
    micro services add tickets    # a new service folder, loaded automatically
    micro dev roll app            # deploy your changes without dropping the Gateway
 
+Every command takes ``-h``. One with subcommands shows its help when run bare and
+has a ``help`` subcommand that follows a path: ``micro pkg``, ``micro help pkg source``,
+``micro pkg source help add``.
+
 ``micro pkg list`` shows the examples (requests and events, work queues, buttons
 and a modal, the store, a background task, ``health`` for streams and consumers
 via ``/health``). They are fetched from a git source, so ``micro pkg add`` needs

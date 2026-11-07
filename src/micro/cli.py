@@ -27,7 +27,7 @@ def main(argv: Sequence[str] | None = None) -> int:
   if getattr(args, "handler", None) is None:
     parser.print_help()
     return 0
-  if args.command not in {"help", "docs", "init", "add"}:
+  if not getattr(args, "help_only", False) and args.command not in {"docs", "init"}:
     from micro import _dotenv
 
     _dotenv.load()
@@ -63,28 +63,88 @@ GROUPS: dict[str, tuple[str, ...]] = {
 """How `micro --help` sections the commands."""
 
 
-class _Root(argparse.ArgumentParser):
-  """The top-level parser; lists commands by purpose instead of in one column."""
+class _Commands(argparse._SubParsersAction):  # pyright: ignore[reportPrivateUsage]
+  """Subcommand registry: a command's description defaults to its one-line help."""
 
-  descriptions: dict[str, str]
+  def add_parser(self, name: str, **kwargs: Any) -> argparse.ArgumentParser:
+    help_text = kwargs.get("help")
+    if help_text and not kwargs.get("description"):
+      kwargs["description"] = help_text[0].upper() + help_text[1:]
+    return super().add_parser(name, **kwargs)
+
+
+class _Parser(argparse.ArgumentParser):
+  """Every parser in the CLI.
+
+  One with subcommands lists them the same way wherever it sits: the top level, a
+  group (`micro pkg`), a group's group (`micro pkg source`). Run bare it shows that
+  help, and it ends with a `help` subcommand. A parser without subcommands is a leaf
+  and has only `-h/--help`.
+  """
+
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
+    super().__init__(*args, **kwargs)
+    self.register("action", "parsers", _Commands)
+
+  def add_subparsers(self, **kwargs: Any) -> Any:
+    kwargs.setdefault("metavar", "command")
+    actions = super().add_subparsers(**kwargs)
+    if "handler" not in self._defaults:  # a command that also runs keeps its handler
+      self.set_defaults(handler=_help_handler, target=self, topic=[], help_only=True)
+    return actions
+
+  def commands(self) -> argparse._SubParsersAction | None:  # pyright: ignore[reportPrivateUsage, reportMissingTypeArgument]
+    return next(
+      (a for a in self._actions if isinstance(a, argparse._SubParsersAction)),  # pyright: ignore[reportPrivateUsage]
+      None,
+    )
+
+  def command_help(self) -> dict[str, str]:
+    actions = self.commands()
+    if actions is None:
+      return {}
+    return {str(a.metavar): a.help or "" for a in actions._choices_actions}  # pyright: ignore[reportPrivateUsage]
+
+  def sections(self) -> dict[str, tuple[str, ...]]:
+    """The command listing's sections (title to names)."""
+    return {"commands": tuple(self.command_help())}
 
   def format_help(self) -> str:
+    if self.commands() is None:
+      return super().format_help()
     formatter = self._get_formatter()
     formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
     formatter.add_text(self.description)
-    for title, names in GROUPS.items():
+    described = self.command_help()
+    for title, names in self.sections().items():
       formatter.start_section(title)
       for name in names:
         formatter.add_argument(
-          argparse.Action([], dest=name, metavar=name, help=self.descriptions[name])
+          argparse.Action([], dest=name, metavar=name, help=described[name])
         )
       formatter.end_section()
-    formatter.start_section("options")
-    formatter.add_arguments(
-      [action for action in self._actions if action.option_strings]
+    options = [a for a in self._actions if a.option_strings]
+    if options:
+      formatter.start_section("options")
+      formatter.add_arguments(options)
+      formatter.end_section()
+    formatter.add_text(
+      f"Run `{self.prog} help COMMAND` or `{self.prog} COMMAND -h` for a command's own help."
     )
-    formatter.end_section()
-    return formatter.format_help() + (
+    return formatter.format_help() + self.footer()
+
+  def footer(self) -> str:
+    return ""
+
+
+class _Root(_Parser):
+  """The top level: commands by purpose, then the common tasks."""
+
+  def sections(self) -> dict[str, tuple[str, ...]]:
+    return GROUPS
+
+  def footer(self) -> str:
+    return (
       "\ncommon tasks:\n"
       "  micro init                    start a project in this directory\n"
       "  micro services add tickets    add a service\n"
@@ -93,44 +153,50 @@ class _Root(argparse.ArgumentParser):
     )
 
 
+async def _help_handler(args: argparse.Namespace) -> int:
+  """`micro help`, `micro pkg help source`, and a group run without a command."""
+  target: _Parser = args.target
+  for name in args.topic:
+    actions = target.commands()
+    if actions is None or name not in actions.choices:
+      raise ValueError(
+        f"No command {name!r} under `{target.prog}`; see `{target.prog} help`."
+      )
+    target = actions.choices[name]
+  target.print_help()
+  return 0
+
+
+def _add_help_commands(parser: _Parser) -> None:
+  """End every parser that has subcommands with a `help` subcommand."""
+  actions = parser.commands()
+  if actions is None:
+    return
+  for child in list(actions.choices.values()):
+    _add_help_commands(child)
+  if "help" not in actions.choices:
+    leaf = actions.add_parser("help", help="show this help, or a command's")
+    leaf.add_argument(
+      "topic", nargs="*", metavar="command", help="a command, as in `help source add`"
+    )
+    leaf.set_defaults(handler=_help_handler, target=parser, help_only=True)
+
+
 def _parser() -> argparse.ArgumentParser:
   parser = _Root(prog="micro", description=__doc__)
-  parser.descriptions = {}
   parser.add_argument(
     "-v", "--version", action="version", version=f"micro {_version()}"
   )
   parser.add_argument(
     "-V", "--verbose", action="store_true", help="debug logging (any command)"
   )
-  commands = parser.add_subparsers(
-    dest="command", metavar="command", parser_class=argparse.ArgumentParser
-  )
+  commands = parser.add_subparsers(dest="command", parser_class=_Parser)
 
-  def command(
-    name: str, help: str, description: str | None = None
-  ) -> argparse.ArgumentParser:
-    parser.descriptions[name] = help
+  def command(name: str, help: str, description: str | None = None) -> _Parser:
     return commands.add_parser(name, help=help, description=description)
 
   config = argparse.ArgumentParser(add_help=False)
   config.add_argument("--config", default=DEFAULT_CONFIG, help="micro.toml to read")
-
-  help_command = command("help", "show this help, or a command's")
-  help_command.add_argument("topic", nargs="?", help="a command, e.g. node")
-
-  def show_help(args: argparse.Namespace) -> int:
-    if args.topic is None:
-      parser.print_help()
-    elif args.topic in commands.choices:
-      commands.choices[args.topic].print_help()
-    else:
-      raise ValueError(f"No command {args.topic!r}; see `micro help`.")
-    return 0
-
-  async def help_handler(args: argparse.Namespace) -> int:
-    return show_help(args)
-
-  help_command.set_defaults(handler=help_handler)
 
   docs = command("docs", "open the documentation in a browser")
   docs.add_argument("--no-browser", action="store_true", help="only print the address")
@@ -153,7 +219,7 @@ def _parser() -> argparse.ArgumentParser:
   init.set_defaults(handler=_init)
 
   services = command("services", "the services in this project")
-  services_actions = services.add_subparsers(required=True, metavar="action")
+  services_actions = services.add_subparsers()
   service_add = services_actions.add_parser("add", help="a new, empty service")
   service_add.add_argument("name")
   service_add.set_defaults(handler=_services, action="add")
@@ -164,7 +230,7 @@ def _parser() -> argparse.ArgumentParser:
   pkg = command(
     "pkg", "packages: examples to copy in from a git source, edit, and upgrade"
   )
-  pkg_actions = pkg.add_subparsers(required=True, metavar="action")
+  pkg_actions = pkg.add_subparsers()
   pkg_list = pkg_actions.add_parser(
     "list",
     help="the packages in each source, and which you have added",
@@ -222,14 +288,15 @@ def _parser() -> argparse.ArgumentParser:
   pkg_forget.add_argument("name")
   pkg_forget.set_defaults(handler=_pkg, action="forget")
   pkg_source = pkg_actions.add_parser("source", help="where packages come from")
-  source_actions = pkg_source.add_subparsers(required=True, metavar="action")
+  source_actions = pkg_source.add_subparsers()
   source_add = source_actions.add_parser(
     "add",
     help="add or replace a source in micro.toml",
-    description="A git URL (https or ssh; the other form is tried if one fails) or a folder.",
+    description="Add or replace a source in micro.toml. A git URL may be https or ssh: "
+    "the other form of the same address is tried if the first fails.",
     parents=[config],
   )
-  source_add.add_argument("name")
+  source_add.add_argument("name", help="what to call it, as in NAME/package")
   source_add.add_argument("location", help="a git URL, or a folder on this machine")
   source_add.add_argument(
     "path",
@@ -248,7 +315,7 @@ def _parser() -> argparse.ArgumentParser:
   source_remove.set_defaults(handler=_pkg, action="source_remove")
 
   server = command("server", "the NATS server everything connects to, on its own")
-  server_actions = server.add_subparsers(required=True, metavar="action")
+  server_actions = server.add_subparsers()
   server_start = server_actions.add_parser(
     "start", help="run it in the foreground (data in [nats_server] store_dir)"
   )
@@ -272,7 +339,7 @@ def _parser() -> argparse.ArgumentParser:
     "--name", help="this machine's name among the nodes (default: hostname)"
   )
   dev.set_defaults(handler=_dev, action=None)
-  dev_actions = dev.add_subparsers(metavar="[action]")
+  dev_actions = dev.add_subparsers(metavar="[command]")
   dev_scale = dev_actions.add_parser(
     "scale", help="change the replicas of a process group", parents=[config]
   )
@@ -290,7 +357,7 @@ def _parser() -> argparse.ArgumentParser:
     leaf.add_argument("--node", help="which node (default: the one running the group)")
 
   nodes = command("nodes", "the machines running your bot")
-  nodes_actions = nodes.add_subparsers(required=True, metavar="action")
+  nodes_actions = nodes.add_subparsers()
   nodes_list = nodes_actions.add_parser(
     "list", help="each node, its processes, and the live components", parents=[config]
   )
@@ -313,7 +380,7 @@ def _parser() -> argparse.ArgumentParser:
   worker.set_defaults(handler=_worker)
 
   slash = command("commands", "inspect and sync Discord application commands")
-  slash_actions = slash.add_subparsers(required=True, metavar="action")
+  slash_actions = slash.add_subparsers()
   slash_list = slash_actions.add_parser(
     "list", help="commands, their state, and live versions", parents=[config]
   )
@@ -329,7 +396,7 @@ def _parser() -> argparse.ArgumentParser:
   forget.set_defaults(handler=_commands, action="forget")
 
   gateway = command("gateway", "operate the Discord Gateway")
-  actions = gateway.add_subparsers(required=True, metavar="action")
+  actions = gateway.add_subparsers()
   actions.add_parser("status", parents=[config]).set_defaults(
     handler=_gateway, action="status"
   )
@@ -347,6 +414,7 @@ def _parser() -> argparse.ArgumentParser:
   presence.add_argument("status", choices=("online", "idle", "dnd", "offline"))
   presence.add_argument("--activity")
   presence.set_defaults(handler=_gateway, action="presence")
+  _add_help_commands(parser)
   return parser
 
 
