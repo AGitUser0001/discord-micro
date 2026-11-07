@@ -19,6 +19,8 @@ from ._directive import (
 
 @dataclass(frozen=True, slots=True)
 class ActiveOwnedLookup:
+  """A lookup of an entity reachable from an owner that must be active."""
+
   entity: Entity
   key: KeyBinding
   owner: Entity
@@ -131,6 +133,8 @@ MAX_PAGE_SIZE = 1000
 
 @dataclass(frozen=True, slots=True)
 class EntityScan:
+  """A request for a page of an entity type."""
+
   entity: Entity
 
 

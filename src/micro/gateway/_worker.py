@@ -65,6 +65,7 @@ class _Held:
 
 
 def lease_key(generation: int, shard_id: int) -> str:
+  """The table key of a shard's lease."""
   return f"{generation}.{shard_id}"
 
 
@@ -76,6 +77,7 @@ def _plain(value: object) -> object:
 
 
 def guild_of(name: str, payload: Mapping[str, Any]) -> str | None:
+  """The guild id a dispatch belongs to (for its subject), or None."""
   guild = payload.get("guild_id")
   if (
     guild is None
@@ -196,17 +198,20 @@ class GatewayWorker(Component):
 
   @property
   def publishing_shards(self) -> tuple[int, ...]:
+    """Shards this worker currently publishes dispatches for."""
     return tuple(
       sorted(h.session.shard_id for h in self._held.values() if h.publishing)
     )
 
   @property
   def ready(self) -> bool:
+    """Whether every shard this worker owns is READY."""
     return self.accepting and all(h.ready for h in self._held.values() if h.owned)
 
   # Lifecycle -------------------------------------------------------------------
 
   async def on_start(self) -> None:
+    """Join the deployment, watch generations and presence, and start claiming shards."""
     runtime = self.runtime
     self._generations = await runtime.table(subjects.GATEWAY_BUCKET, GatewayGeneration)
     self._statuses = await runtime.table(subjects.GATEWAY_BUCKET, PresenceUpdate)
@@ -227,6 +232,7 @@ class GatewayWorker(Component):
 
   async def on_drain(self) -> None:
     # Leave presence so peers recount their fair share, then hand every shard over.
+    """Leave presence and hand every shard over without a gap."""
     if self._presence is not None:
       await self.runtime.unregister(self._presence)
       self._presence = None
@@ -237,6 +243,7 @@ class GatewayWorker(Component):
       await self._released.wait()
 
   async def on_close(self) -> None:
+    """Disconnect every shard and release its lease."""
     self._unwatch()
     if self._presence is not None:
       await self.runtime.unregister(self._presence)
@@ -565,6 +572,7 @@ class GatewayWorker(Component):
   async def on_dispatch(
     self, session: ShardSession, name: str, payload: Mapping[str, Any]
   ) -> None:
+    """Publish one Gateway dispatch (to the dispatch subject if this connection owns the shard, else standby)."""
     held = self._held.get(lease_key(session.generation, session.shard_id))
     publishing = held is not None and held.session is session and held.publishing
     guild = guild_of(name, payload)
@@ -585,6 +593,7 @@ class GatewayWorker(Component):
   async def on_connection(
     self, session: ShardSession, kind: ConnectionEventKind
   ) -> None:
+    """Publish a connection lifecycle event and re-apply the bot's presence when it is ready."""
     held = self._held.get(lease_key(session.generation, session.shard_id))
     if held is not None and held.session is session:
       if kind in (ConnectionEventKind.READY, ConnectionEventKind.RESUMED):

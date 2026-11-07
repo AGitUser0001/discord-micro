@@ -67,13 +67,16 @@ class InteractionRouter(Service):
   @overload
   def use(self, scope: str, /) -> Callable[[Middleware], Middleware]: ...
 
-  def use(self, scope: Middleware | str, function: Middleware | None = None, /) -> Any:
+  def use(
+    self, scope: Middleware | str, function: Middleware | None = None, /
+  ) -> Middleware | Callable[[Middleware], Middleware]:
     """Add middleware ahead of routing: `use(fn)`, `use("scope", fn)`."""
     if function is None:
       return self._middleware.use(scope)  # type: ignore[arg-type]
     return self._middleware.use(scope, function)  # type: ignore[arg-type]
 
   async def on_start(self) -> None:
+    """Subscribe to route tables and begin routing interactions."""
     await ensure_interactions_stream(self)
     await super().on_start()
     self._unwatch = self.runtime.directory.on_change(
@@ -81,6 +84,7 @@ class InteractionRouter(Service):
     )
 
   async def on_close(self) -> None:
+    """Stop watching route tables."""
     if self._unwatch is not None:
       self._unwatch()
       self._unwatch = None

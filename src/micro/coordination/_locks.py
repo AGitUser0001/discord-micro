@@ -29,6 +29,7 @@ class Locks:
     self.owner = owner
 
   async def try_acquire(self, name: str, *, ttl: float) -> int | None:
+    """Take the lease if it is free and return its revision; None if someone holds it."""
     return await self._table.create(name, LockHolder(owner=self.owner), ttl=ttl)
 
   async def acquire(self, name: str, *, ttl: float) -> int:
@@ -45,6 +46,7 @@ class Locks:
 
   @asynccontextmanager
   async def hold(self, name: str, *, ttl: float) -> AsyncIterator[None]:
+    """Hold the lease while the block runs, renewing it; raises `LockLost` afterwards if it was taken meanwhile."""
     revision = await self.acquire(name, ttl=ttl)
     lost = asyncio.Event()
 

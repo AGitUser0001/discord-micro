@@ -72,9 +72,11 @@ class Store(Service):
 
   @property
   def ready(self) -> bool:
+    """Whether a schema has composed and the store can serve."""
     return super().ready and self.engine.available
 
   async def on_start(self) -> None:
+    """Open the executor and begin composing declared graph modules."""
     await self.engine.executor.start()
     await super().on_start()
     self._unwatch = self.runtime.directory.on_change(
@@ -85,6 +87,7 @@ class Store(Service):
     self.spawn(self._compose_loop(), name="compose")
 
   async def on_close(self) -> None:
+    """Close the executor."""
     self._unwatch()
     await super().on_close()
     await self.engine.executor.close()
@@ -134,6 +137,7 @@ class StoreClient:
     variables: dict[str, Any] | None = None,
     operation_name: str | None = None,
   ) -> dict[str, Any]:
+    """Run a GraphQL query or mutation; returns `{"data", "errors"}` and raises only if the store cannot be reached."""
     return await self._client.request(
       STORE_EXECUTE,
       GraphQLBody.model_validate(

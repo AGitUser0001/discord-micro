@@ -30,17 +30,21 @@ class WorkQueue[T]:
 
   @property
   def subject(self) -> str:
+    """The subject jobs are published on."""
     return subjects.work(self.name)
 
   @property
   def stream(self) -> str:
+    """The JetStream stream that holds the jobs."""
     return subjects.work_stream(self.name)
 
   @property
   def durable(self) -> str:
+    """The durable consumer name shared by all workers."""
     return subjects.durable("work", self.name)
 
   async def ensure(self, runtime: Runtime) -> None:
+    """Create the queue's stream if it does not exist yet."""
     await runtime.ensure_stream(
       self.stream, (self.subject,), retention=RetentionPolicy.WORK_QUEUE
     )
@@ -53,7 +57,9 @@ class WorkQueue[T]:
     return digest(self._adapter.json_schema(mode="validation"))  # type: ignore[arg-type]
 
   def encode_json(self, value: T) -> bytes:
+    """Encode a job as JSON."""
     return self._adapter.dump_json(self._adapter.validate_python(value))
 
   def decode_json(self, value: bytes) -> T:
+    """Validate and decode a job."""
     return self._adapter.validate_json(value)

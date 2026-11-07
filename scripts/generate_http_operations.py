@@ -263,14 +263,17 @@ class DiscordHTTPOperation:
 
   @property
   def request_model(self) -> type[BaseModel]:
+    """The generated Pydantic model of the whole request (path, query, headers, body)."""
     return getattr(requests, self.request)
 
   @property
   def response_model(self) -> type[BaseModel]:
+    """The model the operation returns, or None."""
     return getattr(requests, self.response)
 
   @property
   def response_body_model(self) -> type[RootModel]:
+    """The model of the success body, or None."""
     return getattr(requests, self.response_body)
 
 

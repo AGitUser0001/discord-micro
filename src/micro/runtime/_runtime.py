@@ -12,9 +12,11 @@ from uuid import uuid4
 
 import nats
 from nats.aio.client import Client as NATS
+from nats.aio.msg import Msg
 from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 from nats.js.client import JetStreamContext
 from nats.js.errors import BadRequestError
+from nats.js.object_store import ObjectStore
 from pydantic import JsonValue
 
 from micro import subjects
@@ -36,11 +38,14 @@ _HEADROOM = 64 * 1024
 
 @dataclass(frozen=True, slots=True)
 class Reply:
+  """A NATS reply: its body bytes and headers."""
+
   data: bytes
   headers: dict[str, str]
 
 
 def default_servers() -> tuple[str, ...]:
+  """The NATS servers from `MICRO_NATS_URL` (comma separated), else the local default."""
   value = os.environ.get("MICRO_NATS_URL", DEFAULT_NATS_URL)
   return tuple(server.strip() for server in value.split(",") if server.strip())
 
@@ -85,32 +90,37 @@ class Runtime:
     self._components: list[Component] = []
     self._presences: dict[int, Presence] = {}
     self._started = False
-    self._payloads: Any = None
+    self._payloads: ObjectStore | None = None
 
   @property
   def nats(self) -> NATS:
+    """The underlying NATS client (raises before the runtime starts)."""
     if self._nats is None:
       raise RuntimeError("Runtime has not started.")
     return self._nats
 
   @property
   def jetstream(self) -> JetStreamContext:
+    """The JetStream context (raises before the runtime starts)."""
     if self._jetstream is None:
       raise RuntimeError("Runtime has not started.")
     return self._jetstream
 
   @property
   def directory(self) -> Directory:
+    """The live presence directory (raises before the runtime starts)."""
     if self._directory is None:
       raise RuntimeError("Runtime has not started.")
     return self._directory
 
   @property
   def components(self) -> tuple[Component, ...]:
+    """The components this runtime hosts, in start order."""
     return tuple(self._components)
 
   @property
   def ready(self) -> bool:
+    """Whether the runtime is connected and every hosted component is ready."""
     return (
       self._started
       and self._nats is not None
@@ -119,6 +129,7 @@ class Runtime:
     )
 
   async def start(self) -> None:
+    """Connect to NATS and open the shared tables and presence directory."""
     if self._started:
       return
     if any(server.startswith(("ws://", "wss://")) for server in self.servers):
@@ -158,6 +169,7 @@ class Runtime:
         logger.exception("Draining %s failed", component.name)
 
   async def close(self) -> None:
+    """Close hosted components and disconnect."""
     for component in reversed(self._components):
       try:
         await component.close()
@@ -249,14 +261,14 @@ class Runtime:
     return Reply(await self.payload(reply), dict(reply.headers or {}))
 
   async def respond(
-    self, message: Any, body: bytes, *, headers: dict[str, str] | None = None
+    self, message: Msg, body: bytes, *, headers: dict[str, str] | None = None
   ) -> None:
     """Reply to a request (any size); does nothing for messages without a reply."""
     if message.reply:
       data, sent = await self._encode(body, headers)
       await self.nats.publish(message.reply, data, headers=sent)
 
-  async def payload(self, message: Any) -> bytes:
+  async def payload(self, message: Msg) -> bytes:
     """A received body, fetching (and deleting) it if it travelled as an object."""
     name = (message.headers or {}).get(PAYLOAD_HEADER)
     if not name:
@@ -276,7 +288,7 @@ class Runtime:
     await (await self._payload_store()).put(name, body)
     return b"", {**(headers or {}), PAYLOAD_HEADER: name}
 
-  async def _payload_store(self) -> Any:
+  async def _payload_store(self) -> ObjectStore:
     if self._payloads is None:
       try:
         self._payloads = await self.jetstream.create_object_store(
@@ -364,6 +376,7 @@ class Runtime:
     return table
 
   async def locks(self) -> Locks:
+    """The cluster-wide `Locks` for this deployment."""
     return Locks(
       await self.table(subjects.LOCKS_BUCKET, LockHolder, ttl_markers=True),
       self.instance,
@@ -400,10 +413,12 @@ class Runtime:
     return presence
 
   async def unregister(self, presence: Presence) -> None:
+    """Remove a presence entry made by `register` (it also expires by itself)."""
     self._presences.pop(id_of(presence), None)
     await presence.stop()
 
   def component_states(self) -> dict[str, ComponentState]:
+    """The lifecycle `ComponentState` of each hosted component, by name."""
     return {component.name: component.phase for component in self._components}
 
 

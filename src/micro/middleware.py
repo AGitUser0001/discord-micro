@@ -30,12 +30,15 @@ class Scoped(Protocol):
   """What the engine needs of a context: a key to scope on, and a `reached` flag."""
 
   @property
-  def key(self) -> str | None: ...
+  def key(self) -> str | None:
+    """The key this middleware layer's scope is matched against."""
+    ...
 
   reached: bool
 
 
 def in_scope(key: str | None, scope: str | None) -> bool:
+  """Whether `key` is `scope` or nested under it (separated by `.` or `:`)."""
   if scope is None:
     return True
   if key is None or not key.startswith(scope):

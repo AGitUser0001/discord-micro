@@ -58,6 +58,7 @@ winloop = [
     "winloop>=0.6.3",
 ]
 accel = [
+    "cryptography>=50.0.2",
     "uvloop>=0.22.1; sys_platform == 'darwin' or sys_platform == 'linux'",
     "winloop>=0.6.3; sys_platform == 'win32'",
 ]

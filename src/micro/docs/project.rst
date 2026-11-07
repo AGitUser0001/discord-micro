@@ -128,17 +128,17 @@ you. That is how an upgrade can tell your edits from the source's changes:
 ``upgrade`` fetches what each package's ref points at now and compares, per file,
 the hash you were given, the file now, and the new version:
 
-=========================================  ============================================
-you, and upstream                          ``upgrade``
-=========================================  ============================================
-you did not edit it, upstream changed it   replaces the file
-you edited it, upstream did not change it  keeps yours
-upstream added a file                      adds it
-upstream dropped a file you did not edit   removes it (an edited one is kept)
-you deleted it, upstream did not change it keeps it deleted
-you and upstream both changed it           **merged** line by line (see below)
-you deleted it, upstream changed it        **conflict**: left alone until you choose
-=========================================  ============================================
+==========================================  ============================================
+you, and upstream                           ``upgrade``
+==========================================  ============================================
+you did not edit it, upstream changed it    replaces the file
+you edited it, upstream did not change it   keeps yours
+upstream added a file                       adds it
+upstream dropped a file you did not edit    removes it (an edited one is kept)
+you deleted it, upstream did not change it  keeps it deleted
+you and upstream both changed it            **merged** line by line (see below)
+you deleted it, upstream changed it         **conflict**: left alone until you choose
+==========================================  ============================================
 
 A file you both changed is merged with git's three-way merge, against the commit you
 installed (fetched again for the purpose; templates are rendered with your saved

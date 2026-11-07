@@ -580,7 +580,8 @@ async def endpoint_scenarios() -> None:
   from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
   from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-  from micro._ed25519 import verify
+  from micro._ed25519 import verify as verify_fast
+  from micro._ed25519 import verify_python as verify
   from micro.discord.interactions import InteractionEndpoint
 
   # RFC 8032 test vector 2 (one-byte message), then random keys against the C library.
@@ -605,6 +606,8 @@ async def endpoint_scenarios() -> None:
     )
     agrees = agrees and not verify(raw, message + b"x", signature)
   agrees = agrees and not verify(vector_key, b"\x72", vector_sig[:-1])
+  agrees = agrees and verify_fast(vector_key, b"\x72", vector_sig)
+  agrees = agrees and not verify_fast(vector_key, b"\x73", vector_sig)
   check("pure-Python Ed25519 agrees with RFC 8032 and the C library", agrees)
 
   private = Ed25519PrivateKey.generate()
@@ -670,6 +673,23 @@ async def endpoint_scenarios() -> None:
       reply.json()["type"] == 5 and len(f.where("PATCH", r"/messages/@original")) == 1,
       reply.text,
     )
+
+
+async def docs_scenarios() -> None:
+  print("docs: every page renders, every export is documented")
+  from micro import _docs, _docs_api
+
+  try:
+    pages = _docs.render(strict=True)
+    problems: list[str] = []
+  except _docs.DocsError as error:
+    pages, problems = {}, error.problems
+  check("every page renders with no broken reference", not problems, problems[:5])
+  check("the docs have pages", len(pages) > 20, len(pages))
+  missing = _docs_api.missing_entries()
+  check("every public name has a reference entry", not missing, missing[:10])
+  bare = _docs_api.missing_descriptions()
+  check("every documented object has a description", not bare, bare[:10])
 
 
 async def sync_scenarios() -> None:
@@ -2544,7 +2564,10 @@ async def api_scenarios() -> None:
           caught = error
         check(
           "a Discord error raises DiscordAPIError with the status and body",
-          caught is not None and caught.status == 403 and caught.body["code"] == 50013,
+          caught is not None
+          and caught.status == 403
+          and isinstance(caught.body, dict)
+          and caught.body["code"] == 50013,
           caught,
         )
         # Refs: an object by id, with its ids bound.
@@ -2710,9 +2733,40 @@ async def api_scenarios() -> None:
           "a failing hook is logged and never breaks the request",
           len(late) == len(hooked) and len(late) > 0,
         )
+
+        answers.pop("GET /channels/5")
+
+        def force_reason(request: Any) -> Any:
+          return request.model_copy(update={"reason": "rewritten"})
+
+        undo = http_worker.rewrite(force_reason)
+        await api.channel(5).get()
+        check(
+          "a rewriter changes the request before it is sent",
+          seen[-1]["headers"].get("x-audit-log-reason") == "rewritten",
+          seen[-1]["headers"],
+        )
+
+        def refuse(request: Any) -> None:
+          if request.operation == "get_channel":
+            raise ValueError("channels are off limits")
+
+        undo_refuse = http_worker.rewrite(refuse)
+        before = len(seen)
+        try:
+          await api.channel(5).get()
+          refused = False
+        except Exception as error:
+          refused = "off limits" in str(error)
+        check(
+          "a rewriter can refuse a request; nothing is sent",
+          refused and len(seen) == before,
+          (refused, len(seen) - before),
+        )
+        undo()
+        undo_refuse()
         unhook()
         count = len(late)
-        answers.pop("GET /channels/5")
         await api.channel(5).get()
         check(
           "a removed hook stops being called",
@@ -3182,6 +3236,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "basics": basics,
   "sync": sync_scenarios,
   "runtime-commands": runtime_command_scenarios,
+  "docs": docs_scenarios,
   "members": member_cache_scenarios,
   "endpoint": endpoint_scenarios,
   "custom": custom_package_scenarios,

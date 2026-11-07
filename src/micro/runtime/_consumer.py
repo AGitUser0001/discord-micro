@@ -80,6 +80,7 @@ class StreamConsumer:
     self._handlers: set[asyncio.Task[None]] = set()
 
   async def start(self) -> None:
+    """Create (or bind to) the durable consumer and begin fetching and handling messages."""
     js = self._component.runtime.jetstream
     config = ConsumerConfig(
       durable_name=self.durable,

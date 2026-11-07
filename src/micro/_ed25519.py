@@ -1,7 +1,8 @@
-"""Ed25519 signature verification (RFC 8032) in plain Python.
+"""Ed25519 signature verification (RFC 8032), for Discord's HTTP interactions.
 
-Only what Discord's HTTP interactions need: verifying a signature against a
-public key. Variable time is fine because nothing here is secret.
+Plain Python, so nothing needs installing (about 4 ms a signature). If the
+`cryptography` package is there (the `accel` extra) it does the work instead,
+about a hundred times faster. Variable time is fine because nothing here is secret.
 """
 
 import hashlib
@@ -65,6 +66,20 @@ def _equal(a: _Point, b: _Point) -> bool:
 
 def verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
   """Whether `signature` is `public_key`'s valid Ed25519 signature of `message`."""
+  try:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+  except ImportError:
+    return verify_python(public_key, message, signature)
+  try:
+    Ed25519PublicKey.from_public_bytes(public_key).verify(signature, message)
+  except InvalidSignature, ValueError:
+    return False
+  return True
+
+
+def verify_python(public_key: bytes, message: bytes, signature: bytes) -> bool:
+  """`verify` without any package."""
   if len(signature) != 64:
     return False
   a = _decode(public_key)

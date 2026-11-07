@@ -58,7 +58,7 @@ class Flow:
     self.key = key
     self.service = service
     self.received = received
-    self.state: dict[str, Any] = {}
+    self.state: dict[str, object] = {}
     self.reached = False
     """Whether the flow got all the way to the template's handler."""
     self._http = http
@@ -66,6 +66,7 @@ class Flow:
 
   @property
   def interaction(self) -> Interaction:
+    """The `Interaction` this flow is about."""
     if self._interaction is None:
       self._interaction = Interaction(self.payload, self._http, received=self.received)
     return self._interaction

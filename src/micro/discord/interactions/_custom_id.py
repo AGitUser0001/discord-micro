@@ -34,6 +34,7 @@ class CustomId[T: BaseModel](Route):
     object.__setattr__(self, "_adapter", TypeAdapter(list[Any]))
 
   def encode(self, state: T | None = None) -> str:
+    """Write the custom id for `state` (a model, or None if this id carries none)."""
     if self.state is None:
       if state is not None:
         raise ValueError(f"CustomId {self.prefix!r} carries no state.")
@@ -54,6 +55,7 @@ class CustomId[T: BaseModel](Route):
     return encoded
 
   def decode(self, custom_id: str) -> T | None:
+    """Read the state back out of a custom id this route owns."""
     prefix, separator, payload = custom_id.partition(":")
     if prefix != self.prefix:
       raise ValueError(f"custom_id {custom_id!r} does not belong to {self.prefix!r}.")
@@ -73,6 +75,7 @@ class CustomId[T: BaseModel](Route):
 
   @classmethod
   def load(cls, data: JsonValue) -> Self:
+    """Rebuild the route from the router's copy of `dump()`."""
     if not isinstance(data, dict):
       raise TypeError("A custom ID route is an object.")
     return cls(str(data.get("prefix", "")))

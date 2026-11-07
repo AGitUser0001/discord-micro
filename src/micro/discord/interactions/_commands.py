@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
+from pydantic import JsonValue
+
 from micro.discord.objects import Attachment, Channel, Member, Role, User
 from micro.discord.routes import MESSAGE, SLASH, USER
 
@@ -23,12 +25,15 @@ class CommandOutdated(LookupError):
 
 @dataclass(frozen=True, slots=True)
 class Choice:
+  """A choice for an option or autocomplete: shown `name`, submitted `value`."""
+
   name: str
   value: ChoiceValue
   name_localizations: Mapping[str, str] | None = None
 
-  def to_dict(self) -> dict[str, Any]:
-    value: dict[str, Any] = {"name": self.name, "value": self.value}
+  def to_dict(self) -> dict[str, JsonValue]:
+    """This component as the JSON object Discord expects."""
+    value: dict[str, JsonValue] = {"name": self.name, "value": self.value}
     if self.name_localizations:
       value["name_localizations"] = dict(self.name_localizations)
     return value
@@ -78,8 +83,8 @@ class OptionSpec:
   option: Option
   autocomplete: bool = False
 
-  def to_dict(self) -> dict[str, Any]:
-    value: dict[str, Any] = {
+  def to_dict(self) -> dict[str, JsonValue]:
+    value: dict[str, JsonValue] = {
       "type": self.discord_type,
       "name": self.name,
       "description": self.option.description,
@@ -156,7 +161,7 @@ def parse_options(handler: Handler) -> list[OptionSpec]:
   return specs
 
 
-def _option_fields(option: Option) -> dict[str, Any]:
+def _option_fields(option: Option) -> dict[str, JsonValue]:
   return {name: getattr(option, name) for name in Option.__dataclass_fields__}
 
 
@@ -195,17 +200,22 @@ class Command:
 
     return register
 
-  def to_dict(self) -> dict[str, Any]:
-    value: dict[str, Any] = {"type": self.type, "name": self.name, "nsfw": self.nsfw}
+  def to_dict(self) -> dict[str, JsonValue]:
+    """This command as Discord's application command JSON."""
+    value: dict[str, JsonValue] = {
+      "type": self.type,
+      "name": self.name,
+      "nsfw": self.nsfw,
+    }
     if self.type == SLASH:
       value["description"] = self.description
       value["options"] = [option.to_dict() for option in self.options]
     _common(value, self)
     return value
 
-  def option_dict(self) -> dict[str, Any]:
+  def option_dict(self) -> dict[str, JsonValue]:
     """This command as a subcommand option."""
-    value: dict[str, Any] = {
+    value: dict[str, JsonValue] = {
       "type": 1,
       "name": self.name,
       "description": self.description,
@@ -236,6 +246,8 @@ class CommandGroup:
   def command(
     self, name: str, *, description: str = "-"
   ) -> Callable[[Handler], Command]:
+    """Decorator: add a subcommand to this group."""
+
     def register(handler: Handler) -> Command:
       _require_async(handler)
       command = Command(
@@ -250,6 +262,7 @@ class CommandGroup:
     return register
 
   def group(self, name: str, *, description: str = "-") -> CommandGroup:
+    """Add a nested subcommand group (Discord allows one level)."""
     if self.nested:
       raise ValueError("Discord allows only one level of subcommand groups.")
     group = CommandGroup(_validate_name(name), description, nested=True)
@@ -261,7 +274,8 @@ class CommandGroup:
       raise ValueError(f"{self.name!r} already has a subcommand {child.name!r}.")
     self.children[child.name] = child
 
-  def option_dict(self) -> dict[str, Any]:
+  def option_dict(self) -> dict[str, JsonValue]:
+    """This group as a subcommand-group option of its parent."""
     return {
       "type": 2,
       "name": self.name,
@@ -269,8 +283,9 @@ class CommandGroup:
       "options": [child.option_dict() for child in self.children.values()],
     }
 
-  def to_dict(self) -> dict[str, Any]:
-    value: dict[str, Any] = {
+  def to_dict(self) -> dict[str, JsonValue]:
+    """This group as Discord's application command JSON."""
+    value: dict[str, JsonValue] = {
       "type": SLASH,
       "name": self.name,
       "description": self.description,
@@ -283,6 +298,7 @@ class CommandGroup:
   def resolve(
     self, options: list[dict[str, Any]]
   ) -> tuple[Command, list[dict[str, Any]]]:
+    """Find the subcommand a set of submitted options names."""
     for item in options:
       child = self.children.get(item.get("name", ""))
       if child is None:
@@ -294,7 +310,7 @@ class CommandGroup:
     raise LookupError(f"Unknown subcommand of {self.name!r}.")
 
 
-def _common(value: dict[str, Any], source: Command | CommandGroup) -> None:
+def _common(value: dict[str, JsonValue], source: Command | CommandGroup) -> None:
   if source.default_member_permissions is not None:
     value["default_member_permissions"] = str(source.default_member_permissions)
   if source.contexts is not None:
@@ -316,7 +332,7 @@ def convert_options(
   specs: Sequence[OptionSpec],
   values: Sequence[Mapping[str, Any]],
   resolved: Mapping[str, Any],
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
   """Turn interaction option values into handler keyword arguments.
 
   Options this handler does not declare are ignored and optional ones it does
@@ -324,7 +340,7 @@ def convert_options(
   a rollout converges. A missing required option raises `CommandOutdated`.
   """
   given = {item.get("name"): item.get("value") for item in values}
-  arguments: dict[str, Any] = {}
+  arguments: dict[str, JsonValue] = {}
   for spec in specs:
     if spec.name not in given:
       if spec.required:

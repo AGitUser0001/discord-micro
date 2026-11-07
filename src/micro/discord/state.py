@@ -3,7 +3,9 @@
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import JsonValue
 
 from micro.discord.objects import Channel, Guild, Member, Role
 from micro.errors import MicroError
@@ -42,9 +44,10 @@ class DiscordState:
 
     self.runtime = runtime
     self.http = http or DiscordHTTPClient(runtime)
-    self._fetching: dict[tuple[str, str], asyncio.Future[Any]] = {}
+    self._fetching: dict[tuple[str, str], asyncio.Future[JsonValue]] = {}
 
   async def guild(self, guild_id: int | str) -> StateRead[Guild]:
+    """The guild, from the cache if live, else from Discord."""
     projected = await self._projected(guild_id, "guild", str(guild_id))
     if projected is not None:
       return StateRead(Guild.model_validate(projected), "projection")
@@ -52,17 +55,18 @@ class DiscordState:
     return StateRead(Guild.model_validate(guild), "http")
 
   async def roles(self, guild_id: int | str) -> StateRead[list[Role]]:
+    """The guild's roles, from the cache if live, else from Discord."""
     projected = await self._projected(guild_id, "guild", str(guild_id))
-    if projected is not None and isinstance(projected.get("roles"), list):
-      return StateRead(
-        [Role.model_validate(r) for r in projected["roles"]], "projection"
-      )
+    cached = projected.get("roles") if projected is not None else None
+    if isinstance(cached, list):
+      return StateRead([Role.model_validate(role) for role in cached], "projection")
     roles = await self.http.call("list_guild_roles", path={"guild_id": str(guild_id)})
     return StateRead([Role.model_validate(role) for role in roles], "http")
 
   async def channel(
     self, channel_id: int | str, *, guild_id: int | str | None = None
   ) -> StateRead[Channel]:
+    """A channel, from the cache if `guild_id` is given and live, else from Discord."""
     if guild_id is not None:
       projected = await self._projected(guild_id, "channel", str(channel_id))
       if projected is not None:
@@ -73,6 +77,7 @@ class DiscordState:
     return StateRead(Channel.model_validate(channel), "http")
 
   async def member(self, guild_id: int | str, user_id: int | str) -> StateRead[Member]:
+    """A guild member, from the cache if live, else one (shared) REST call."""
     projected = await self._projected(guild_id, "member", f"{guild_id}:{user_id}")
     if projected is not None:
       return StateRead(Member.model_validate(projected), "projection")
@@ -115,7 +120,7 @@ class DiscordState:
 
   async def _projected(
     self, guild_id: int | str, kind: str, object_id: str
-  ) -> dict[str, Any] | None:
+  ) -> dict[str, JsonValue] | None:
     from micro.gateway import GatewayControl
     from micro.store import StoreClient
 

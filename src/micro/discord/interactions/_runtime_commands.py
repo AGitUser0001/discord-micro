@@ -238,9 +238,11 @@ class RuntimeCommands(InteractionTemplate):
   # Serving them ----------------------------------------------------------------
 
   def routes(self) -> list[str]:
+    """The routes of the runtime commands that exist now."""
     return sorted(command_route(kind, name) for kind, name in self._names)
 
   async def start(self, service: Service) -> None:
+    """Serve the existing runtime commands and watch for changes."""
     from micro.discord import DiscordHTTPClient
 
     self._http = DiscordHTTPClient(service.runtime)
@@ -251,6 +253,7 @@ class RuntimeCommands(InteractionTemplate):
     self._watching = service.spawn(self._watch(table), name="runtime-commands")
 
   async def stop(self) -> None:
+    """Stop watching and stop every command's consumer."""
     if self._watching is not None:
       self._watching.cancel()
       await asyncio.gather(self._watching, return_exceptions=True)

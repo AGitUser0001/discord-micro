@@ -19,11 +19,15 @@ class ShardHost(Protocol):
 
   async def on_dispatch(
     self, session: ShardSession, name: str, payload: Mapping[str, Any]
-  ) -> None: ...
+  ) -> None:
+    """Called by a shard session with every dispatch it receives."""
+    ...
 
   async def on_connection(
     self, session: ShardSession, kind: ConnectionEventKind
-  ) -> None: ...
+  ) -> None:
+    """Called by a shard session when its connection state changes."""
+    ...
 
 
 class ShardSession(Protocol):
@@ -34,15 +38,25 @@ class ShardSession(Protocol):
   shard_count: int
   connection_id: str | None
 
-  async def start(self) -> None: ...
+  async def start(self) -> None:
+    """Connect this shard."""
+    ...
 
-  async def close(self) -> None: ...
+  async def close(self) -> None:
+    """Disconnect this shard."""
+    ...
 
-  async def update_presence(self, update: PresenceUpdate) -> None: ...
+  async def update_presence(self, update: PresenceUpdate) -> None:
+    """Set the bot's presence on this shard."""
+    ...
 
-  async def request_guild_members(self, request: GuildMembersRequest) -> None: ...
+  async def request_guild_members(self, request: GuildMembersRequest) -> None:
+    """Ask Discord for a guild's members on this shard."""
+    ...
 
-  async def update_voice_state(self, update: VoiceStateUpdate) -> None: ...
+  async def update_voice_state(self, update: VoiceStateUpdate) -> None:
+    """Join, move or leave a voice channel on this shard."""
+    ...
 
 
 class HikariShard:
@@ -61,6 +75,7 @@ class HikariShard:
     self._chunked: set[str] = set()
 
   async def start(self) -> None:
+    """Start a cache-free hikari bot for this shard."""
     import hikari
 
     async with self._lock:
@@ -91,6 +106,7 @@ class HikariShard:
         raise
 
   async def close(self) -> None:
+    """Close the hikari bot."""
     async with self._lock:
       bot, self.bot = self.bot, None
       if bot is not None:
@@ -100,6 +116,7 @@ class HikariShard:
       self.connection_id = None
 
   async def update_presence(self, update: PresenceUpdate) -> None:
+    """Set the bot's presence through hikari."""
     import hikari
 
     activity = (
@@ -120,6 +137,7 @@ class HikariShard:
     )
 
   async def request_guild_members(self, request: GuildMembersRequest) -> None:
+    """Send a request-guild-members command through hikari."""
     kwargs: dict[str, Any] = {
       "include_presences": request.include_presences,
       "limit": request.limit,
@@ -133,6 +151,7 @@ class HikariShard:
     await self._bot().request_guild_members(request.guild_id, **kwargs)
 
   async def update_voice_state(self, update: VoiceStateUpdate) -> None:
+    """Send a voice-state update through hikari."""
     await self._bot().update_voice_state(
       update.guild_id,
       update.channel_id,

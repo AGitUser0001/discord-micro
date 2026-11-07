@@ -65,6 +65,7 @@ class CommandSync(Component):
     self._verified = False
 
   async def on_start(self) -> None:
+    """Begin watching declarations and runtime commands, and run the sync loop."""
     declarations = Declarations(self.runtime, "commands")
     self._unwatch = self.runtime.directory.on_change(
       self._changed.set, watching=declarations.live
@@ -84,6 +85,7 @@ class CommandSync(Component):
         self._changed.set()
 
   async def on_close(self) -> None:
+    """Stop watching."""
     self._unwatch()
 
   async def _loop(self) -> None:

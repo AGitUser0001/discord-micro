@@ -32,6 +32,8 @@ PROJECTION_SUBJECTS = (
 
 @dataclass(frozen=True, slots=True)
 class ProjectedObject:
+  """One object to write to (or delete from) the cache."""
+
   kind: str
   id: str
   guild_id: str | None
@@ -60,11 +62,13 @@ class GatewayProjection(Service):
 
   @property
   def store(self) -> StoreClient:
+    """The `StoreClient` used to write the cache (raises before start)."""
     if self._store is None:
       raise RuntimeError("Gateway projection has not started.")
     return self._store
 
   async def on_start(self) -> None:
+    """Create the consumer and begin projecting dispatches into the store."""
     await super().on_start()
     self._store = StoreClient(self.client)
     js = self.runtime.jetstream
@@ -238,6 +242,7 @@ class GatewayProjection(Service):
     )
 
   async def project_connection(self, event: ConnectionEvent) -> None:
+    """Apply a connection lifecycle event (ready, resumed, disconnected, invalidated)."""
     kind = event.kind
     shard_id = event.shard_id
     connection_id = event.connection_id
@@ -287,6 +292,7 @@ class GatewayProjection(Service):
       await self.purge_connection(connection_id)
 
   async def purge_connection(self, connection_id: str) -> None:
+    """Delete a connection and every object it owned."""
     self._known.discard(connection_id)
     result = await self._execute(
       """

@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-type Json = dict[str, Any]
+from pydantic import JsonValue
+
+type Json = dict[str, JsonValue]
 
 EPHEMERAL = 1 << 6
 SUPPRESS_EMBEDS = 1 << 2
@@ -53,7 +55,7 @@ _CHANNEL_TYPES = {
 }
 
 
-def _put(data: Json, **items: Any) -> Json:
+def _put(data: Json, **items: JsonValue) -> Json:
   """Add the items that are not None."""
   for key, item in items.items():
     if item is not None:
@@ -75,19 +77,23 @@ class AllowedMentions:
 
   @classmethod
   def none(cls) -> AllowedMentions:
+    """Allow no mention to ping."""
     return cls()
 
   @classmethod
   def everything(cls) -> AllowedMentions:
+    """Allow every mention to ping."""
     return cls(parse=("users", "roles", "everyone"), replied_user=True)
 
   @classmethod
   def only(
     cls, *, users: Iterable[int] = (), roles: Iterable[int] = ()
   ) -> AllowedMentions:
+    """Allow only the given users and roles (and optionally replied-to users) to ping."""
     return cls(users=tuple(users), roles=tuple(roles))
 
   def to_dict(self) -> Json:
+    """This as Discord's `allowed_mentions` object."""
     value: Json = {"parse": list(self.parse), "replied_user": self.replied_user}
     if self.users:
       value["users"] = [str(user) for user in self.users]
@@ -161,6 +167,7 @@ class Emoji:
     return cls(text)
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     return _put({"name": self.name}, id=None if self.id is None else str(self.id))
 
 
@@ -198,6 +205,7 @@ class Button:
       raise ValueError("A premium button has no label or emoji.")
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     kind = "premium" if self.sku_id is not None else "link" if self.url else self.style
     value: Json = {"type": 2, "style": _BUTTON_STYLES[kind], "disabled": self.disabled}
     _put(value, id=self.id, label=self.label, custom_id=self.custom_id, url=self.url)
@@ -209,6 +217,8 @@ class Button:
 
 @dataclass(frozen=True, slots=True)
 class SelectOption:
+  """One option of a string select."""
+
   label: str
   value: str
   description: str | None = None
@@ -216,6 +226,7 @@ class SelectOption:
   emoji: str | Emoji | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {"label": self.label, "value": self.value, "default": self.default}
     return _put(value, description=self.description, emoji=_emoji(self.emoji))
 
@@ -229,17 +240,21 @@ class Default:
 
   @classmethod
   def user(cls, id: int | str) -> Default:
+    """A default selection of a user."""
     return cls("user", id)
 
   @classmethod
   def role(cls, id: int | str) -> Default:
+    """A default selection of a role."""
     return cls("role", id)
 
   @classmethod
   def channel(cls, id: int | str) -> Default:
+    """A default selection of a channel."""
     return cls("channel", id)
 
   def to_dict(self) -> Json:
+    """This as a Discord default-value object."""
     return {"type": self.type, "id": str(self.id)}
 
 
@@ -294,6 +309,7 @@ class StringSelect:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     options = [
       o if isinstance(o, SelectOption) else SelectOption(o, o) for o in self.options
     ]
@@ -310,6 +326,8 @@ Select = StringSelect
 
 @dataclass(frozen=True, slots=True)
 class UserSelect:
+  """A menu of users."""
+
   custom_id: str
   placeholder: str | None = None
   min_values: int | None = None
@@ -320,6 +338,7 @@ class UserSelect:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     return _select(
       5, self.custom_id, self.placeholder, self.min_values, self.max_values,
       self.disabled, self.required, self.id,
@@ -329,6 +348,8 @@ class UserSelect:
 
 @dataclass(frozen=True, slots=True)
 class RoleSelect:
+  """A menu of server roles."""
+
   custom_id: str
   placeholder: str | None = None
   min_values: int | None = None
@@ -339,6 +360,7 @@ class RoleSelect:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     return _select(
       6, self.custom_id, self.placeholder, self.min_values, self.max_values,
       self.disabled, self.required, self.id,
@@ -360,6 +382,7 @@ class MentionableSelect:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     return _select(
       7, self.custom_id, self.placeholder, self.min_values, self.max_values,
       self.disabled, self.required, self.id,
@@ -382,6 +405,7 @@ class ChannelSelect:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     kinds = [_CHANNEL_TYPES[t] if isinstance(t, str) else t for t in self.channel_types]
     return _select(
       8, self.custom_id, self.placeholder, self.min_values, self.max_values,
@@ -410,6 +434,7 @@ class ActionRow:
     object.__setattr__(self, "id", id)
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     return _put(
       {"type": 1, "components": [c.to_dict() for c in self.components]}, id=self.id
     )
@@ -426,6 +451,7 @@ class TextDisplay:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     return _put({"type": 10, "content": self.content}, id=self.id)
 
 
@@ -439,6 +465,7 @@ class Thumbnail:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {"type": 11, "media": {"url": self.url}, "spoiler": self.spoiler}
     return _put(value, id=self.id, description=self.description)
 
@@ -462,6 +489,7 @@ class Section:
     object.__setattr__(self, "id", id)
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     texts = [t if isinstance(t, TextDisplay) else TextDisplay(t) for t in self.texts]
     value: Json = {
       "type": 9,
@@ -480,6 +508,7 @@ class MediaItem:
   spoiler: bool = False
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {"media": {"url": self.url}, "spoiler": self.spoiler}
     return _put(value, description=self.description)
 
@@ -496,6 +525,7 @@ class MediaGallery:
     object.__setattr__(self, "id", id)
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     items = [i if isinstance(i, MediaItem) else MediaItem(i) for i in self.items]
     return _put({"type": 12, "items": [i.to_dict() for i in items]}, id=self.id)
 
@@ -513,6 +543,7 @@ class File:
       raise ValueError("A File component shows an attachment: use attachment://name.")
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {"type": 13, "file": {"url": self.url}, "spoiler": self.spoiler}
     return _put(value, id=self.id)
 
@@ -526,6 +557,7 @@ class Separator:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {
       "type": 14,
       "divider": self.divider,
@@ -556,6 +588,7 @@ class Container:
     object.__setattr__(self, "id", id)
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {
       "type": 17,
       "components": rows(self.components),
@@ -578,12 +611,12 @@ type Buildable = (
 """Anything that can be a top-level component of a message."""
 
 
-def rows(components: Sequence[Any]) -> list[Json]:
+def rows(components: Sequence[Any]) -> list[JsonValue]:
   """Lay out components: loose buttons fill rows of five, loose selects get a row.
 
   Rows and layout components stay as they are; a plain dict passes through.
   """
-  laid_out: list[Json] = []
+  laid_out: list[JsonValue] = []
   buttons: list[Button] = []
 
   def flush() -> None:
@@ -633,6 +666,7 @@ class TextInput:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     data: Json = {
       "type": 4,
       "custom_id": self.custom_id,
@@ -660,11 +694,12 @@ class GroupOption:
   default: bool = False
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {"label": self.label, "value": self.value, "default": self.default}
     return _put(value, description=self.description)
 
 
-def _group(options: Sequence[GroupOption | str]) -> list[Json]:
+def _group(options: Sequence[GroupOption | str]) -> list[JsonValue]:
   return [
     (o if isinstance(o, GroupOption) else GroupOption(o, o)).to_dict() for o in options
   ]
@@ -680,6 +715,7 @@ class RadioGroup:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {
       "type": 21,
       "custom_id": self.custom_id,
@@ -700,6 +736,7 @@ class CheckboxGroup:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {
       "type": 22,
       "custom_id": self.custom_id,
@@ -723,6 +760,7 @@ class Checkbox:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     return _put(
       {"type": 23, "custom_id": self.custom_id}, id=self.id, default=self.default
     )
@@ -740,6 +778,7 @@ class FileUpload:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {"type": 19, "custom_id": self.custom_id}
     return _put(
       value,
@@ -766,6 +805,7 @@ class Label:
   id: int | None = None
 
   def to_dict(self) -> Json:
+    """This component as the JSON object Discord expects."""
     value: Json = {
       "type": 18,
       "label": self.label,
@@ -789,10 +829,12 @@ class Modal:
 
   @property
   def inputs(self) -> Sequence[Label | TextDisplay | TextInput | Mapping[str, Any]]:
+    """The modal's components, as a sequence."""
     return self.components
 
   def to_dict(self) -> Json:
-    built: list[Json] = []
+    """This component as the JSON object Discord expects."""
+    built: list[JsonValue] = []
     for item in self.components:
       if isinstance(item, TextInput):
         if item.label is None:

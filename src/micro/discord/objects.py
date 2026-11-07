@@ -38,10 +38,12 @@ class User(_View):
 
   @property
   def mention(self) -> str:
+    """The `<@id>` mention string."""
     return f"<@{self.id}>"
 
   @property
   def display_name(self) -> str:
+    """The global name, or the username without one."""
     return self.global_name or self.username
 
 
@@ -56,10 +58,12 @@ class Member(_View):
 
   @property
   def id(self) -> str | None:
+    """The member's user id, or None if Discord sent no user."""
     return self.user.id if self.user is not None else None
 
   @property
   def mention(self) -> str:
+    """The `<@id>` mention string."""
     return f"<@{self.id}>"
 
 
@@ -72,6 +76,7 @@ class Role(_View):
 
   @property
   def mention(self) -> str:
+    """The `<@&id>` mention string."""
     return f"<@&{self.id}>"
 
 
@@ -93,6 +98,7 @@ class Channel(_View):
 
   @property
   def mention(self) -> str:
+    """The `<#id>` mention string."""
     return f"<#{self.id}>"
 
 

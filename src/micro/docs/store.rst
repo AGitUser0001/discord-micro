@@ -323,3 +323,68 @@ Directive reference
 
 Install more directives with ``Store(directives=..., type_directives=...)``. The
 ``notes`` package (``micro pkg add builtin/notes``) is a small, complete example.
+
+Reference
+---------
+
+The store is a service-side component plus a client. Everything a service normally needs is
+:class:`GraphModule` (declare a schema), :class:`StoreClient` (run GraphQL) and
+:class:`Store` (the process that serves it).
+
+.. api::
+   micro.store.Store
+   micro.store.StoreClient
+   micro.store.GraphModule
+   micro.store.GraphEngine
+   micro.store.GraphExecutor
+   micro.store.GraphQLBody
+   micro.store.GraphQLRequest
+   micro.store.GraphResult
+   micro.store.GraphBatch
+   micro.store.GraphBatchResult
+   micro.store.GraphStatement
+   micro.store.MicroGraph
+   micro.store.compose_graph
+   micro.store.GraphCompiler
+   micro.store.GraphCompositionError
+   micro.store.GraphBackendError
+   micro.store.sqlite.SQLiteGraph
+   micro.store.MAX_PAGE_SIZE
+   micro.store.STORE_EXECUTE
+   micro.store.ResultShaper
+
+Extending the store with directives
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Install more directives with ``Store(directives=..., type_directives=...)``. These are the
+types a directive is written with; the ``notes`` package is a small, complete example.
+
+.. api::
+   micro.store.DirectiveMetadata
+   micro.store.DirectiveBindContext
+   micro.store.DirectiveBinding
+   micro.store.DirectiveCompileContext
+   micro.store.DirectiveResult
+   micro.store.TypeDirectiveMetadata
+   micro.store.TypeDirectiveBindContext
+   micro.store.TypeDirectiveBinding
+   micro.store.CompiledOperation
+   micro.store.ActiveOwnedLookup
+   micro.store.Entity
+   micro.store.EntityScan
+   micro.store.FromDirective
+   micro.store.GraphEntityLayout
+   micro.store.GraphLayout
+   micro.store.entity_identity
+   micro.store.physical_field
+   micro.store.physical_path_type
+   micro.store.physical_reference
+   micro.store.physical_type
+   micro.store.MUTATION_DIRECTIVES
+   micro.store.CONNECT_DIRECTIVE
+   micro.store.DELETE_DIRECTIVE
+   micro.store.DISCONNECT_DIRECTIVE
+   micro.store.FROM_ACTIVE_DIRECTIVE
+   micro.store.INSERT_DIRECTIVE
+   micro.store.SCAN_DIRECTIVE
+   micro.store.UPDATE_DIRECTIVE

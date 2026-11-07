@@ -42,9 +42,11 @@ class Table[T]:
 
   @property
   def bucket(self) -> str:
+    """The name of the NATS key-value bucket behind this table."""
     return self._store._name  # pyright: ignore[reportPrivateUsage]
 
   async def get(self, key: str) -> Versioned[T] | None:
+    """The value and revision at `key`, or None if there is none."""
     latest = await self._latest(key)
     if latest is None or latest[1] is None:
       return None
@@ -71,6 +73,7 @@ class Table[T]:
     return message.seq or 0, message.data or b""
 
   async def put(self, key: str, value: T) -> int:
+    """Write `key` unconditionally; returns the new revision."""
     return await self._store.put(key, self._encode(value))
 
   async def put_with_ttl(self, key: str, value: T, ttl: float) -> int:
@@ -116,6 +119,7 @@ class Table[T]:
       return None
 
   async def delete(self, key: str, *, revision: int | None = None) -> bool:
+    """Delete `key` (only at `revision`, if given). Returns whether it deleted."""
     try:
       return await self._store.delete(key, last=revision)
     except KeyWrongLastSequenceError:

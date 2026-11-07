@@ -47,6 +47,7 @@ class ServiceError(MicroError):
     super().__init__(f"{code}: {message}")
 
   def document(self) -> dict[str, Any]:
+    """The error as `{code, message, detail}`, as sent to the caller."""
     return {"code": self.code, "message": self.message, "detail": self.detail}
 
 

@@ -35,6 +35,8 @@ class DeclarationState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Declared:
+  """One declaration in the converged view: its key, content hash, document, state and the hashes live replicas declare."""
+
   key: str
   hash: str
   document: JsonValue
@@ -102,6 +104,7 @@ class Declarations:
     return {key: frozenset(values) for key, values in seen.items()}
 
   async def applied(self) -> dict[str, str]:
+    """`{key: hash}` of what consumers have recorded as applied."""
     table = await self._applied()
     entries = await table.items(f"applied.{self.kind}.>")
     return {entry.value.key: entry.value.hash for entry in entries.values()}
@@ -130,6 +133,7 @@ class Declarations:
     return view
 
   async def mark_applied(self, key: str, hash: str) -> None:
+    """Record that version `hash` of `key` has been applied."""
     table = await self._applied()
     await table.put(self._applied_key(key), _Applied(key=key, hash=hash))
 

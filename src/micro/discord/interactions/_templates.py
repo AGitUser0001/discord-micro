@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, overload
+from typing import TYPE_CHECKING, Any, TypedDict, Unpack, overload
 
 from nats.aio.msg import Msg
 from nats.js.api import RetentionPolicy
@@ -58,7 +58,19 @@ LATE_WARNING = 2.0
 type Call = Callable[[], Awaitable[Any]]
 
 
+class MenuSettings(TypedDict, total=False):
+  """Options of a `user` or `message` context-menu command."""
+
+  guild_ids: Sequence[int]
+  default_member_permissions: int | None
+  contexts: tuple[int, ...] | None
+  integration_types: tuple[int, ...] | None
+  nsfw: bool
+  name_localizations: Mapping[str, str] | None
+
+
 async def ensure_interactions_stream(service: Service) -> None:
+  """Create the `MICRO_INTERACTIONS` work-queue stream if needed."""
   await service.runtime.ensure_stream(
     subjects.INTERACTIONS_STREAM,
     subjects.INTERACTION_SUBJECTS,
@@ -92,6 +104,7 @@ class InteractionTemplate:
   # Subclasses describe their routes and how to run one interaction.
 
   def routes(self) -> list[str]:
+    """The routes this template handles (override in a subclass)."""
     raise NotImplementedError
 
   def resolve(self, ctx: Interaction) -> Call | None:
@@ -105,7 +118,9 @@ class InteractionTemplate:
   @overload
   def use(self, scope: str, /) -> Callable[[Middleware], Middleware]: ...
 
-  def use(self, scope: Middleware | str, function: Middleware | None = None, /) -> Any:
+  def use(
+    self, scope: Middleware | str, function: Middleware | None = None, /
+  ) -> Middleware | Callable[[Middleware], Middleware]:
     """Add middleware around every handler: `use(fn)`, `use("scope", fn)`."""
     if function is None:
       return self._middleware.use(scope)  # type: ignore[arg-type]
@@ -114,10 +129,12 @@ class InteractionTemplate:
   # ServiceExtension.
 
   def metadata(self) -> dict[str, JsonValue]:
+    """What the service advertises: the routes it handles."""
     routes: list[JsonValue] = [*self.routes()]
     return {INTERACTIONS_KEY: routes}
 
   async def start(self, service: Service) -> None:
+    """Start one durable consumer per route."""
     from micro.discord import DiscordHTTPClient
 
     self._http = DiscordHTTPClient(service.runtime)
@@ -140,11 +157,13 @@ class InteractionTemplate:
       self._consumers.append(consumer)
 
   async def stop(self) -> None:
+    """Stop the consumers, waiting for running handlers."""
     consumers, self._consumers = self._consumers, []
     await asyncio.gather(*(consumer.stop() for consumer in consumers))
 
   @property
   def http(self) -> DiscordHTTPClient:
+    """The HTTP client used to answer interactions (set once started)."""
     if self._http is None:
       raise RuntimeError("The template's service has not started.")
     return self._http
@@ -299,21 +318,35 @@ class Commands(InteractionTemplate):
     self._add(group)
     return group
 
-  def user(self, name: str, **settings: Any) -> Callable[[Handler], Command]:
+  def user(
+    self, name: str, **settings: Unpack[MenuSettings]
+  ) -> Callable[[Handler], Command]:
     """A context-menu command on users: `async def f(ctx, member: Member)`."""
     return self._context_menu(USER, name, settings)
 
-  def message(self, name: str, **settings: Any) -> Callable[[Handler], Command]:
+  def message(
+    self, name: str, **settings: Unpack[MenuSettings]
+  ) -> Callable[[Handler], Command]:
     """A context-menu command on messages: `async def f(ctx, message: Message)`."""
     return self._context_menu(MESSAGE, name, settings)
 
   def _context_menu(
-    self, kind: int, name: str, settings: dict[str, Any]
+    self, kind: int, name: str, settings: MenuSettings
   ) -> Callable[[Handler], Command]:
     def register(handler: Handler) -> Command:
       _require_async(handler)
-      guild_ids = tuple(settings.pop("guild_ids", self.guild_ids))
-      command = Command(name, handler, "", kind, guild_ids=guild_ids, **settings)
+      command = Command(
+        name,
+        handler,
+        "",
+        kind,
+        guild_ids=tuple(settings.get("guild_ids", self.guild_ids)),
+        default_member_permissions=settings.get("default_member_permissions"),
+        contexts=settings.get("contexts"),
+        integration_types=settings.get("integration_types"),
+        nsfw=settings.get("nsfw", False),
+        name_localizations=settings.get("name_localizations"),
+      )
       self._add(command)
       return command
 
@@ -327,6 +360,7 @@ class Commands(InteractionTemplate):
 
   @property
   def commands(self) -> tuple[Command | CommandGroup, ...]:
+    """Every command and group declared here."""
     return tuple(self._commands.values())
 
   def definitions(self) -> dict[str, JsonValue]:
@@ -339,10 +373,12 @@ class Commands(InteractionTemplate):
     return definitions
 
   def routes(self) -> list[str]:
+    """The routes (one per command name) this template handles."""
     return sorted(command_route(kind, name) for kind, name in self._commands)
 
   async def start(self, service: Service) -> None:
     # Declared at start so autocomplete flags added after declaration count.
+    """Declare the commands for `CommandSync` and start a consumer per route."""
     for key, definition in self.definitions().items():
       service.declare("commands", key, definition)
     await super().start(service)

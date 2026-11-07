@@ -63,6 +63,7 @@ class GraphCompiler:
     self.graph = graph
 
   def compile(self, request: GraphQLRequest) -> CompiledOperation:
+    """Compile one GraphQL operation into storage statements."""
     root_type = request.schema.get_root_type(request.operation.operation)
     if root_type is None:
       raise GraphQLError("The GraphQL operation has no root type.")
@@ -344,22 +345,27 @@ class GraphCompiler:
 
 
 def physical_type(type_name: str) -> str:
+  """The storage type of a GraphQL type."""
   return _physical_name(type_name, "type", type_name)
 
 
 def physical_reference(coordinate: str) -> str:
+  """The storage reference for an entity edge."""
   return _physical_name(coordinate.rsplit(".", 1)[-1], "field", coordinate)
 
 
 def physical_path_type(type_name: str, path: str) -> str:
+  """The storage type of a field path."""
   return _physical_name(type_name, "path-type", path)
 
 
 def physical_field(coordinate: str) -> str:
+  """The storage column name of a field."""
   return _physical_name(coordinate.rsplit(".", 1)[-1], "property", coordinate)
 
 
 def entity_identity(type_name: str, key: Mapping[str, object]) -> str:
+  """The identity (key fields) of an entity type."""
   encoded = json.dumps(
     [_LAYOUT_VERSION, "entity", type_name, key],
     ensure_ascii=False,

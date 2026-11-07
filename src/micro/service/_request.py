@@ -46,6 +46,7 @@ class RequestSchema[InputT, OutputT]:
 
   @property
   def subject(self) -> str:
+    """The NATS subject requests are sent to (routed by id)."""
     return subjects.request(self.id)
 
   @property
@@ -54,18 +55,23 @@ class RequestSchema[InputT, OutputT]:
     return schema_hash({"input": self._input_schema, "output": self._output_schema})
 
   def decode_input_json(self, value: bytes) -> InputT:
+    """Validate and decode a request body."""
     return self._input_adapter.validate_json(value)
 
   def encode_input_json(self, value: InputT) -> bytes:
+    """Encode a request body as JSON."""
     return self._input_adapter.dump_json(self._input_adapter.validate_python(value))
 
   def decode_output_json(self, value: bytes) -> OutputT:
+    """Validate and decode a reply body."""
     return self._output_adapter.validate_json(value)
 
   def encode_output_json(self, value: OutputT) -> bytes:
+    """Encode a reply body as JSON."""
     return self._output_adapter.dump_json(self._output_adapter.validate_python(value))
 
   def document(self) -> dict[str, JsonValue]:
+    """The schema as a JSON document (id, hash, JSON schemas)."""
     return {
       "id": self.id,
       "input": deepcopy(self._input_schema),

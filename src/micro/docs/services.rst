@@ -1,8 +1,10 @@
 Services
 ========
 
-A ``Service`` is a feature area. Replicas share its name: start more to scale,
-drain old ones to roll.
+A :class:`Service` is a **feature area**: a name, and the requests it answers, events it
+listens for and jobs it works on. **Replicas share the service's name**: start more to
+scale, drain old ones to roll. A service is a :doc:`component <runtime>`, so you host it
+the same way.
 
 .. code-block:: python
 
@@ -18,10 +20,39 @@ drain old ones to roll.
 
    service = Service("greeter")
 
+``Service(name, *, version="0", concurrency=64, ordered_by_guild=False)``: ``version`` is a
+label that appears in presence; ``concurrency`` bounds the handlers a replica runs at once
+for requests and each consumer; ``ordered_by_guild`` is described under :doc:`events`.
+
+The three kinds of message
+--------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 40 42
+
+   * - Kind
+     - Who receives it
+     - Use it for
+   * - Request
+     - One replica of the **one service** that handles that id
+     - Asking a question or commanding an action and needing the answer.
+   * - Event
+     - **Every service** that listens, once each (load-balanced over its replicas)
+     - Telling the world something happened.
+   * - Work
+     - **Exactly one worker** across all services and replicas, whenever one is free
+     - Jobs that must happen even if nobody is running yet.
+
+Schemas are the contract: Pydantic types for the input and output, wrapped with an id.
+Define them in a small module both sides import, or declare the same shape on each side;
+services agree through **validated messages, not shared code**.
+
 Requests
 --------
 
-Exactly one replica of one service answers. Errors carry codes.
+Exactly one replica answers. Requests route by **id**, not by service name, so a request can
+move from one service to another without its callers noticing.
 
 .. code-block:: python
 
@@ -33,15 +64,21 @@ Exactly one replica of one service answers. Errors carry codes.
 
    reply = await service.client.request(GREET, Greeting(name="Ada"), timeout=5)
 
-Callers get ``RemoteError`` (``code``, ``message``, ``detail``), ``RoutingError``
-(nobody handles it), or ``RequestTimeoutError``. Framework codes:
-``invalid_input``, ``incompatible_schema``, ``invalid_output``, ``handler_failed``.
+Callers get :class:`RemoteError` (``code``, ``message``, ``detail``), :class:`RoutingError`
+(nobody handles it) or :class:`RequestTimeoutError` (default 5 s for a :class:`Client`; a
+``timeout=`` per call overrides it). Framework codes and what raising does are in
+:doc:`errors`. A handler that raises anything other than :class:`ServiceError` is
+``handler_failed``.
+
+**Compatibility is decided by validation, not by equality.** A request carries a hash of its
+schema, but the handler only complains (``incompatible_schema``) if the payload *fails to
+validate*. A rolling update that adds an optional field keeps working in both directions.
 
 Events
 ------
 
-Every listening service receives each event once, load-balanced across its
-replicas. A service may have many handlers per event.
+Every listening service receives each event once, load-balanced across its replicas. A
+service may have many handlers for one event.
 
 .. code-block:: python
 
@@ -53,19 +90,9 @@ replicas. A service may have many handlers per event.
 
    await service.client.emit(GREETED, Greeting(name="Ada"))
 
-Delivery is at least once. If a handler fails, the event is redelivered and,
-on the same replica, only the failed handlers run again. Events nobody listens
-to are dropped. Discord dispatches use ``guild_id=`` (filtered by NATS):
-
-.. code-block:: python
-
-   from micro.schemas import events
-
-   @service.listen(events.MESSAGE_CREATE, guild_id=1234)
-   async def on_message(message) -> None: ...
-
-``Service("x", ordered_by_guild=True)`` runs one guild's events one at a time,
-in order, within a replica.
+Delivery is **at least once**: if a handler fails the event is redelivered and, on the same
+replica, only the handlers that failed run again. Discord dispatches are events too, with
+``guild_id=`` and filters; they have their own page, :doc:`events`.
 
 Work queues
 -----------
@@ -79,13 +106,23 @@ Jobs are kept until exactly one worker finishes them, even if none is running.
 
    await service.client.enqueue(AUDIT, Greeting(name="Ada"))
 
+A failing job is retried with a backoff; raise :class:`Reject` (``micro.runtime``) to drop one
+that can never succeed, or :class:`Retry` ``(delay)`` to ask for a specific delay.
+
+Rolling updates and schemas
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An event or job that a replica cannot decode is not discarded straight away. If other live
+replicas of the same service run a **different schema version**, it is left for them to take
+(retried every second). Once every replica agrees and it still does not decode, it is
+rejected and logged.
+
 Middleware
 ----------
 
-``service.use`` wraps every request, event and job handler. Middleware nests
-in the order added; ``next()`` runs the rest, ``end()`` stops, and each pass
-must do exactly one of those (or raise). ``use("scope", fn)`` limits it to a
-request ID, event ID or queue name, and the dotted names under it.
+``service.use`` wraps every request, event and job handler. It is the same engine as for
+interactions, described, with scopes and examples, in :doc:`middleware`. The service flavor
+receives a :class:`Call`:
 
 .. code-block:: python
 
@@ -105,26 +142,45 @@ request ID, event ID or queue name, and the dotted names under it.
        return await end()
      await next()
 
-``Call`` has ``kind`` (``"request"``, ``"event"``, ``"work"``), ``key``,
-``input`` (replace it to change what the handler gets), ``output`` (a request's
-reply), ``message`` (the NATS message), ``service``, ``state`` and ``reached``.
-A request that ends without an ``output`` fails with ``ended_without_reply``;
-``ServiceError`` raised in middleware reaches the caller like one from a handler.
-For events and jobs, ``end()`` counts as handled, and an exception retries as
-usual. Interaction templates use the same engine (:doc:`interactions`).
+A request that ends without an ``output`` fails with ``ended_without_reply``; a
+:class:`ServiceError` raised in middleware reaches the caller like one from a handler. For
+events and jobs, ``end()`` counts as handled, and an exception retries as usual.
 
-Outside a service
------------------
+Calling from outside a service
+------------------------------
+
+:class:`Client` is the caller half of a service, for scripts, tests and other components:
 
 .. code-block:: python
 
    from micro.service import Client
-   client = Client(runtime)    # request, emit, enqueue
+
+   client = Client(runtime, timeout=5.0)
+   await client.request(GREET, Greeting(name="Ada"))
+   await client.emit(GREETED, Greeting(name="Ada"))
+   await client.enqueue(AUDIT, Greeting(name="Ada"))
 
 Declarations and extensions
 ---------------------------
 
-``service.declare(kind, key, document)`` publishes a versioned document that
-converges across rollouts (see :doc:`coordination`); ``service.uses(module)``
-declares a graph module. Templates attach with ``service.extend(...)`` (they
-do it themselves) and implement ``start(service)``, ``stop()``, ``metadata()``.
+``service.declare(kind, key, document)`` publishes a versioned document that converges across
+rollouts (:doc:`coordination`); ``service.uses(module)`` declares a graph module for the
+:doc:`store`. **Templates** such as ``Commands(service)`` attach with ``service.extend(...)``
+(they do it themselves) and implement ``start(service)``, ``stop()`` and ``metadata()``.
+
+Reference
+---------
+
+.. api::
+   micro.service.Service
+   micro.service.Client
+   micro.service.RequestSchema
+   micro.service.EventSchema
+   micro.service.DispatchSchema
+   micro.service.WorkQueue
+   micro.service.Call
+   micro.service.DuplicateRequestHandlerError
+   micro.service.DuplicateWorkHandlerError
+   micro.service.EventHandler
+   micro.service.EventPredicate
+   micro.service.RequestHandler

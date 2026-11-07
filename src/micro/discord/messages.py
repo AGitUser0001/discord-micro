@@ -20,6 +20,7 @@ async def send(
   allowed_mentions: AllowedMentions | None = None,
   reply_to: int | str | None = None,
 ) -> Message:
+  """Send a message to a channel through the HTTP workers, with safe mention defaults."""
   body = message_body(
     content, embeds=embeds, components=components, allowed_mentions=allowed_mentions
   )

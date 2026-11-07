@@ -45,3 +45,30 @@ any process group.
   not a hard real-time guarantee.
 * ``pending`` lists timers not yet due; one that has come due and is waiting for a
   scheduler is no longer listed.
+
+Where timers live
+-----------------
+
+Timers are messages in the ``MICRO_SCHEDULE`` stream (limits retention, one message per
+subject, message schedules switched on), which is why scheduling a key again replaces the
+old timer and cancelling is a purge of that subject. When a timer comes due the NATS server
+publishes it onto a ``micro.due.>`` subject; the :class:`Scheduler` has a durable consumer
+there, republishes it as the application event or work-queue job, and removes the schedule
+message. See :doc:`reference` for the stream and subjects.
+
+Requirements
+------------
+
+* **nats-server 2.12 or newer.** Message scheduling does not exist before it; Micro raises
+  a clear error when it is missing rather than silently never firing.
+* A running :class:`Scheduler` somewhere, as above. The event or job targets must be defined
+  (``EventSchema`` / ``WorkQueue``, :doc:`services`).
+
+Reference
+---------
+
+.. api::
+   micro.scheduler.Timers
+   micro.scheduler.Timer
+   micro.scheduler.Scheduler
+   micro.scheduler.ensure_stream

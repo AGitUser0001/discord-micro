@@ -43,6 +43,7 @@ class Presence:
     self._renewer: asyncio.Task[None] | None = None
 
   async def start(self) -> None:
+    """Write the registration and begin renewing it."""
     self._revision = await self._table.put_with_ttl(
       self._key, self.registration, self._ttl
     )
@@ -51,12 +52,14 @@ class Presence:
     )
 
   async def update(self, metadata: dict[str, JsonValue]) -> None:
+    """Replace the registration's metadata."""
     self.registration = self.registration.model_copy(update={"metadata": metadata})
     self._revision = await self._table.put_with_ttl(
       self._key, self.registration, self._ttl
     )
 
   async def stop(self) -> None:
+    """Stop renewing and remove the registration."""
     if self._renewer is not None:
       self._renewer.cancel()
       with suppress(asyncio.CancelledError):
@@ -90,10 +93,12 @@ class Directory:
     self._task: asyncio.Task[None] | None = None
 
   async def start(self) -> None:
+    """Load the current entries and begin watching for changes."""
     self._task = asyncio.create_task(self._watch(), name="micro.directory")
     await self._synced.wait()
 
   async def close(self) -> None:
+    """Stop watching."""
     if self._task is not None:
       self._task.cancel()
       with suppress(asyncio.CancelledError):
@@ -101,6 +106,7 @@ class Directory:
       self._task = None
 
   def entries(self, kind: str | None = None) -> tuple[Registration, ...]:
+    """Live registrations, optionally only those of one `kind`."""
     values = self._entries.values()
     if kind is None:
       return tuple(values)
@@ -130,6 +136,7 @@ class Directory:
     return lambda: self._listeners.remove(callback)
 
   async def wait_for(self, predicate: Callable[[Directory], bool]) -> None:
+    """Wait until `predicate(directory)` is true, re-checking on every change."""
     async with self._changed:
       await self._changed.wait_for(lambda: predicate(self))
 

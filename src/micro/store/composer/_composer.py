@@ -72,12 +72,16 @@ class KeyBinding:
 
 @dataclass(frozen=True, slots=True)
 class FromDirective:
+  """The binding of `@from`."""
+
   entity: Entity
   expression: KeyBinding
 
 
 @dataclass(frozen=True, slots=True)
 class Entity:
+  """A stored type with its key fields."""
+
   name: str
   keys: tuple[tuple[str, ...], ...]
   fields: frozenset[str]
@@ -85,6 +89,8 @@ class Entity:
 
 @dataclass(frozen=True, slots=True)
 class MicroGraph:
+  """The GraphQL schema, compiler and executor of a store, together."""
+
   schema: GraphQLSchema
   entities: Mapping[str, Entity]
   bindings: Mapping[tuple[str, str], DirectiveBinding]
@@ -99,6 +105,7 @@ def compose_graph(
   directives: Sequence[DirectiveMetadata] = (),
   type_directives: Sequence[TypeDirectiveMetadata] = (),
 ) -> MicroGraph:
+  """Compose modules and directives into one validated GraphQL schema."""
   if not modules:
     raise GraphCompositionError("A graph needs at least one module.")
   module_ids = tuple(module.id for module in modules)

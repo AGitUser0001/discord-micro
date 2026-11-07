@@ -24,6 +24,8 @@ from ._worker import ACTIVE_KEY, DESIRED_KEY, PRESENCE_KEY, WORKER_KIND, lease_k
 
 @dataclass(frozen=True, slots=True)
 class GatewayStatus:
+  """A snapshot of the Gateway: desired and active generation and every shard lease."""
+
   desired: GatewayGeneration | None
   active: GatewayGeneration | None
   leases: dict[str, ShardLease]
@@ -41,6 +43,7 @@ class GatewayControl:
     return await self.runtime.table(subjects.GATEWAY_BUCKET, GatewayGeneration)
 
   async def status(self) -> GatewayStatus:
+    """Generations, shard leases and owners, as a `GatewayStatus`."""
     generations = await self._generations()
     desired = await generations.get(DESIRED_KEY)
     active = await generations.get(ACTIVE_KEY)
@@ -108,6 +111,7 @@ class GatewayControl:
     users: Sequence[int] | None = None,
     nonce: str | None = None,
   ) -> None:
+    """Ask the owner of the guild's shard to request members from Discord."""
     request = GuildMembersRequest(
       guild_id=guild_id,
       include_presences=include_presences,
@@ -126,12 +130,14 @@ class GatewayControl:
     self_mute: bool = False,
     self_deaf: bool = False,
   ) -> None:
+    """Ask the owner of the guild's shard to join, move or leave a voice channel."""
     update = VoiceStateUpdate(
       guild_id=guild_id, channel_id=channel_id, self_mute=self_mute, self_deaf=self_deaf
     )
     await self._send(guild_id, "voice", update)
 
   async def shard_for(self, guild_id: int) -> int:
+    """The shard id a guild belongs to in the active generation."""
     active = await (await self._generations()).get(ACTIVE_KEY)
     if active is None:
       raise RoutingError("No Gateway generation is active.")

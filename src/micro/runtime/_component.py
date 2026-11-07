@@ -44,12 +44,14 @@ class Component:
 
   @property
   def runtime(self) -> Runtime:
+    """The runtime hosting this component (raises before it starts)."""
     if self._runtime is None:
       raise RuntimeError(f"Component {self.name!r} has not started.")
     return self._runtime
 
   @property
   def accepting(self) -> bool:
+    """Whether `tracked` will still take new work (false once draining or closed)."""
     return self.phase is ComponentState.RUNNING
 
   @property
@@ -63,6 +65,7 @@ class Component:
     return self.accepting
 
   async def start(self, runtime: Runtime) -> None:
+    """Attach to a runtime, run `on_start`, and begin accepting work."""
     if self.phase is not ComponentState.CREATED:
       raise RuntimeError(f"Component {self.name!r} cannot start twice.")
     self._runtime = runtime
@@ -76,6 +79,7 @@ class Component:
     self.phase = ComponentState.RUNNING
 
   async def drain(self) -> None:
+    """Stop accepting new work, run `on_drain`, and wait for in-flight work to finish."""
     if self.phase is not ComponentState.RUNNING:
       return
     self.phase = ComponentState.DRAINING
@@ -83,6 +87,7 @@ class Component:
     await self._idle.wait()
 
   async def close(self) -> None:
+    """Close the component (draining first if needed) and cancel its background tasks."""
     if self.phase is ComponentState.CLOSED:
       return
     self.phase = ComponentState.CLOSED
@@ -92,13 +97,13 @@ class Component:
       await self._cancel_tasks()
 
   async def on_start(self) -> None:
-    pass
+    """Hook: runs once when the component starts, after `runtime` is set. Open resources and `spawn` background tasks here."""
 
   async def on_drain(self) -> None:
-    pass
+    """Hook: runs when draining begins. Stop taking new work; in-flight work is awaited afterwards."""
 
   async def on_close(self) -> None:
-    pass
+    """Hook: runs last, when the component closes. Release everything `on_start` opened."""
 
   def spawn(
     self, coroutine: Coroutine[Any, Any, Any], *, name: str
@@ -129,6 +134,7 @@ class Component:
 
   @property
   def in_flight(self) -> int:
+    """How many `tracked` units of work are running now."""
     return self._in_flight
 
   def _task_done(self, task: asyncio.Task[Any]) -> None:

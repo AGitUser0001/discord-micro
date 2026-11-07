@@ -39,7 +39,9 @@ class Route(ABC):
 
   @classmethod
   @abstractmethod
-  def load(cls, data: JsonValue) -> Self: ...
+  def load(cls, data: JsonValue) -> Self:
+    """Rebuild a route from what `dump()` returned."""
+    ...
 
 
 class PatternRoute(Route):
@@ -74,6 +76,7 @@ class PatternRoute(Route):
 
   @classmethod
   def compiled(cls, regex: re.Pattern[str], prefix: str | None = None) -> Self:
+    """The compiled regex, or None for a prefix-only route."""
     head = literal_head(regex.pattern) if prefix is None else prefix
     return cls(head, regex.pattern, regex.flags)
 
@@ -92,6 +95,7 @@ class PatternRoute(Route):
 
   @classmethod
   def load(cls, data: JsonValue) -> Self:
+    """Rebuild the route from what `dump()` returned."""
     if not isinstance(data, dict):
       raise TypeError("A pattern route is an object.")
     pattern, flags = data.get("pattern"), data.get("flags", 0)

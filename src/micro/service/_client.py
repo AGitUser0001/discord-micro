@@ -35,6 +35,7 @@ class Client:
     *,
     timeout: float | None = None,
   ) -> OutputT:
+    """Call a request and return its typed reply. Raises `RemoteError`, `RoutingError` or `RequestTimeoutError`."""
     try:
       reply = await self.runtime.request(
         request.subject,

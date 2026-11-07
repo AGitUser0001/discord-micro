@@ -103,6 +103,7 @@ class RateLimits:
     self._completed: dict[str, DiscordHTTPResponse] = {}
 
   async def acquire(self, route: str) -> None:
+    """Wait until the route's bucket and the global limit allow another request."""
     while True:
       async with self._lock:
         now = monotonic()
@@ -138,12 +139,15 @@ class RateLimits:
       return None
 
   def block_globally_until(self, wall_clock: float) -> None:
+    """Pause every route until the given wall-clock time."""
     self._global_reset = max(self._global_reset, monotonic() + wall_clock - time())
 
   def completed(self, key: str) -> DiscordHTTPResponse | None:
+    """The remembered response for an idempotency key, or None."""
     return self._completed.get(key)
 
   def complete(self, key: str, response: DiscordHTTPResponse) -> None:
+    """Remember the response to an idempotency key."""
     if len(self._completed) >= 10_000:
       self._completed.pop(next(iter(self._completed)))
     self._completed[key] = response
@@ -163,6 +167,11 @@ class HTTPEvent:
 
 
 HTTPHook = Callable[[HTTPEvent], Awaitable[None] | None]
+
+type RewriteHook = Callable[
+  [DiscordHTTPRequest], Awaitable[DiscordHTTPRequest | None] | DiscordHTTPRequest | None
+]
+"""Given a request about to run: return a changed copy, or None to leave it."""
 
 
 class DiscordHTTPWorker(Component):
@@ -201,12 +210,14 @@ class DiscordHTTPWorker(Component):
     self._slots = asyncio.Semaphore(concurrency)
     self.rate_limits = RateLimits()
     self._hooks: list[HTTPHook] = []
+    self._rewriters: list[RewriteHook] = []
     self._http: httpx2.AsyncClient | None = None
     self._subscriptions: list[Subscription] = []
     self._presence: Presence | None = None
     self.address = subjects.token(os.urandom(8).hex())
 
   async def on_start(self) -> None:
+    """Create the HTTP client and subscribe to requests and global-limit announcements."""
     import httpx2
 
     self._http = httpx2.AsyncClient(
@@ -226,12 +237,14 @@ class DiscordHTTPWorker(Component):
 
   async def on_drain(self) -> None:
     # Leave the partition first so callers re-route, then finish what arrived.
+    """Leave presence so callers re-route, then finish what arrived."""
     if self._presence is not None:
       await self.runtime.unregister(self._presence)
       self._presence = None
     await self._unsubscribe()
 
   async def on_close(self) -> None:
+    """Unsubscribe and close the HTTP client."""
     if self._presence is not None:
       await self.runtime.unregister(self._presence)
       self._presence = None
@@ -250,6 +263,34 @@ class DiscordHTTPWorker(Component):
     """
     self._hooks.append(callback)
     return lambda: self._hooks.remove(callback) if callback in self._hooks else None
+
+  def rewrite(self, callback: RewriteHook) -> Callable[[], None]:
+    """Change or refuse every request before this worker sends it.
+
+    `callback(request)` gets the `DiscordHTTPRequest` (operation, data, files,
+    reason) and returns a changed copy (`request.model_copy(update=...)`), or None
+    to leave it. Rewriters run in the order added, each seeing the previous one's
+    result, before the request is validated and before its rate-limit route is
+    chosen, so changing `operation` or the ids in `data` is safe. Raise to refuse:
+    a `ValueError` reaches the caller as `invalid_input`, anything else as
+    `handler_failed`, and nothing is sent. They run once per request, not per
+    retry, and a request answered from its idempotency key is not rewritten.
+    Local to this worker: run the same rewriters on every worker. Returns a
+    function that removes it.
+    """
+    self._rewriters.append(callback)
+    return lambda: (
+      self._rewriters.remove(callback) if callback in self._rewriters else None
+    )
+
+  async def _rewritten(self, request: DiscordHTTPRequest) -> DiscordHTTPRequest:
+    for callback in tuple(self._rewriters):
+      outcome = callback(request)
+      if inspect.isawaitable(outcome):
+        outcome = await outcome
+      if outcome is not None:
+        request = outcome
+    return request
 
   async def _notify(self, event: HTTPEvent) -> None:
     for callback in tuple(self._hooks):
@@ -299,10 +340,13 @@ class DiscordHTTPWorker(Component):
       await self.runtime.respond(message, body, headers=headers)
 
   async def execute(self, request: DiscordHTTPRequest) -> DiscordHTTPResponse:
+    """Run one request: rewrite, validate, wait for the bucket, send, observe, and retry a Discord 429."""
     if request.idempotency_key is not None:
       completed = self.rate_limits.completed(request.idempotency_key)
       if completed is not None:
         return completed
+    if self._rewriters:
+      request = await self._rewritten(request)
     operation = HTTP_OPERATIONS[request.operation]
     unknown_fields = request.data.keys() - operation.request_model.model_fields.keys()
     if unknown_fields:
@@ -445,7 +489,9 @@ class DiscordAPIError(MicroError):
     self.status = response.status
     self.response = response
     try:
-      self.body: Any = from_json(response.body) if response.body else None
+      self.body: JsonValue | str | None = (
+        from_json(response.body) if response.body else None
+      )
     except ValueError:
       self.body = response.body.decode(errors="replace")
     super().__init__(
@@ -468,9 +514,11 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
     return DiscordAPI(self)
 
   def workers(self) -> tuple[Registration, ...]:
+    """The live HTTP workers."""
     return self.runtime.directory.entries(WORKER_KIND)
 
   async def request(self, request: DiscordHTTPRequest) -> DiscordHTTPResponse:
+    """Send a validated request to the worker owning its bucket and return the raw response."""
     operation = HTTP_OPERATIONS[request.operation]
     data = operation.request_model.model_validate_json(to_json(request.data))
     key = partition_key(operation, data)
@@ -602,8 +650,10 @@ def rank_workers(key: str, workers: Sequence[Registration]) -> list[Registration
 
 
 def _multipart(
-  operation: DiscordHTTPOperation, body: Any, files: Sequence[DiscordHTTPFile]
-) -> tuple[dict[str, Any], dict[str, Any]]:
+  operation: DiscordHTTPOperation,
+  body: BaseModel | Mapping[str, object] | None,
+  files: Sequence[DiscordHTTPFile],
+) -> tuple[dict[str, str], dict[str, tuple[str, bytes] | tuple[str, bytes, str]]]:
   """The form fields and file parts of a multipart request.
 
   A message-like operation (it also takes JSON) sends everything but the files as
@@ -612,7 +662,7 @@ def _multipart(
   named after their field; `files` carry real file names and types.
   """
   mapping = _body_mapping(body, mode="python") if body is not None else {}
-  parts: dict[str, Any] = {}
+  parts: dict[str, tuple[str, bytes] | tuple[str, bytes, str]] = {}
   for item in files:
     mapping.pop(item.field, None)
     parts[item.field] = (
@@ -620,7 +670,7 @@ def _multipart(
       if item.content_type
       else (item.filename, item.data)
     )
-  fields: dict[str, Any] = {}
+  fields: dict[str, object] = {}
   for name, value in mapping.items():
     if isinstance(value, bytes):
       parts[name] = (name, value)
@@ -636,12 +686,14 @@ def _multipart(
   }, parts
 
 
-def _body_mapping(body: Any, *, mode: Literal["json", "python"]) -> dict[str, Any]:
+def _body_mapping(
+  body: BaseModel | Mapping[str, object] | None, *, mode: Literal["json", "python"]
+) -> dict[str, object]:
   if isinstance(body, BaseModel):
     # What was set, so an explicit null (clearing a topic, say) is sent as null.
     return body.model_dump(mode=mode, by_alias=True, exclude_unset=True)
-  if isinstance(body, dict):
-    return body
+  if isinstance(body, Mapping):
+    return dict(body)
   raise TypeError("Discord request bodies must be objects.")
 
 

@@ -749,15 +749,18 @@ class SQLiteGraph:
     self._parsed: dict[str, ast.StatementBlock] = {}
 
   async def start(self) -> None:
+    """Open (creating) the SQLite file."""
     await self._call(self._open)
 
   async def close(self) -> None:
+    """Close the database."""
     if self._db is not None:
       await self._call(self._db.close)
       self._db = None
     self._worker.shutdown(wait=True)
 
   async def execute(self, batch: GraphBatch) -> GraphBatchResult:
+    """Run a batch of statements in one transaction."""
     return await self._call(self._execute, batch)
 
   async def apply_layout(self, layout: GraphLayout) -> None:

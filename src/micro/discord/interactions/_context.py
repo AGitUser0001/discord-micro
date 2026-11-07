@@ -18,6 +18,8 @@ from enum import IntEnum, StrEnum
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
+from pydantic import JsonValue
+
 from micro.discord.objects import Attachment, Channel, Member, Message, Role, User
 from micro.discord.routes import (
   APPLICATION_COMMAND,
@@ -90,6 +92,7 @@ class Resolved:
 
   @classmethod
   def parse(cls, data: Mapping[str, Any] | None) -> Resolved:
+    """Build a `Resolved` from Discord's `resolved` object (None gives an empty one)."""
     data = data or {}
     raw_users = data.get("users") or {}
     users = {k: User.model_validate(v) for k, v in raw_users.items()}
@@ -221,6 +224,7 @@ class Interaction:
 
   @property
   def custom_id(self) -> str | None:
+    """The custom id of the component or modal, or None for a command."""
     return self.data.get("custom_id")
 
   @property
@@ -229,12 +233,12 @@ class Interaction:
     return self.data.get("name") if self.is_command or self.is_autocomplete else None
 
   @property
-  def option_values(self) -> dict[str, Any]:
+  def option_values(self) -> dict[str, str | int | float | bool]:
     """A command's submitted options by name (subcommand options included).
 
     Raw values: ids stay strings, see `resolved` for the entities they name.
     """
-    values: dict[str, Any] = {}
+    values: dict[str, str | int | float | bool] = {}
 
     def collect(options: Any) -> None:
       for item in options or ():
@@ -353,6 +357,7 @@ class Interaction:
     ]
 
   def roles(self, custom_id: str | None = None) -> list[Role]:
+    """The roles picked in a role or mentionable select."""
     return [
       self.resolved.roles[i]
       for i in self.choices(custom_id)
@@ -360,6 +365,7 @@ class Interaction:
     ]
 
   def channels(self, custom_id: str | None = None) -> list[Channel]:
+    """The channels picked in a channel select."""
     return [
       self.resolved.channels[i]
       for i in self.choices(custom_id)
@@ -378,14 +384,17 @@ class Interaction:
 
   @property
   def expired(self) -> bool:
+    """Whether the interaction token (valid 15 minutes) has expired."""
     return time.monotonic() - self.received >= TOKEN_LIFETIME
 
   @property
   def responded(self) -> bool:
+    """Whether an initial response has been sent."""
     return self.state is not InteractionState.NEW
 
   @property
   def deferred(self) -> bool:
+    """Whether the interaction was deferred and not yet answered."""
     return self.state in (
       InteractionState.DEFERRED_MESSAGE,
       InteractionState.DEFERRED_UPDATE,
@@ -393,18 +402,22 @@ class Interaction:
 
   @property
   def is_command(self) -> bool:
+    """True for slash, user and message commands."""
     return self.type == APPLICATION_COMMAND
 
   @property
   def is_component(self) -> bool:
+    """True for button clicks and select choices."""
     return self.type == MESSAGE_COMPONENT
 
   @property
   def is_modal(self) -> bool:
+    """True for modal submissions."""
     return self.type == MODAL_SUBMIT
 
   @property
   def is_autocomplete(self) -> bool:
+    """True for autocomplete requests."""
     return self.type == AUTOCOMPLETE
 
   # Low level: one Discord request each -----------------------------------------
@@ -484,7 +497,7 @@ class Interaction:
       if (self.is_component or self.is_modal) and self.message and not thinking:
         await self._initial(ResponseType.DEFERRED_MESSAGE_UPDATE)
       else:
-        data = {"flags": EPHEMERAL} if ephemeral else None
+        data: Json | None = {"flags": EPHEMERAL} if ephemeral else None
         await self._initial(ResponseType.DEFERRED_MESSAGE_CREATE, data)
 
   async def edit_response(
@@ -560,7 +573,7 @@ class Interaction:
       raise InvalidResponse("Suggestions only answer autocomplete interactions.")
     if len(choices) > 25:
       raise ValueError("Discord accepts at most 25 autocomplete choices.")
-    items = [
+    items: list[JsonValue] = [
       (choice if isinstance(choice, Choice) else Choice(str(choice), choice)).to_dict()
       for choice in choices
     ]

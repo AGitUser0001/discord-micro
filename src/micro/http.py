@@ -77,6 +77,7 @@ class HTTPBridge(Component):
     ]
 
   async def on_start(self) -> None:
+    """Start the web server and register the bridge's URL in presence."""
     import uvicorn
 
     config = uvicorn.Config(
@@ -92,6 +93,7 @@ class HTTPBridge(Component):
     )
 
   async def on_close(self) -> None:
+    """Stop the web server."""
     if self._server is not None:
       self._server.should_exit = True
       with suppress(Exception):
@@ -100,17 +102,21 @@ class HTTPBridge(Component):
   # Routes ----------------------------------------------------------------------
 
   async def live(self, request: Request) -> Response:
+    """`GET /health/live`: 204 while the process is up."""
     return Response(status_code=204)
 
   async def ready_probe(self, request: Request) -> Response:
+    """`GET /health/ready`: 204 once ready, else 503."""
     return Response(status_code=204 if self.runtime.ready else 503)
 
   async def components(self, request: Request) -> Response:
+    """`GET /components`: every live component."""
     return JSONResponse(
       [entry.model_dump() for entry in self.runtime.directory.entries()]
     )
 
   async def request(self, request: Request) -> Response:
+    """`POST /requests/{id}`: forward the body to a service request."""
     request_id = request.path_params["request_id"]
     try:
       subject = subjects.request(request_id)
@@ -132,6 +138,7 @@ class HTTPBridge(Component):
     return Response(reply.data, media_type="application/json")
 
   async def event(self, request: Request) -> Response:
+    """`POST /events/{id}`: publish the body as an event."""
     try:
       subject = subjects.event(request.path_params["event_id"])
     except ValueError:
@@ -142,6 +149,7 @@ class HTTPBridge(Component):
     return Response(status_code=202)
 
   async def gateway_status(self, request: Request) -> Response:
+    """`GET /gateway`: the Gateway status."""
     status = await self._gateway().status()
     return JSONResponse(
       {
@@ -153,14 +161,17 @@ class HTTPBridge(Component):
     )
 
   async def gateway_shards(self, request: Request) -> Response:
+    """`PUT /gateway/shards`: change the shard count."""
     body = await request.json()
     generation = await self._gateway().set_shard_count(int(body["count"]))
     return JSONResponse(generation.model_dump(), 202)
 
   async def gateway_roll(self, request: Request) -> Response:
+    """`POST /gateway/roll`: replace every connection."""
     return JSONResponse((await self._gateway().roll()).model_dump(), 202)
 
   async def gateway_presence(self, request: Request) -> Response:
+    """`PUT /gateway/presence`: set the bot's presence."""
     from micro.gateway import ActivityUpdate
 
     body = await request.json()

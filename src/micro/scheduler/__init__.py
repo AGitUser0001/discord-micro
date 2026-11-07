@@ -20,11 +20,13 @@ replaces it, and `cancel(key)` removes it. Times in the past fire at once.
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from nats.aio.msg import Msg
 from nats.errors import NoRespondersError
-from nats.js.api import RetentionPolicy
+from nats.js.api import RawStreamMsg, RetentionPolicy
 from nats.js.errors import NotFoundError
+from pydantic import JsonValue
 from pydantic_core import from_json, to_json
 
 from micro import subjects
@@ -49,10 +51,11 @@ class Timer:
   """`event` or `job`."""
   target: str
   """The event id or work queue it will go to."""
-  payload: Any
+  payload: JsonValue
 
 
 async def ensure_stream(runtime: Runtime) -> None:
+  """Create the scheduling stream (`MICRO_SCHEDULE`) if needed."""
   await runtime.ensure_stream(
     subjects.SCHEDULE_STREAM,
     subjects.SCHEDULE_SUBJECTS,
@@ -152,6 +155,7 @@ class Timers:
     return True
 
   async def get(self, key: str) -> Timer | None:
+    """The pending timer with this key, or None."""
     await self._ensure()
     try:
       message = await self.runtime.jetstream.get_last_msg(
@@ -179,9 +183,9 @@ class Timers:
     return sorted(found, key=lambda timer: timer.at)
 
 
-def _timer(message: Any) -> Timer:
-  body = from_json(message.data)
-  stamp = message.headers[SCHEDULE_HEADER].removeprefix("@at ").strip()
+def _timer(message: RawStreamMsg) -> Timer:
+  body = from_json(message.data or b"{}")
+  stamp = (message.headers or {})[SCHEDULE_HEADER].removeprefix("@at ").strip()
   return Timer(
     key=body["key"],
     at=datetime.fromisoformat(stamp),
@@ -204,6 +208,7 @@ class Scheduler(Component):
     self._consumer: StreamConsumer | None = None
 
   async def on_start(self) -> None:
+    """Create the consumer for due timers."""
     await ensure_stream(self.runtime)
     self._consumer = StreamConsumer(
       self,
@@ -217,9 +222,11 @@ class Scheduler(Component):
     await self._consumer.start()
 
   async def on_drain(self) -> None:
+    """Stop taking due timers."""
     await self._stop()
 
   async def on_close(self) -> None:
+    """Stop the consumer."""
     await self._stop()
 
   async def _stop(self) -> None:
@@ -227,7 +234,7 @@ class Scheduler(Component):
     if consumer is not None:
       await consumer.stop()
 
-  async def _deliver(self, message: Any) -> None:
+  async def _deliver(self, message: Msg) -> None:
     js = self.runtime.jetstream
     sequence = message.metadata.sequence.stream
     body = from_json(message.data)

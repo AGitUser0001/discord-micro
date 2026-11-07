@@ -144,6 +144,8 @@ class Service(Component):
     self,
     request: RequestSchema[InputT, OutputT],
   ) -> Callable[[RequestHandler[InputT, OutputT]], RequestHandler[InputT, OutputT]]:
+    """Register the handler for a request schema. Exactly one replica answers each call."""
+
     def register(
       handler: RequestHandler[InputT, OutputT],
     ) -> RequestHandler[InputT, OutputT]:
@@ -161,6 +163,8 @@ class Service(Component):
   def work[T](
     self, queue: WorkQueue[T]
   ) -> Callable[[EventHandler[T]], EventHandler[T]]:
+    """Register a worker for a queue. Each job goes to exactly one worker."""
+
     def register(handler: EventHandler[T]) -> EventHandler[T]:
       self._declaring("Work handlers")
       if queue.name in self._work:
@@ -180,7 +184,9 @@ class Service(Component):
   @overload
   def use(self, scope: str, /) -> Callable[[Middleware], Middleware]: ...
 
-  def use(self, scope: Middleware | str, function: Middleware | None = None, /) -> Any:
+  def use(
+    self, scope: Middleware | str, function: Middleware | None = None, /
+  ) -> Middleware | Callable[[Middleware], Middleware]:
     """Add middleware around every request, event and job handler.
 
     `fn(call, next[, end])`; see `Call`. `use("scope", fn)` limits it to a
@@ -221,6 +227,7 @@ class Service(Component):
 
   @property
   def client(self) -> Client:
+    """A `Client` bound to this service's runtime."""
     if self._client is None:
       raise RuntimeError(f"Service {self.name!r} has not started.")
     return self._client
@@ -262,6 +269,7 @@ class Service(Component):
   # Lifecycle -------------------------------------------------------------------
 
   async def on_start(self) -> None:
+    """Hook: runs once when the component starts."""
     runtime = self.runtime
     self._client = Client(runtime)
     for request_id, (schema, handler) in self._requests.items():
@@ -308,9 +316,11 @@ class Service(Component):
     self._report_conflicts()
 
   async def on_drain(self) -> None:
+    """Hook: runs when draining begins."""
     await self._stop_sources()
 
   async def on_close(self) -> None:
+    """Hook: runs when the component closes."""
     await self._stop_sources()
 
   async def _stop_sources(self) -> None:

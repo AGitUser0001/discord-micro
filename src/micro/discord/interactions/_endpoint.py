@@ -65,6 +65,7 @@ class InteractionEndpoint(Component):
     self._server: Any = None
 
   async def on_start(self) -> None:
+    """Start the web server and register this endpoint's URL in presence."""
     import uvicorn
     from starlette.applications import Starlette
     from starlette.routing import Route
@@ -83,12 +84,14 @@ class InteractionEndpoint(Component):
     )
 
   async def on_close(self) -> None:
+    """Stop the web server."""
     if self._server is not None:
       self._server.should_exit = True
       with suppress(Exception):
         await self._server.shutdown()
 
   def verified(self, signature: str | None, timestamp: str | None, body: bytes) -> bool:
+    """Whether `signature` is a valid Ed25519 signature of `timestamp + body` for the public key."""
     if not signature or not timestamp:
       return False
     try:
@@ -97,6 +100,7 @@ class InteractionEndpoint(Component):
       return False
 
   async def receive(self, request: Any) -> Any:
+    """Handle one POST from Discord: verify, publish, and wait for the first response."""
     from starlette.responses import JSONResponse, Response
 
     body = await request.body()

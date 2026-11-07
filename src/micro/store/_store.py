@@ -77,6 +77,8 @@ def _validated(text: str) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class GraphResult:
+  """The result of one statement."""
+
   rows: tuple[Mapping[str, JsonValue], ...]
 
 
@@ -93,6 +95,8 @@ class GraphBatch:
 
 @dataclass(frozen=True, slots=True)
 class GraphBatchResult:
+  """The results of a batch of statements."""
+
   results: tuple[GraphResult, ...]
 
   def __post_init__(self) -> None:
@@ -136,6 +140,8 @@ class GraphBackendError(GraphQLError, BackendExecutionError):
 
 @dataclass(frozen=True, slots=True)
 class GraphQLRequest:
+  """A GraphQL request: query, variables, operation name."""
+
   schema: GraphQLSchema
   document: DocumentNode
   operation: OperationDefinitionNode
@@ -145,6 +151,8 @@ class GraphQLRequest:
 
 @dataclass(frozen=True, slots=True)
 class CompiledOperation:
+  """A GraphQL operation compiled into storage statements."""
+
   batch: GraphBatch
   shape: ResultShaper
 
@@ -159,13 +167,21 @@ class _UnavailableCompiler:
 
 
 class GraphExecutor(Protocol):
-  async def start(self) -> None: ...
+  async def start(self) -> None:
+    """Open the backend. Must be called before use."""
+    ...
 
-  async def execute(self, batch: GraphBatch) -> GraphBatchResult: ...
+  async def execute(self, batch: GraphBatch) -> GraphBatchResult:
+    """Run a batch of compiled statements atomically."""
+    ...
 
-  async def apply_layout(self, layout: GraphLayout) -> None: ...
+  async def apply_layout(self, layout: GraphLayout) -> None:
+    """Evolve the physical storage to hold a new layout (additively)."""
+    ...
 
-  async def close(self) -> None: ...
+  async def close(self) -> None:
+    """Release the backend."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,22 +217,27 @@ class GraphEngine:
 
   @property
   def available(self) -> bool:
+    """Whether a schema has composed successfully."""
     return self._available
 
   @property
   def active_modules(self) -> tuple[str, ...]:
+    """Ids of the modules in the composed schema."""
     return self._composition.module_ids
 
   @property
   def revision(self) -> int:
+    """Counts schema changes; grows each time modules are applied."""
     return self._revision
 
   @property
   def composition_error(self) -> str | None:
+    """Why the last module set did not compose, or None."""
     return self._error
 
   @property
   def schema(self) -> GraphQLSchema:
+    """The composed GraphQL schema."""
     return self._composition.schema
 
   async def apply_modules(self, modules: Sequence[GraphModule]) -> None:
@@ -330,6 +351,7 @@ class GraphEngine:
     return {"data": data}
 
   def print_schema(self) -> str:
+    """The composed schema as GraphQL SDL."""
     return print_schema(self._composition.schema)
 
 

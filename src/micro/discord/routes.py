@@ -26,14 +26,17 @@ def route_token(value: str) -> str:
 
 
 def command_route(command_type: int, name: str) -> str:
+  """The route of a command: `cmd.<type>.<name>`."""
   return f"cmd.{command_type}.{route_token(name)}"
 
 
 def component_route(prefix: str) -> str:
+  """The route of components whose custom id starts with `prefix`: `cmp.<prefix>`."""
   return f"cmp.{route_token(prefix)}"
 
 
 def modal_route(prefix: str) -> str:
+  """The route of modals whose custom id starts with `prefix`: `mdl.<prefix>`."""
   return f"mdl.{route_token(prefix)}"
 
 
@@ -64,4 +67,5 @@ def interaction_route(payload: Mapping[str, Any]) -> str | None:
 
 
 def interaction_subject(route: str) -> str:
+  """The NATS subject interactions of a route are queued on."""
   return subjects.interaction(route)
