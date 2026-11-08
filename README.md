@@ -1,3 +1,5 @@
+![Banner for Micro](./banner.png)
+
 # Micro
 
 Discord bots (and other applications) built from independently replaceable
