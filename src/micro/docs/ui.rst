@@ -94,6 +94,125 @@ Open it with ``ctx.modal(...)`` and read the submission as described in :doc:`re
 Checking a message
 ------------------
 
+**Every component counts, and every count has a limit.** Components keep their own counts and
+**accumulate** the ones inside them as they are built, the way discord.py does:
+
+.. code-block:: python
+
+   box = Container(TextDisplay("hi"), ActionRow(Button("Go", custom_id="go")))
+   box.components_count     # 4: the container, the text, the row, the button
+   box.text_count           # 2: characters of Text Display content inside it
+   box.measures             # every count with its limit, from Discord's own models
+
+* ``components_count`` (this component and everything inside it) and ``text_count`` (characters
+  of Text Display content inside it) are attributes set when it is constructed, summed from its
+  children. Nothing re-walks JSON.
+* ``measures`` lists each count with its limit as :class:`Measure` objects (``name``, ``count``,
+  ``limit``, ``minimum``, ``ok``): a row's children (5), a section's texts (3), a gallery's items
+  (10), a Text Display's content (4000), a button's label (80), a label's text (45) and
+  description (100), a text input's value (4000) and placeholder (100), custom IDs (100),
+  select options (25), and so on. The limits are read from Discord's generated request models,
+  so they cannot drift from what Discord enforces.
+* A message has two limits of its own, totals over everything nested: **40 components**
+  (:data:`MAX_COMPONENTS`) and **4000 characters of Text Display content** (:data:`MAX_TEXT`).
+  :func:`message_measures` gives them for a list of components.
+
+**Reading capacities (for chunking).** Every component, and every component *class*, also has
+three plain numbers that say how much fits, so code that splits content into rows and messages
+can read them instead of hard-coding Discord's limits:
+
+* ``count``: how much of its main dimension it holds;
+* ``max``: that dimension's limit (``None`` when it has none), readable on the class too, as in
+  ``ActionRow.max``; ``remaining`` is ``max - count``;
+* ``slots``: what it costs inside its parent's ``count``. It is 1, except that **a select takes
+  a whole action row (5)**, so a row's ``count`` is the sum of its items' ``slots``, not how
+  many items it has, and a select plus a button is 6 of 5.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 38 14 24
+
+   * - Component
+     - ``count`` is
+     - ``max``
+     - ``slots``
+   * - ``ActionRow``
+     - slots used by its items
+     - 5
+     - 1
+   * - ``Button``
+     - characters of its label
+     - 80
+     - 1
+   * - ``StringSelect``
+     - options
+     - 25
+     - **5**
+   * - ``UserSelect``, ``RoleSelect``, ``MentionableSelect``, ``ChannelSelect``
+     - default values
+     - 25
+     - **5**
+   * - ``Section``
+     - texts
+     - 3
+     - 1
+   * - ``TextDisplay``
+     - characters of content
+     - 4000
+     - 1
+   * - ``Thumbnail``
+     - characters of description
+     - 1024
+     - 1
+   * - ``MediaGallery``
+     - items
+     - 10
+     - 1
+   * - ``Container``
+     - components in it, in all (itself included)
+     - 40
+     - 1
+   * - ``TextInput``
+     - characters of its value
+     - 4000
+     - 1
+   * - ``Label``
+     - characters of its label
+     - 45
+     - 1
+   * - ``RadioGroup``, ``CheckboxGroup``
+     - options
+     - 10
+     - 1
+   * - ``Modal``
+     - components
+     - 5
+     - 1
+   * - ``File``, ``Separator``, ``Checkbox``, ``FileUpload``
+     - 0
+     - none
+     - 1
+
+What an item costs in a *message* is its ``components_count`` (a row of four buttons is 5), against
+:data:`MAX_COMPONENTS` and, for text, ``text_count`` against :data:`MAX_TEXT`. A chunker can pack
+a row without sending anything:
+
+.. code-block:: python
+
+   row = ActionRow()
+   for item in items:                       # buttons and selects
+     if item.slots > row.remaining:         # a select needs the whole row
+       rows.append(row)
+       row = ActionRow()
+     row = ActionRow(*row.components, item)
+
+**Checking is serialization middleware.** :func:`check_limits` is registered by default on
+``hooks.serialize``: when a component is serialized it raises ``ValueError`` naming every count
+that is out of bounds (``ActionRow: components is 6; Discord allows 5.``). Building a component
+never fails, so you can assemble and then fix. The message-wide totals are checked when a message
+is assembled (``ctx.respond``, ``channel.send``, the API methods) and by :func:`validate`.
+``hooks.remove(check_limits)`` turns it off, for sending what Discord might one day accept.
+
 :func:`validate` checks components against Discord's own generated request models, limits
 included, and raises ``pydantic.ValidationError``. :func:`message_body` is what
 ``ctx.respond`` and the API use to assemble content, embeds, components and flags into a
@@ -184,6 +303,12 @@ Reference
    micro.discord.ui.is_v2
    micro.discord.ui.message_body
    micro.discord.ui.validate
+   micro.discord.ui.Measure
+   micro.discord.ui.message_measures
+   micro.discord.ui.enforce
+   micro.discord.ui.check_limits
+   micro.discord.ui.MAX_COMPONENTS
+   micro.discord.ui.MAX_TEXT
    micro.discord.ui.Hooks
    micro.discord.ui.Construction
    micro.discord.ui.BuildMiddleware

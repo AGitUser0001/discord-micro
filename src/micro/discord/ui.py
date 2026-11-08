@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import JsonValue
 
@@ -200,10 +200,181 @@ class _Hooked(type):
       namespace["to_dict"] = to_dict
     return super().__new__(mcs, name, bases, namespace)
 
+  @property
+  def max(cls) -> int | None:
+    """What this kind of component can hold in its main dimension (read it on the class)."""
+    return _primary_max(cls)
+
   def __call__(cls, *args: Any, **kwargs: Any) -> Any:
     if not hooks._build or _building.get():  # pyright: ignore[reportPrivateUsage]
-      return super().__call__(*args, **kwargs)
-    return hooks.run_build(cls, args, kwargs)
+      built = super().__call__(*args, **kwargs)
+    else:
+      built = hooks.run_build(cls, args, kwargs)
+    if isinstance(built, _Measured):
+      built._accumulate()  # pyright: ignore[reportPrivateUsage]
+    return built
+
+
+# Counts and limits -------------------------------------------------------------------
+#
+# Every component knows how much it holds: its own fields (a label's length, how many
+# children a row has) and, accumulated up from its children as it is built, how many
+# components and how many characters of text are inside it in all. Each count has the
+# limit Discord gives it. Nothing is recomputed by walking JSON, and checking the limits
+# is serialization middleware (`check_limits`), not part of building.
+
+MAX_COMPONENTS = 40
+"""Components in one message, counting every nested one."""
+MAX_TEXT = 4000
+"""Characters of Text Display content in one message, in all."""
+
+
+@dataclass(frozen=True, slots=True)
+class Measure:
+  """One count with its limit: `Measure("content", 5200, limit=4000)` is over."""
+
+  name: str
+  count: int
+  limit: int | None = None
+  minimum: int = 0
+
+  @property
+  def ok(self) -> bool:
+    """Whether the count is within `minimum` and `limit`."""
+    return self.minimum <= self.count and (
+      self.limit is None or self.count <= self.limit
+    )
+
+  def __str__(self) -> str:
+    if self.count < self.minimum:
+      return f"{self.name} is {self.count}; Discord needs at least {self.minimum}"
+    return f"{self.name} is {self.count}; Discord allows {self.limit}"
+
+
+def enforce(measures: Iterable[Measure], subject: str) -> None:
+  """Raise ValueError naming every measure that is out of bounds."""
+  broken = [str(m) for m in measures if not m.ok]
+  if broken:
+    raise ValueError(f"{subject}: {'; '.join(broken)}.")
+
+
+def _tally(item: Any) -> tuple[int, int]:
+  """`(components, text characters)` of anything that can sit in a message."""
+  if isinstance(item, _Measured):
+    return item.components_count, item.text_count
+  if isinstance(item, str):  # a Section's plain-text shorthand is a Text Display
+    return 1, len(item)
+  if isinstance(item, Mapping):
+    components, text = (
+      1,
+      len(item.get("content") or "") if item.get("type") == 10 else 0,
+    )
+    for child in item.get("components") or ():
+      more, characters = _tally(child)
+      components, text = components + more, text + characters
+    if item.get("accessory"):
+      more, characters = _tally(item["accessory"])
+      components, text = components + more, text + characters
+    return components, text
+  return 1, 0
+
+
+def message_measures(components: Sequence[Any] | Any) -> tuple[Measure, ...]:
+  """A message's totals against Discord's two message-wide limits."""
+  items = components if isinstance(components, list | tuple) else [components]
+  components_in_all = text_in_all = 0
+  for item in items:
+    more, characters = _tally(item)
+    components_in_all, text_in_all = components_in_all + more, text_in_all + characters
+  return (
+    Measure("components in all", components_in_all, MAX_COMPONENTS),
+    Measure("text in all", text_in_all, MAX_TEXT),
+  )
+
+
+class _Measured(metaclass=_Hooked):
+  """Base of every component: its counts, accumulated as it is constructed."""
+
+  __slots__ = ("components_count", "text_count")
+  components_count: int
+  """This component and everything inside it."""
+  text_count: int
+  """Characters of Text Display content inside it, in all."""
+  slots: ClassVar[int] = 1
+  """What it costs inside its parent's `count`: 1, but a select takes a whole row (5)."""
+
+  @property
+  def count(self) -> int:
+    """How much of its main dimension it holds (see `max`): an action row's slots used,
+    a section's texts, a gallery's items, a text's characters, a container's components."""
+    return _PRIMARY[type(self)][0](self)
+
+  @property
+  def max(self) -> int | None:
+    """The limit of `count` (None when it has no main dimension)."""
+    return _primary_max(type(self))
+
+  @property
+  def remaining(self) -> int | None:
+    """`max - count`: how much more fits (None when unbounded)."""
+    return None if self.max is None else self.max - self.count
+
+  def _children(self) -> Iterable[Any]:
+    return ()
+
+  def _text(self) -> int:
+    return 0
+
+  def _counts(self) -> Mapping[str, int]:
+    """This component's own counts, by Discord's field name."""
+    return {}
+
+  def _accumulate(self) -> None:
+    components, text = 1, self._text()
+    for child in self._children():
+      more, characters = _tally(child)
+      components, text = components + more, text + characters
+    object.__setattr__(self, "components_count", components)
+    object.__setattr__(self, "text_count", text)
+
+  @property
+  def measures(self) -> tuple[Measure, ...]:
+    """Every count this component has, with its limit (from Discord's own models)."""
+    limits = _limits_of(type(self))
+    found = [
+      Measure(
+        "slots" if isinstance(self, ActionRow) and name == "components" else name,
+        count,
+        limits.get(name, (0, None))[1],
+        limits.get(name, (0, None))[0],
+      )
+      for name, count in self._counts().items()
+    ]
+    found.append(Measure("components in all", self.components_count, MAX_COMPONENTS))
+    found.append(Measure("text in all", self.text_count, MAX_TEXT))
+    return tuple(found)
+
+
+def _slots(item: Any) -> int:
+  """How many slots of an action row a child takes (a select takes all five)."""
+  if isinstance(item, Mapping):
+    return 5 if item.get("type") in (3, 5, 6, 7, 8) else 1
+  return getattr(item, "slots", 1)
+
+
+def _lengths(**fields: Any) -> dict[str, int]:
+  """`len()` of each field that is set."""
+  return {name: len(value) for name, value in fields.items() if value is not None}
+
+
+def check_limits(component: Any, next: Callable[[], Json]) -> Json:
+  """Serialization middleware (registered by default): refuse a component over a limit.
+
+  Remove it with `hooks.remove(check_limits)` to send what Discord would reject.
+  """
+  if isinstance(component, _Measured):
+    enforce(component.measures, type(component).__name__)
+  return next()
 
 
 def _put(data: Json, **items: JsonValue) -> Json:
@@ -336,7 +507,7 @@ type ButtonStyle = Literal[
 
 
 @dataclass(frozen=True, slots=True)
-class Button(metaclass=_Hooked):
+class Button(_Measured):
   """A button: `custom_id` (an interaction), `url` (a link), or `sku_id` (premium)."""
 
   label: str | None = None
@@ -447,7 +618,7 @@ def _select(
 
 
 @dataclass(frozen=True, slots=True)
-class StringSelect(metaclass=_Hooked):
+class StringSelect(_Measured):
   """A menu of string options; options may be plain strings or `SelectOption`s."""
 
   custom_id: str
@@ -476,7 +647,7 @@ Select = StringSelect
 
 
 @dataclass(frozen=True, slots=True)
-class UserSelect(metaclass=_Hooked):
+class UserSelect(_Measured):
   """A menu of users."""
 
   custom_id: str
@@ -498,7 +669,7 @@ class UserSelect(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class RoleSelect(metaclass=_Hooked):
+class RoleSelect(_Measured):
   """A menu of server roles."""
 
   custom_id: str
@@ -520,7 +691,7 @@ class RoleSelect(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class MentionableSelect(metaclass=_Hooked):
+class MentionableSelect(_Measured):
   """Users and roles together; `defaults` are `Default.user(id)` / `Default.role(id)`."""
 
   custom_id: str
@@ -542,7 +713,7 @@ class MentionableSelect(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class ChannelSelect(metaclass=_Hooked):
+class ChannelSelect(_Measured):
   """Channels; `channel_types` limits them: `"text"`, `"voice"`, `"category"`, ..."""
 
   custom_id: str
@@ -574,7 +745,7 @@ type Component = Button | Select_
 
 
 @dataclass(frozen=True, slots=True)
-class ActionRow(metaclass=_Hooked):
+class ActionRow(_Measured):
   """Up to five buttons, or one select."""
 
   components: Sequence[Component]
@@ -595,7 +766,7 @@ class ActionRow(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class TextDisplay(metaclass=_Hooked):
+class TextDisplay(_Measured):
   """Markdown text. Counts toward the message's 4000 characters of text in total."""
 
   content: str
@@ -607,7 +778,7 @@ class TextDisplay(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class Thumbnail(metaclass=_Hooked):
+class Thumbnail(_Measured):
   """A small image beside text: only as a `Section` accessory."""
 
   url: str
@@ -622,7 +793,7 @@ class Thumbnail(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class Section(metaclass=_Hooked):
+class Section(_Measured):
   """One to three texts with a `Button` or `Thumbnail` beside them."""
 
   texts: Sequence[TextDisplay | str]
@@ -665,7 +836,7 @@ class MediaItem(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class MediaGallery(metaclass=_Hooked):
+class MediaGallery(_Measured):
   """Up to ten pictures or videos."""
 
   items: Sequence[MediaItem | str]
@@ -682,7 +853,7 @@ class MediaGallery(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class File(metaclass=_Hooked):
+class File(_Measured):
   """An uploaded file shown in the message; `url` is `attachment://name`."""
 
   url: str
@@ -700,7 +871,7 @@ class File(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class Separator(metaclass=_Hooked):
+class Separator(_Measured):
   """Space between components, with an optional dividing line."""
 
   divider: bool = True
@@ -718,7 +889,7 @@ class Separator(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class Container(metaclass=_Hooked):
+class Container(_Measured):
   """A bordered box of components with an optional accent colour."""
 
   components: Sequence[Any]
@@ -803,7 +974,7 @@ def is_v2(components: Sequence[Any] | None) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class TextInput(metaclass=_Hooked):
+class TextInput(_Measured):
   """A text field. In a `Label`, leave `label` out; bare in a `Modal`, it needs one."""
 
   custom_id: str
@@ -857,7 +1028,7 @@ def _group(options: Sequence[GroupOption | str]) -> list[JsonValue]:
 
 
 @dataclass(frozen=True, slots=True)
-class RadioGroup(metaclass=_Hooked):
+class RadioGroup(_Measured):
   """Pick exactly one of two to ten options."""
 
   custom_id: str
@@ -876,7 +1047,7 @@ class RadioGroup(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class CheckboxGroup(metaclass=_Hooked):
+class CheckboxGroup(_Measured):
   """Pick any of up to ten options (`min_values`, `max_values` limit how many)."""
 
   custom_id: str
@@ -903,7 +1074,7 @@ class CheckboxGroup(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class Checkbox(metaclass=_Hooked):
+class Checkbox(_Measured):
   """A single yes/no box."""
 
   custom_id: str
@@ -918,7 +1089,7 @@ class Checkbox(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class FileUpload(metaclass=_Hooked):
+class FileUpload(_Measured):
   """Ask for files; read them with `ctx.attachments` after the submission."""
 
   custom_id: str
@@ -947,7 +1118,7 @@ type ModalInput = (
 
 
 @dataclass(frozen=True, slots=True)
-class Label(metaclass=_Hooked):
+class Label(_Measured):
   """A titled field of a modal: wraps one input and gives it a label and a hint."""
 
   label: str
@@ -966,7 +1137,7 @@ class Label(metaclass=_Hooked):
 
 
 @dataclass(frozen=True, slots=True)
-class Modal(metaclass=_Hooked):
+class Modal(_Measured):
   """A pop-up form of up to five `Label`s and `TextDisplay`s.
 
   A bare `TextInput` (with a label) is still accepted and sent in the older way.
@@ -1030,7 +1201,8 @@ def message_body(
   if embeds:
     body["embeds"] = list(embeds)
   if components is not None:
-    body["components"] = rows(components)
+    body["components"] = laid_out = rows(components)
+    enforce(message_measures(laid_out), "This message")
   if ephemeral:
     flags |= EPHEMERAL
   if flags:
@@ -1086,6 +1258,8 @@ def validate(components: Sequence[Any] | Any, *, modal: bool = False) -> None:
   items: Sequence[Any] = (
     components if isinstance(components, list | tuple) else [components]
   )
+  if not modal:
+    enforce(message_measures(items), "This message")
   for item in items:
     payload: Mapping[str, Any] = item if isinstance(item, Mapping) else item.to_dict()
     name = table.get(payload.get("type", -1))
@@ -1098,3 +1272,173 @@ def validate(components: Sequence[Any] | Any, *, modal: bool = False) -> None:
         f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in error.errors()[:3]
       )
       raise ValueError(f"{name}: {problems}") from error
+
+
+# What each component counts ------------------------------------------------------------
+#
+# For every component: the components inside it (`children`), the Text Display characters
+# it holds itself (`text`), and its own counts by Discord's field name (`counts`). The
+# limits are not repeated here: they are read from Discord's generated request models,
+# so they cannot drift from what Discord enforces.
+
+_COUNTED: dict[type, dict[str, Callable[[Any], Any]]] = {
+  ActionRow: {
+    "children": lambda c: c.components,
+    "counts": lambda c: {"components": sum(_slots(i) for i in c.components)},
+  },
+  Button: {"counts": lambda c: _lengths(label=c.label, custom_id=c.custom_id)},
+  StringSelect: {
+    "counts": lambda c: _lengths(
+      custom_id=c.custom_id, options=c.options, placeholder=c.placeholder
+    )
+  },
+  UserSelect: {
+    "counts": lambda c: _lengths(
+      custom_id=c.custom_id, placeholder=c.placeholder, default_values=c.defaults
+    )
+  },
+  RoleSelect: {
+    "counts": lambda c: _lengths(
+      custom_id=c.custom_id, placeholder=c.placeholder, default_values=c.defaults
+    )
+  },
+  MentionableSelect: {
+    "counts": lambda c: _lengths(
+      custom_id=c.custom_id, placeholder=c.placeholder, default_values=c.defaults
+    )
+  },
+  ChannelSelect: {
+    "counts": lambda c: _lengths(
+      custom_id=c.custom_id, placeholder=c.placeholder, default_values=c.defaults
+    )
+  },
+  TextDisplay: {
+    "text": lambda c: len(c.content),
+    "counts": lambda c: {"content": len(c.content)},
+  },
+  Thumbnail: {"counts": lambda c: _lengths(description=c.description)},
+  Section: {
+    "children": lambda c: (*c.texts, c.accessory),
+    "counts": lambda c: {"components": len(c.texts)},
+  },
+  MediaGallery: {"counts": lambda c: {"items": len(c.items)}},
+  Container: {
+    "children": lambda c: c.components,
+    "counts": lambda c: {"components": len(c.components)},
+  },
+  TextInput: {
+    "counts": lambda c: _lengths(
+      custom_id=c.custom_id, label=c.label, value=c.value, placeholder=c.placeholder
+    )
+  },
+  Label: {
+    "children": lambda c: (c.component,),
+    "counts": lambda c: _lengths(label=c.label, description=c.description),
+  },
+  FileUpload: {"counts": lambda c: _lengths(custom_id=c.custom_id)},
+  RadioGroup: {"counts": lambda c: _lengths(custom_id=c.custom_id, options=c.options)},
+  CheckboxGroup: {
+    "counts": lambda c: _lengths(custom_id=c.custom_id, options=c.options)
+  },
+  Checkbox: {"counts": lambda c: _lengths(custom_id=c.custom_id)},
+  Modal: {
+    "children": lambda c: c.components,
+    "counts": lambda c: {
+      "title": len(c.title),
+      "custom_id": len(c.custom_id),
+      "components": len(c.components),
+    },
+  },
+}
+for _cls, _how in _COUNTED.items():
+  for _name, _function in _how.items():
+    setattr(_cls, f"_{_name}", lambda self, _f=_function: _f(self))
+
+# The main dimension of each component: (what it holds, which limit bounds it). The limit
+# is a field of Discord's model, or a number. This is `count` and `max`.
+_PRIMARY: dict[type, tuple[Callable[[Any], int], str | int | None]] = {
+  ActionRow: (lambda c: sum(_slots(i) for i in c.components), "components"),
+  Button: (lambda c: len(c.label or ""), "label"),
+  StringSelect: (lambda c: len(c.options), "options"),
+  UserSelect: (lambda c: len(c.defaults or ()), "default_values"),
+  RoleSelect: (lambda c: len(c.defaults or ()), "default_values"),
+  MentionableSelect: (lambda c: len(c.defaults or ()), "default_values"),
+  ChannelSelect: (lambda c: len(c.defaults or ()), "default_values"),
+  TextDisplay: (lambda c: len(c.content), "content"),
+  Thumbnail: (lambda c: len(c.description or ""), "description"),
+  Section: (lambda c: len(c.texts), "components"),
+  MediaGallery: (lambda c: len(c.items), "items"),
+  File: (lambda c: 0, None),
+  Separator: (lambda c: 0, None),
+  Container: (lambda c: c.components_count, MAX_COMPONENTS),
+  TextInput: (lambda c: len(c.value or ""), "value"),
+  Label: (lambda c: len(c.label), "label"),
+  FileUpload: (lambda c: 0, None),
+  RadioGroup: (lambda c: len(c.options), "options"),
+  CheckboxGroup: (lambda c: len(c.options), "options"),
+  Checkbox: (lambda c: 0, None),
+  Modal: (lambda c: len(c.components), "components"),
+}
+for _wide in (StringSelect, UserSelect, RoleSelect, MentionableSelect, ChannelSelect):
+  _wide.slots = 5
+
+
+def _primary_max(cls: type) -> int | None:
+  entry = _PRIMARY.get(cls)
+  if entry is None or entry[1] is None:
+    return None
+  if isinstance(entry[1], int):
+    return entry[1]
+  return _limits_of(cls).get(entry[1], (0, None))[1]
+
+
+_TYPE_CODES: dict[type, int] = {
+  ActionRow: 1, Button: 2, StringSelect: 3, TextInput: 4, UserSelect: 5,
+  RoleSelect: 6, MentionableSelect: 7, ChannelSelect: 8, Section: 9, TextDisplay: 10,
+  Thumbnail: 11, MediaGallery: 12, File: 13, Separator: 14, Container: 17, Label: 18,
+  FileUpload: 19, RadioGroup: 21, CheckboxGroup: 22, Checkbox: 23,
+}  # fmt: skip
+_NOT_IN_A_MODEL: dict[type, dict[str, tuple[int, int | None]]] = {
+  Modal: {"title": (1, 45), "custom_id": (1, 100), "components": (1, 5)}
+}
+_limit_cache: dict[type, dict[str, tuple[int, int | None]]] = {}
+
+
+def _limits_of(cls: type) -> dict[str, tuple[int, int | None]]:
+  """`{field: (minimum, maximum)}` for a component, from Discord's generated models."""
+  if cls in _NOT_IN_A_MODEL:
+    return _NOT_IN_A_MODEL[cls]
+  if cls not in _limit_cache:
+    import typing
+
+    import annotated_types
+
+    from micro.discord.models import http as models
+
+    code = _TYPE_CODES[cls]
+    model = getattr(models, _MESSAGE_MODELS.get(code) or _MODAL_MODELS[code])
+    found: dict[str, tuple[int, int | None]] = {}
+    for name, info in model.model_fields.items():
+      low: Any = 0
+      high: Any = None
+      layers = [info.metadata] + [
+        getattr(arg, "__metadata__", ()) for arg in typing.get_args(info.annotation)
+      ]
+      for layer in layers:
+        for rule in layer:
+          if isinstance(rule, annotated_types.MinLen):
+            low = rule.min_length
+          elif isinstance(rule, annotated_types.MaxLen):
+            high = rule.max_length
+          elif isinstance(rule, annotated_types.Interval):
+            low = rule.ge if rule.ge is not None else low
+            high = rule.le if rule.le is not None else high
+          else:
+            low = getattr(rule, "min_length", None) or low
+            high = getattr(rule, "max_length", None) or high
+      found[name] = (int(low), None if high is None else int(high))
+    _limit_cache[cls] = found
+  return _limit_cache[cls]
+
+
+hooks.serialize(check_limits)  # the limits are checked as components are serialized

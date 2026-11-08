@@ -201,7 +201,8 @@ def _message_rules(body: dict[str, Any], fields: Mapping[str, Any]) -> None:
           "content or embeds: put the text in a TextDisplay."
         )
       body["flags"] = int(body.get("flags") or 0) | ui.IS_COMPONENTS_V2
-    body["components"] = ui.rows(components)
+    body["components"] = laid_out = ui.rows(components)
+    ui.enforce(ui.message_measures(laid_out), "This message")
   has_text = body.get("content") or body.get("embeds") or body.get("components")
   if "allowed_mentions" in fields and "allowed_mentions" not in body and has_text:
     body["allowed_mentions"] = ui.AllowedMentions.none().to_dict()

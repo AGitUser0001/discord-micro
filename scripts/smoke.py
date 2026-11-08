@@ -811,6 +811,147 @@ async def ui_hooks_scenarios() -> None:
   )
 
 
+async def ui_limits_scenarios() -> None:
+  print(
+    "ui limits: counts accumulate as components are built; limits are checked on serialize"
+  )
+  from micro.discord import ui
+  from micro.discord.ui import (
+    ActionRow,
+    Button,
+    Container,
+    Label,
+    MediaGallery,
+    MediaItem,
+    Section,
+    TextDisplay,
+    TextInput,
+    Thumbnail,
+  )
+
+  def button(i: int) -> Button:
+    return Button(f"b{i}", custom_id=f"b{i}")
+
+  def box() -> Container:  # container + text + row + 4 buttons = 7
+    return Container(TextDisplay("t"), ActionRow(*[button(j) for j in range(4)]))
+
+  def refused(action: Any) -> str:
+    try:
+      action()
+    except ValueError as error:
+      return str(error)
+    return ""
+
+  check(
+    "counts accumulate up the tree as it is built",
+    box().components_count == 7 and box().text_count == 1,
+  )
+  section = Section("a", "bb", "ccc", accessory=Thumbnail("https://x/y.png"))
+  check(
+    "a section counts its texts and accessory, and their text",
+    section.components_count == 5 and section.text_count == 6,
+  )
+  check(
+    "a container sums its children's counts",
+    Container(box(), section).components_count == 13,
+  )
+  row = ActionRow(button(1), button(2), button(3))
+  select_row = ActionRow(ui.StringSelect("pick", ["a", "b"]))
+  check(
+    "a row reads count, max and remaining",
+    (row.count, row.max, row.remaining) == (3, 5, 2),
+  )
+  check(
+    "a select takes the whole row: slots 5",
+    ui.StringSelect.slots == 5 and ui.UserSelect.slots == 5 and Button.slots == 1,
+  )
+  check(
+    "so a row with a select is full", (select_row.count, select_row.remaining) == (5, 0)
+  )
+  check(
+    "and a select plus a button is 6 of 5",
+    "slots is 6"
+    in refused(lambda: ActionRow(ui.StringSelect("p", ["a"]), button(1)).to_dict()),
+  )
+  check(
+    "max is readable on the class",
+    (ActionRow.max, Section.max, ui.MediaGallery.max, TextDisplay.max, Container.max)
+    == (5, 3, 10, 4000, 40),
+  )
+  check("a component with no main dimension has max None", ui.Separator.max is None)
+  check(
+    "every component has a count and a limit",
+    all(isinstance(m, ui.Measure) for m in ActionRow(button(1)).measures)
+    and {m.name: m.limit for m in ActionRow(button(1)).measures}["slots"] == 5,
+  )
+  check(
+    "limits come from Discord's models",
+    {m.name: m.limit for m in TextDisplay("x").measures}["content"] == 4000,
+  )
+
+  error = refused(lambda: ActionRow(*[button(i) for i in range(6)]).to_dict())
+  check(
+    "six buttons in a row fail when serialized, naming the count and limit",
+    "slots is 6" in error and "allows 5" in error,
+    error,
+  )
+  check(
+    "building it does not fail: validation is serialization middleware",
+    ActionRow(*[button(i) for i in range(6)]).components_count == 7,
+  )
+  check(
+    "a gallery of eleven fails",
+    "items is 11"
+    in refused(
+      lambda: MediaGallery(
+        *[MediaItem(f"https://x/{i}.png") for i in range(11)]
+      ).to_dict()
+    ),
+  )
+  check(
+    "text over 4000 in one display fails",
+    "content is 4001" in refused(lambda: TextDisplay("x" * 4001).to_dict()),
+  )
+  check(
+    "a label over 45 characters fails",
+    "label is 46" in refused(lambda: Label("x" * 46, TextInput("t")).to_dict()),
+  )
+  check(
+    "a text input value over 4000 fails",
+    "value is 4001" in refused(lambda: TextInput("t", value="x" * 4001).to_dict()),
+  )
+  check(
+    "a container over 40 in all fails on its own",
+    "components in all is 42"
+    in refused(lambda: Container(*[TextDisplay("t") for _ in range(41)]).to_dict()),
+  )
+
+  check(
+    "five containers (35) are fine",
+    bool(ui.message_body(components=[box() for _ in range(5)])),
+  )
+  check(
+    "eight (56), each fine alone, fail as a message",
+    "components in all is 56"
+    in refused(lambda: ui.message_body(components=[box() for _ in range(8)])),
+  )
+  texts = [TextDisplay("x" * 1500) for _ in range(3)]
+  check(
+    "text adds up across the message (4500 > 4000)",
+    "text in all is 4500" in refused(lambda: ui.message_body(components=texts)),
+  )
+  check(
+    "validate() applies the same totals",
+    bool(refused(lambda: ui.validate([box() for _ in range(8)]))),
+  )
+  with ui.hooks.scoped():
+    ui.hooks.remove(ui.check_limits)
+    check(
+      "the check is middleware: remove it and it is off",
+      ActionRow(*[button(i) for i in range(6)]).to_dict()["type"] == 1,
+    )
+
+
 async def signed_ids_scenarios() -> None:
   print("signed custom ids: the middleware example from the docs, as written")
   import re
@@ -4014,6 +4155,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "gateway-config": gateway_config_scenarios,
   "docs": docs_scenarios,
   "ui-hooks": ui_hooks_scenarios,
+  "ui-limits": ui_limits_scenarios,
   "signed-ids": signed_ids_scenarios,
   "members": member_cache_scenarios,
   "endpoint": endpoint_scenarios,
