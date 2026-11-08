@@ -3,11 +3,11 @@ import logging
 import os
 import signal
 import socket
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
 
 import nats
@@ -17,10 +17,13 @@ from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 from nats.js.client import JetStreamContext
 from nats.js.errors import BadRequestError
 from nats.js.object_store import ObjectStore
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
 
 from micro import subjects
 from micro.coordination import LockHolder, Locks, Table
+
+if TYPE_CHECKING:
+  from micro.config import Config
 
 from ._component import Component, ComponentState
 from ._presence import Directory, Presence, Registration, registration_id
@@ -91,6 +94,7 @@ class Runtime:
     self._presences: dict[int, Presence] = {}
     self._started = False
     self._payloads: ObjectStore | None = None
+    self._configs: list[Config[Any]] = []
 
   @property
   def nats(self) -> NATS:
@@ -176,6 +180,9 @@ class Runtime:
       except Exception:
         logger.exception("Closing %s failed", component.name)
     self._components.clear()
+    for config in reversed(self._configs):
+      await config.close()
+    self._configs.clear()
     for presence in tuple(self._presences.values()):
       await presence.stop()
     self._presences.clear()
@@ -374,6 +381,26 @@ class Runtime:
     table = Table[T](store, value_type)
     self._tables[bucket] = table
     return table
+
+  async def config[M: BaseModel](
+    self,
+    name: str,
+    model: type[M],
+    *,
+    bootstrap: M | Callable[[], M] | None = None,
+    seed: bool = True,
+  ) -> Config[M]:
+    """Open and start a shared, typed configuration document (see `micro.config`).
+
+    It is closed with the runtime. `bootstrap` is this process's own settings: what
+    `value` returns before the first load and the document written if none exists.
+    """
+    from micro.config import Config
+
+    config = Config(self, name, model, bootstrap=bootstrap, seed=seed)
+    await config.start()
+    self._configs.append(config)
+    return config
 
   async def locks(self) -> Locks:
     """The cluster-wide `Locks` for this deployment."""

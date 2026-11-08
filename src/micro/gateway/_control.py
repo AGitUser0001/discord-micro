@@ -11,6 +11,8 @@ class GatewayGeneration(BaseModel):
 
   id: int = Field(ge=1)
   shard_count: int = Field(ge=1, le=4096)
+  intents: int | None = Field(default=None, ge=0)
+  """The Gateway intents this generation connects with; None means each worker's own."""
 
 
 class ShardLease(BaseModel):

@@ -7,7 +7,7 @@ from typing import Any
 
 from nats.js.errors import KeyWrongLastSequenceError, NotFoundError
 from nats.js.kv import KeyValue
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 _PURGE_OPERATIONS = frozenset(("DEL", "PURGE"))
 
@@ -27,6 +27,8 @@ class Change[T]:
   key: str
   value: T | None
   revision: int
+  error: ValidationError | None = None
+  """Set (with `value` None) by a `lenient` watch when the stored value is invalid."""
 
 
 class Table[T]:
@@ -183,8 +185,15 @@ class Table[T]:
       await asyncio.shield(self._discard(watcher))
     return items
 
-  async def watch(self, keys: str = ">") -> AsyncIterator[Change[T] | None]:
-    """Yield current values, then `None` once caught up, then live changes."""
+  async def watch(
+    self, keys: str = ">", *, lenient: bool = False
+  ) -> AsyncIterator[Change[T] | None]:
+    """Yield current values, then `None` once caught up, then live changes.
+
+    A stored value that does not validate raises `ValidationError` and ends the
+    watch, unless `lenient`: then it is yielded as a `Change` with `value` None and
+    `error` set, and the watch carries on.
+    """
     watcher = await self._open(keys)
     try:
       async for entry in watcher:
@@ -194,9 +203,14 @@ class Table[T]:
         if entry.operation in _PURGE_OPERATIONS or entry.value is None:
           yield Change(entry.key, None, entry.revision or 0)
         else:
-          yield Change(
-            entry.key, self._adapter.validate_json(entry.value), entry.revision or 0
-          )
+          try:
+            value = self._adapter.validate_json(entry.value)
+          except ValidationError as error:
+            if not lenient:
+              raise
+            yield Change(entry.key, None, entry.revision or 0, error)
+            continue
+          yield Change(entry.key, value, entry.revision or 0)
     finally:
       await asyncio.shield(self._discard(watcher))
 

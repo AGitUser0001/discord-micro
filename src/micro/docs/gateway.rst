@@ -57,6 +57,9 @@ Configuration
    * - ``api_url``
      - ``DISCORD_API_URL``
      - Another API with Discord's shape, such as a fake for tests.
+   * - ``networked``
+     -
+     - Follow the shared :class:`GatewaySettings` document (see below). Default false.
    * - ``name``
      -
      - Component name (default ``gateway``).
@@ -114,6 +117,17 @@ keeps serving, so reshard live:
    await control.roll()                 # new generation, same size
    status = await control.status()      # generations, shards, owners, who is ready
 
+Networked settings
+------------------
+
+``GatewayWorker(networked=True)`` follows a shared :class:`GatewaySettings` document instead of
+only its own arguments: intents, ``max_concurrency`` and ``lease_ttl`` are then changed once, for
+every worker, with ``GatewayControl.configure(...)``. The token and the NATS address stay in each
+process's environment (they are needed before NATS is reachable); the worker's other arguments and
+``DISCORD_INTENTS`` are its **bootstrap** values, used until the document is loaded and to create it
+the first time. An intents change rolls a new generation that takes over only once every shard is
+READY, so intents Discord refuses cannot take the bot offline. Details in :doc:`config`.
+
 Controlling a live connection
 -----------------------------
 
@@ -166,6 +180,7 @@ Reference
    micro.gateway.GatewayControl
    micro.gateway.GatewayStatus
    micro.gateway.GatewayGeneration
+   micro.gateway.GatewaySettings
    micro.gateway.ShardLease
    micro.gateway.ActivityUpdate
    micro.gateway.PresenceUpdate

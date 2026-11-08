@@ -11,6 +11,7 @@ from ._control import (
   VoiceStateUpdate,
 )
 from ._events import ConnectionEvent, ConnectionEventKind
+from ._settings import GatewaySettings
 from ._worker import GatewayWorker, guild_of, lease_key
 
 __all__ = (
@@ -19,6 +20,7 @@ __all__ = (
   "ConnectionEventKind",
   "GatewayControl",
   "GatewayGeneration",
+  "GatewaySettings",
   "GatewayStatus",
   "GatewayWorker",
   "GuildMembersRequest",

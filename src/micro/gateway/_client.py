@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -7,6 +7,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from pydantic import BaseModel
 
 from micro import subjects
+from micro.config import Config
 from micro.coordination import Table
 from micro.errors import RemoteError, RequestTimeoutError, RoutingError
 from micro.runtime import Registration, Runtime
@@ -19,7 +20,15 @@ from ._control import (
   ShardLease,
   VoiceStateUpdate,
 )
+from ._settings import SETTINGS_NAME, GatewaySettings
 from ._worker import ACTIVE_KEY, DESIRED_KEY, PRESENCE_KEY, WORKER_KIND, lease_key
+
+
+class _Keep:
+  """Marks "leave the intents as they are" (None already means "each worker's own")."""
+
+
+_KEEP = _Keep()
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,16 +71,76 @@ class GatewayControl:
     """Start a new generation with `shard_count` shards beside the current one."""
     return await self._new_generation(shard_count)
 
+  async def set_intents(self, intents: int | str) -> GatewayGeneration:
+    """Make the Gateway connect with these intents, as a new generation.
+
+    `intents` is a number or `DISCORD_INTENTS` text. The new generation connects beside
+    the old one and takes over only once every shard is READY, so intents Discord
+    refuses (a privileged one not switched on in the developer portal) never take the
+    bot offline: the old generation keeps serving. Idempotent: if the Gateway already
+    wants these intents nothing is written, so every worker can call it for one change.
+    """
+    if isinstance(intents, str):
+      from ._worker import parse_intents
+
+      intents = int(parse_intents(intents))
+    wanted = intents
+    return await self._new_generation(
+      None, wanted, unless=lambda generation: generation.intents == wanted
+    )
+
+  async def configure(
+    self,
+    *,
+    intents: str | int | None = None,
+    max_concurrency: int | None = None,
+    lease_ttl: float | None = None,
+  ) -> GatewaySettings:
+    """Change the shared Gateway settings that workers with `networked=True` follow.
+
+    Only the fields you pass change. Returns the stored settings. A worker applies a
+    change after its refresh middleware accepts it, so this does not wait for them.
+    """
+    from ._worker import parse_intents
+
+    fields: dict[str, object] = {}
+    if intents is not None:
+      parse_intents(str(intents))  # refuse a typo here, not in every worker
+      fields["intents"] = str(intents)
+    if max_concurrency is not None:
+      fields["max_concurrency"] = max_concurrency
+    if lease_ttl is not None:
+      fields["lease_ttl"] = lease_ttl
+    config = await self.settings()
+    return (await config.update(**fields)).value
+
+  async def settings(self) -> Config[GatewaySettings]:
+    """The shared Gateway settings document (started; closed with the runtime)."""
+    return await self.runtime.config(SETTINGS_NAME, GatewaySettings)
+
   async def roll(self) -> GatewayGeneration:
     """Replace every connection with a new generation of the same size."""
     return await self._new_generation(None)
 
-  async def _new_generation(self, shard_count: int | None) -> GatewayGeneration:
+  async def _new_generation(
+    self,
+    shard_count: int | None,
+    intents: int | None | _Keep = _KEEP,
+    *,
+    unless: Callable[[GatewayGeneration], bool] | None = None,
+  ) -> GatewayGeneration:
+    """Write the next generation; `unless(current)` true returns `current` instead."""
     generations = await self._generations()
     while True:
       current = await generations.get(DESIRED_KEY)
+      if current is not None and unless is not None and unless(current.value):
+        return current.value
       if current is None:
-        generation = GatewayGeneration(id=1, shard_count=shard_count or 1)
+        generation = GatewayGeneration(
+          id=1,
+          shard_count=shard_count or 1,
+          intents=None if isinstance(intents, _Keep) else intents,
+        )
         if await generations.create(DESIRED_KEY, generation) is not None:
           await generations.create(ACTIVE_KEY, generation)
           return generation
@@ -79,6 +148,7 @@ class GatewayControl:
       generation = GatewayGeneration(
         id=current.value.id + 1,
         shard_count=shard_count or current.value.shard_count,
+        intents=current.value.intents if isinstance(intents, _Keep) else intents,
       )
       if (
         await generations.update(DESIRED_KEY, generation, revision=current.revision)

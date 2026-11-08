@@ -30,6 +30,7 @@ from fake_discord import FakeDiscord
 from nats.js.api import StorageType
 from pydantic import BaseModel, JsonValue
 
+from micro import subjects
 from micro.discord import DiscordHTTPClient, DiscordHTTPWorker
 from micro.discord.filters import all_of, content_startswith, ignore_bots
 from micro.discord.interactions import (
@@ -158,12 +159,16 @@ class Stack:
     intents: hikari.Intents | None = None,
     first: Sequence[Any] = (),
     router: InteractionRouter | None = None,
+    gateway: dict[str, Any] | None = None,
+    extra_gateways: int = 0,
     members: dict[str, list[dict[str, Any]]] | None = None,
   ) -> None:
     self.members = members or {}
     self.app = app
     self.first = tuple(first)
     self.router = router
+    self.gateway = gateway or {}
+    self.extra_gateways = extra_gateways
     self.intents = intents
     self.guilds = guilds
     self.connection_events: list[dict[str, Any]] = []
@@ -202,7 +207,18 @@ class Stack:
     await self.runtime.add(
       *self.first,
       DiscordHTTPWorker(TOKEN, api_url=api),
-      GatewayWorker(TOKEN, api_url=api, intents=intents, shard_count=1),
+      GatewayWorker(TOKEN, api_url=api, intents=intents, shard_count=1, **self.gateway),
+      *(
+        GatewayWorker(
+          TOKEN,
+          api_url=api,
+          intents=intents,
+          shard_count=1,
+          name=f"gateway{i}",
+          **self.gateway,
+        )
+        for i in range(self.extra_gateways)
+      ),
       self.router or InteractionRouter(),
       self.sync,
       self.app.service,
@@ -870,6 +886,435 @@ async def signed_ids_scenarios() -> None:
       reply_of(calls),
     )
   hooks.remove(sys.modules["myapp.ids"].sign_custom_ids)
+
+
+async def config_scenarios() -> None:
+  print("config: typed, shared, revision-safe settings with refresh middleware")
+  from pydantic import BaseModel, ConfigDict
+
+  from micro.config import (
+    Config,
+    ConfigConflict,
+    ConfigRejected,
+    Refresh,
+  )
+
+  class Limits(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="ignore")
+    rate: int = 10
+    name: str = "default"
+
+  port = free_port()
+  binary = shutil.which("nats-server") or str(ROOT / ".venv/bin/nats-server")
+  url = f"nats://127.0.0.1:{port}"
+  with tempfile.TemporaryDirectory() as store:
+
+    async def serve() -> Any:
+      proc = await asyncio.create_subprocess_exec(
+        binary, "-js", "-p", str(port), "-sd", store,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+      )  # fmt: skip
+      await wait_listening(port)
+      return proc
+
+    server = await serve()
+    try:
+      a = Runtime(url, name="a", reconnect_time_wait=0.2)
+      b = Runtime(url, name="b", reconnect_time_wait=0.2)
+      await a.start()
+      await b.start()
+
+      before = Config(a, "limits", Limits).value
+      check(
+        "bootstrap settings are readable before anything connects",
+        before == Limits() and not Config(a, "x", Limits).loaded,
+      )
+
+      one, two = await asyncio.gather(
+        a.config("limits", Limits, bootstrap=Limits(rate=1)),
+        b.config("limits", Limits, bootstrap=Limits(rate=2)),
+      )
+      check(
+        "racing first starts create one document, and both see it",
+        one.value == two.value
+        and one.revision == two.revision
+        and one.value.rate in (1, 2),
+        (one.value, two.value),
+      )
+      first = one.revision
+      assert first is not None
+
+      # Revision-safe writes
+      stale = await one.read()
+      written = await one.update(rate=20)
+      await two.wait_for(written.revision, timeout=5)
+      check(
+        "an update reaches the other process's snapshot",
+        two.value.rate == 20 and two.revision == written.revision,
+      )
+      try:
+        await one.set(
+          stale.value.model_copy(update={"rate": 99}), revision=stale.revision
+        )
+        conflicted = False
+      except ConfigConflict:
+        conflicted = True
+      check(
+        "a write at a stale revision is refused",
+        conflicted and (await one.read()).value.rate == 20,
+      )
+      results = await asyncio.gather(
+        *(
+          one.update(lambda c: c.model_copy(update={"rate": c.rate + 1}))
+          for _ in range(5)
+        ),
+        *(
+          two.update(lambda c: c.model_copy(update={"rate": c.rate + 1}))
+          for _ in range(5)
+        ),
+      )
+      check(
+        "concurrent updates never lose one",
+        (await one.read()).value.rate == 30,
+        (await one.read()).value.rate,
+      )
+      last = max(r.revision for r in results)
+      await one.wait_for(last, timeout=5)
+      await two.wait_for(last, timeout=5)
+      check(
+        "both snapshots converge on the last revision",
+        one.value == two.value and one.revision == last,
+      )
+      same = await one.update(rate=30)
+      check("an update that changes nothing writes nothing", same.revision == last)
+      try:
+        await one.update(rate="lots")  # type: ignore[arg-type]
+        invalid_write = False
+      except Exception:
+        invalid_write = True
+      check(
+        "an invalid value is refused before it is written",
+        invalid_write and (await one.read()).revision == last,
+      )
+
+      # Middleware: order, old/new, reject
+      seen: list[Any] = []
+
+      async def record(refresh: Refresh[Limits], next: Any) -> None:
+        seen.append(
+          (refresh.old.rate, refresh.new.rate, refresh.initial, refresh.attempt)
+        )
+        await next()
+
+      async def guard(refresh: Refresh[Limits], next: Any) -> None:
+        if refresh.new.rate < 0:
+          raise refresh.reject("negative")
+        await next()
+
+      one.use(record)
+      one.use(guard)
+      issues: list[Any] = []
+      one.on_error(issues.append)
+      applied: list[Any] = []
+      one.on_change(applied.append)
+      ok = await two.update(rate=40)
+      await one.wait_for(ok.revision, timeout=5)
+      check(
+        "middleware sees the old and the incoming configuration",
+        seen == [(30, 40, False, 1)],
+        seen,
+      )
+      check(
+        "on_change fires after it applied",
+        [(x.old.rate, x.new.rate) for x in applied] == [(30, 40)],
+        applied,
+      )
+      bad = await two.update(rate=-1)
+      try:
+        await one.wait_for(bad.revision, timeout=5)
+        waited = "applied"
+      except ConfigRejected:
+        waited = "rejected"
+      check(
+        "rejected change: snapshot kept, waiter told, error reported",
+        waited == "rejected"
+        and one.value.rate == 40
+        and [i.kind for i in issues] == ["rejected"],
+        (waited, issues),
+      )
+      good = await two.update(rate=50)
+      await one.wait_for(good.revision, timeout=5)
+      check("a later good revision applies after a rejected one", one.value.rate == 50)
+
+      # Failure keeps the snapshot and retries
+      fails = {"left": 2}
+
+      async def flaky(refresh: Refresh[Limits], next: Any) -> None:
+        if refresh.new.name == "flaky" and fails["left"] > 0:
+          fails["left"] -= 1
+          raise RuntimeError("downstream is down")
+        await next()
+
+      one.use(flaky)
+      issues.clear()
+      flaky_write = await two.update(name="flaky")
+      await asyncio.sleep(0.3)
+      check(
+        "a failing refresh keeps the previous snapshot",
+        one.value.name == "default"
+        and one.revision != flaky_write.revision
+        and any(i.kind == "failed" for i in issues),
+      )
+      await one.wait_for(flaky_write.revision, timeout=10)
+      check(
+        "it is retried until it works (idempotent side effects)",
+        one.value.name == "flaky" and fails["left"] == 0,
+        fails,
+      )
+
+      # Defer
+      hold = {"on": True}
+
+      async def gate(refresh: Refresh[Limits], next: Any) -> None:
+        if refresh.new.rate == 77 and hold["on"]:
+          raise refresh.defer()
+        await next()
+
+      one.use(gate)
+      deferred = await two.update(rate=77)
+      await asyncio.sleep(0.3)
+      check("a deferred change is held back", one.value.rate != 77)
+      hold["on"] = False
+      one.retry()
+      await one.wait_for(deferred.revision, timeout=5)
+      check("retry() applies a deferred change", one.value.rate == 77)
+
+      # Latest wins while deferred
+      hold["on"] = True
+      await two.update(rate=77, name="x")
+      latest = await two.update(rate=78)
+      await one.wait_for(latest.revision, timeout=5)
+      check("a newer revision supersedes a deferred one", one.value.rate == 78)
+
+      # Invalid stored value is reported, not fatal
+      issues.clear()
+      table = await a.table(subjects.CONFIG_BUCKET, dict)
+      await table.put("limits", {"rate": "not a number"})
+      await asyncio.sleep(0.3)
+      check(
+        "an invalid stored value is reported and the snapshot kept",
+        any(i.kind == "invalid" for i in issues) and one.value.rate == 78,
+        issues,
+      )
+      recovered = await two.set(Limits(rate=5))
+      await one.wait_for(recovered.revision, timeout=5)
+      check("the next valid revision recovers", one.value.rate == 5)
+
+      # watch()
+      got: list[int] = []
+
+      async def collect() -> None:
+        async for change in one.watch():
+          got.append(change.new.rate)
+          if len(got) == 2:
+            return
+
+      watcher = asyncio.create_task(collect())
+      await asyncio.sleep(0.05)
+      await two.update(rate=6)
+      await two.update(rate=7)
+      await asyncio.wait_for(watcher, 5)
+      check("watch() yields applied changes in order", got == [6, 7], got)
+
+      # Reconnect: the server goes away and comes back
+      server.terminate()
+      await server.wait()
+      await asyncio.sleep(0.5)
+      server = await serve()
+      outage = None
+      for _ in range(60):
+        try:
+          outage = await two.update(rate=8)
+          break
+        except Exception:
+          await asyncio.sleep(0.25)
+      assert outage is not None
+      await one.wait_for(outage.revision, timeout=20)
+      check(
+        "after the server restarts, changes still arrive",
+        one.value.rate == 8 and one.revision == outage.revision,
+      )
+
+      # Persistence across process restarts
+      await b.close()
+      c = Runtime(url, name="c")
+      await c.start()
+      again = await c.config("limits", Limits, bootstrap=Limits(rate=999))
+      check(
+        "the document persists and wins over a new process's bootstrap",
+        again.value.rate == 8 and again.revision == outage.revision,
+        again.value,
+      )
+
+      # Cleanup
+      from micro.config import ConfigClosed
+
+      ended: list[str] = []
+
+      async def iterate() -> None:
+        async for _ in again.watch():
+          pass
+        ended.append("watch")
+
+      iterating = asyncio.create_task(iterate())
+      waiting = asyncio.create_task(again.wait_for(10**12))
+      await asyncio.sleep(0.05)
+      await c.close()
+      await a.close()
+      await asyncio.wait_for(iterating, 5)
+      try:
+        await asyncio.wait_for(waiting, 5)
+        closed = "returned"
+      except ConfigClosed:
+        closed = "ConfigClosed"
+      check(
+        "close() ends watch() and releases waiters",
+        ended == ["watch"] and closed == "ConfigClosed",
+        (ended, closed),
+      )
+      await asyncio.sleep(0.1)
+      check(
+        "close() leaves no config tasks running",
+        not [
+          t
+          for t in asyncio.all_tasks()
+          if "micro.config." in t.get_name() and not t.done()
+        ],
+      )
+    finally:
+      server.terminate()
+      await server.wait()
+
+
+async def gateway_config_scenarios() -> None:
+  print("gateway settings: networked intents roll a generation")
+  import hikari
+
+  from micro.gateway import GatewayControl
+
+  offline = GatewayWorker(TOKEN, intents=hikari.Intents.GUILDS, networked=True)
+  check(
+    "bootstrap settings are available before NATS connects",
+    offline.intents == hikari.Intents.GUILDS
+    and offline.settings is None
+    and offline.max_concurrency == 1,
+  )
+  async with Stack(App(), gateway={"networked": True}, extra_gateways=1) as s:
+    f = s.fake
+    control = GatewayControl(s.runtime)
+    await f.until(lambda: f.identifies >= 1, 15)
+    config = await control.settings()
+    issues: list[Any] = []
+    config.on_error(issues.append)
+    check(
+      "the first workers seed one shared document from their bootstrap",
+      config.value.intents != "" and config.revision is not None,
+      config.value,
+    )
+    first = (await control.status()).desired
+    assert first is not None
+    identified = f.identifies
+    unprivileged = hikari.Intents.ALL_UNPRIVILEGED | hikari.Intents.MESSAGE_CONTENT
+    check(
+      "connections use the intents of the settings",
+      int(list(f.sessions.values())[-1].identify["intents"]) == int(unprivileged),
+      list(f.sessions.values())[-1].identify.get("intents"),
+    )
+    wanted = "unprivileged,message_content,guild_members"
+    await control.configure(intents=wanted)
+    check(
+      "changing intents starts a new generation that identifies with them",
+      await f.until(lambda: f.identifies > identified, 20)
+      and int(list(f.sessions.values())[-1].identify["intents"])
+      == int(unprivileged | hikari.Intents.GUILD_MEMBERS),
+      [x.identify.get("intents") for x in f.sessions.values()],
+    )
+    status = await control.status()
+    check(
+      "two workers saw the change but wrote one generation",
+      status.desired is not None
+      and status.desired.id == first.id + 1
+      and status.desired.intents == int(unprivileged | hikari.Intents.GUILD_MEMBERS),
+      status.desired,
+    )
+    check(
+      "the new generation takes over once its shards are ready",
+      await _until_async(
+        lambda: control.status(),
+        lambda st: st.active is not None and st.active.id == first.id + 1,
+        20,
+      ),
+    )
+    check(
+      "every worker follows the shared document",
+      all(
+        w.intents == unprivileged | hikari.Intents.GUILD_MEMBERS
+        for w in s.runtime.components
+        if isinstance(w, GatewayWorker)
+      ),
+    )
+
+    # A nonsense value written straight to the document is refused by the workers.
+    generation = (await control.status()).desired
+    await config.update(lambda c: c.model_copy(update={"intents": "nonsense"}))
+    await asyncio.sleep(0.5)
+    check(
+      "invalid intents are rejected: no new generation, previous settings kept",
+      (await control.status()).desired == generation
+      and all(
+        w.intents == unprivileged | hikari.Intents.GUILD_MEMBERS
+        for w in s.runtime.components
+        if isinstance(w, GatewayWorker)
+      ),
+    )
+    try:
+      await control.configure(intents="nonsense")
+      refused = False
+    except ValueError:
+      refused = True
+    check("configure() refuses a typo before writing anything", refused)
+
+    # Same intents again: nothing to do.
+    await config.update(lambda c: c.model_copy(update={"intents": wanted}))
+    await asyncio.sleep(0.5)
+    check(
+      "setting the intents already in force writes no generation",
+      (await control.status()).desired == generation,
+    )
+    await control.configure(max_concurrency=2, lease_ttl=6.0)
+    ok = await _until_async(
+      lambda: asyncio.sleep(
+        0,
+        [
+          w.max_concurrency
+          for w in s.runtime.components
+          if isinstance(w, GatewayWorker)
+        ],
+      ),
+      lambda values: values == [2, 2],
+      10,
+    )
+    check("other settings apply to the running workers", ok)
+
+
+async def _until_async(read: Any, ok: Any, timeout: float) -> bool:
+  """Poll an async reader until `ok(value)`; the tests' stand-in for a watch."""
+  deadline = time.monotonic() + timeout
+  while time.monotonic() < deadline:
+    if ok(await read()):
+      return True
+    await asyncio.sleep(0.05)
+  return False
 
 
 async def sync_scenarios() -> None:
@@ -3424,6 +3869,8 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "basics": basics,
   "sync": sync_scenarios,
   "runtime-commands": runtime_command_scenarios,
+  "config": config_scenarios,
+  "gateway-config": gateway_config_scenarios,
   "docs": docs_scenarios,
   "ui-hooks": ui_hooks_scenarios,
   "signed-ids": signed_ids_scenarios,

@@ -295,6 +295,7 @@ def role(
 PUBLIC_MODULES = (
   "micro.runtime",
   "micro.coordination",
+  "micro.config",
   "micro.service",
   "micro.errors",
   "micro.scheduler",

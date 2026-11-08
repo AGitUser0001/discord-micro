@@ -54,6 +54,9 @@ PAYLOADS_BUCKET = "micro_payloads"
 STATE_BUCKET = "micro_state"
 """Small durable coordination values without a TTL, such as definition hashes."""
 
+CONFIG_BUCKET = "micro_config"
+"""Typed configuration documents, one key per `Config` (see micro.config)."""
+
 HTTP_GLOBAL_LIMIT = "micro.ratelimit.discord.global"
 """Core NATS broadcast announcing a Discord global rate limit."""
 
@@ -162,6 +165,7 @@ def safe_name(name: str) -> str:
 
 
 __all__ = (
+  "CONFIG_BUCKET",
   "EVENTS_STREAM",
   "EVENT_STREAM_SUBJECTS",
   "GATEWAY_BUCKET",

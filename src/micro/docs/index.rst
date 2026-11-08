@@ -34,6 +34,7 @@ like :class:`Service` or :meth:`Service.listen` link to their reference entries.
 
    runtime
    coordination
+   config
    services
    middleware
    scheduler

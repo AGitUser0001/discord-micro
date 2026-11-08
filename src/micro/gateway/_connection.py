@@ -17,6 +17,10 @@ class ShardHost(Protocol):
   intents: hikari.Intents
   api_url: str | None
 
+  def intents_for(self, generation: int) -> hikari.Intents:
+    """The intents a generation's connections use."""
+    ...
+
   async def on_dispatch(
     self, session: ShardSession, name: str, payload: Mapping[str, Any]
   ) -> None:
@@ -83,7 +87,7 @@ class HikariShard:
         return
       bot = hikari.GatewayBot(
         self.host.token,
-        intents=self.host.intents,
+        intents=self.host.intents_for(self.generation),
         cache_settings=hikari.impl.CacheSettings(
           components=hikari.api.CacheComponents.NONE
         ),
@@ -209,7 +213,7 @@ class HikariShard:
     import hikari
 
     if (
-      not self.host.intents & hikari.Intents.GUILD_MEMBERS
+      not self.host.intents_for(self.generation) & hikari.Intents.GUILD_MEMBERS
       or not isinstance(guild_id, str)
       or not guild_id.isdecimal()
       or guild_id in self._chunked
@@ -219,7 +223,9 @@ class HikariShard:
     # The shard itself: the bot's shard count is not known yet during READY.
     await shard.request_guild_members(
       int(guild_id),
-      include_presences=bool(self.host.intents & hikari.Intents.GUILD_PRESENCES),
+      include_presences=bool(
+        self.host.intents_for(self.generation) & hikari.Intents.GUILD_PRESENCES
+      ),
       query="",
       limit=0,
       nonce=f"micro:{guild_id}",
