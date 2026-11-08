@@ -214,10 +214,13 @@ class Configure:
           if change.value is None:
             doc.value, doc.revision = None, None
           else:
+            elsewhere = (
+              doc.revision is not None
+              and doc.revision != change.revision
+              and self._saved.get(change.key) != change.revision
+            )
             doc.value, doc.revision = change.value, change.revision
-            if (
-              self._saved.get(change.key) != change.revision and change.key in self.docs
-            ):
+            if elsewhere:
               self.message = (
                 "info",
                 f"{change.key} was changed elsewhere (revision {change.revision})",
@@ -350,6 +353,8 @@ class Configure:
 
   async def handle(self, key: str) -> bool:
     """React to one key; False means quit."""
+    if key in {"ctrl-c", "ctrl-d"} and self.input is None:
+      return False
     if key == "ctrl-c":
       return False
     if self.input is not None:
@@ -378,7 +383,7 @@ class Configure:
     return True
 
   async def _tables(self, key: str) -> bool:
-    if key in {"q", "esc"}:
+    if key in {"q", "ctrl-d"}:
       return False
     if key in {"up", "k"}:
       self.table_cursor = max(self.table_cursor - 1, 0)
