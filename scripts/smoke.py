@@ -694,6 +694,90 @@ async def docs_scenarios() -> None:
   check("every documented object has a description", not bare, bare[:10])
 
 
+async def ui_hooks_scenarios() -> None:
+  print("ui hooks: middleware around building and serializing components")
+  from micro.discord.ui import (
+    ActionRow,
+    Button,
+    Container,
+    Label,
+    Modal,
+    StringSelect,
+    TextInput,
+    hooks,
+  )
+
+  with hooks.scoped():
+    order: list[str] = []
+
+    @hooks.build(only=Button)
+    def secondary(call: Any, next: Any) -> Any:
+      order.append("build")
+      call.kwargs.setdefault("style", "secondary")
+      return next()
+
+    @hooks.serialize
+    def outer(component: Any, next: Any) -> Any:
+      order.append("outer")
+      data = next()
+      if "custom_id" in data:
+        data["custom_id"] = "o." + data["custom_id"]
+      return data
+
+    @hooks.serialize
+    def inner(component: Any, next: Any) -> Any:
+      data = next()
+      if "custom_id" in data:
+        data["custom_id"] += ".i"
+      return data
+
+    button = Button("Go", custom_id="go")
+    check(
+      "build middleware changes the arguments",
+      button.style == "secondary" and order == ["build"],
+      button,
+    )
+    check(
+      "serialize middleware nests, first added outermost",
+      button.to_dict()["custom_id"] == "o.go.i",
+      button.to_dict(),
+    )
+    tree = Container(
+      ActionRow(Button("x", custom_id="x"), StringSelect("pick", ["a"]))
+    ).to_dict()
+    ids = [c["custom_id"] for row in tree["components"] for c in row["components"]]
+    check("nested components are intercepted too", ids == ["o.x.i", "o.pick.i"], ids)
+    modal = Modal("form", "T", [Label("L", TextInput("t"))]).to_dict()
+    check(
+      "a modal and its inputs are intercepted",
+      modal["custom_id"] == "o.form.i" and "o.t.i" in str(modal),
+      modal,
+    )
+
+    @hooks.build(only=Button)
+    def replace(call: Any, next: Any) -> Any:
+      return Button("replaced", custom_id="r")
+
+    check(
+      "build middleware can return a different component",
+      Button("a", custom_id="b").label == "replaced",
+    )
+    hooks.remove(replace)
+    hooks.remove(outer)
+    check(
+      "remove() unregisters middleware",
+      Button("a", custom_id="b").to_dict()["custom_id"] == "b.i",
+    )
+    check(
+      "only= limits which components it sees",
+      StringSelect("p", ["a"]).to_dict()["custom_id"] == "p.i",
+    )
+  check(
+    "scoped() restores the registered middleware",
+    not hooks.active and Button("a", custom_id="b").to_dict()["custom_id"] == "b",
+  )
+
+
 async def signed_ids_scenarios() -> None:
   print("signed custom ids: the middleware example from the docs, as written")
   import re
@@ -709,7 +793,7 @@ async def signed_ids_scenarios() -> None:
   }
   check(
     "the docs give the signing module and the router",
-    set(files) >= {"myapp/signing.py", "myapp/router.py"},
+    set(files) >= {"myapp/signing.py", "myapp/router.py", "myapp/ids.py"},
     list(files),
   )
   os.environ["CUSTOM_ID_SECRET"] = "s3cret"
@@ -719,13 +803,15 @@ async def signed_ids_scenarios() -> None:
   package = types.ModuleType("myapp")
   package.__path__ = []  # type: ignore[attr-defined]
   sys.modules["myapp"] = package
-  for name in ("signing", "router"):
+  for name in ("signing", "router", "ids"):
     module = types.ModuleType(f"myapp.{name}")
     module.__package__ = "myapp"
     sys.modules[f"myapp.{name}"] = module
     exec(  # noqa: S102
       compile(files[f"myapp/{name}.py"], f"myapp/{name}.py", "exec"), module.__dict__
     )
+  from micro.discord.ui import hooks
+
   signing, built = sys.modules["myapp.signing"], sys.modules["myapp.router"]
   async with Stack(App(), router=built.router) as s:
     f = s.fake
@@ -752,7 +838,26 @@ async def signed_ids_scenarios() -> None:
       "no longer valid" in reply_of(calls)[1].get("content", ""),
     )
     calls = await s.interact(f.slash("hello"))
-    check("commands pass through untouched", reply_of(calls)[0] == 4)
+    kind, data = reply_of(calls)
+    check("commands pass through untouched", kind == 4)
+    buttons = [
+      c for row in data.get("components", []) for c in row.get("components", [])
+    ]
+    sent = buttons[0]["custom_id"] if buttons else ""
+    check(
+      "the serialize hook signed the button the service sent as a plain id",
+      "~" in sent
+      and signing.verify(sent) is not None
+      and signing.verify(sent).startswith("smoke.wave:"),
+      sent,
+    )
+    calls = await s.interact(f.component(sent))
+    check(
+      "clicking that signed button reaches the handler",
+      "waves at" in reply_of(calls)[1].get("content", ""),
+      reply_of(calls),
+    )
+  hooks.remove(sys.modules["myapp.ids"].sign_custom_ids)
 
 
 async def sync_scenarios() -> None:
@@ -3300,6 +3405,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "sync": sync_scenarios,
   "runtime-commands": runtime_command_scenarios,
   "docs": docs_scenarios,
+  "ui-hooks": ui_hooks_scenarios,
   "signed-ids": signed_ids_scenarios,
   "members": member_cache_scenarios,
   "endpoint": endpoint_scenarios,

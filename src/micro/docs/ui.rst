@@ -99,6 +99,55 @@ included, and raises ``pydantic.ValidationError``. :func:`message_body` is what
 ``ctx.respond`` and the API use to assemble content, embeds, components and flags into a
 body (it enforces the v2 rule above); :func:`is_v2` and :func:`rows` are its parts.
 
+Intercepting construction and serialization
+-------------------------------------------
+
+A rule that applies to *every* component (sign every custom ID, prefix them, forbid a
+style, stamp a tracking field) belongs in one place, not at every call site. ``hooks``
+runs **middleware** around the two moments a component has: building it (``Button(...)``)
+and serializing it (``component.to_dict()``, which a message or modal also calls on its
+children).
+
+.. code-block:: python
+
+   from micro.discord.ui import Button, hooks
+
+   @hooks.build(only=Button)                 # construction: change the arguments, or the result
+   def default_style(call, next):
+     call.kwargs.setdefault("style", "secondary")
+     return next()
+
+   @hooks.serialize                          # serialization: change the JSON
+   def tag(component, next):
+     data = next()
+     if "custom_id" in data:
+       data["custom_id"] = "v2." + data["custom_id"]
+     return data
+
+   Button("Go", custom_id="go").to_dict()    # secondary style, custom_id "v2.go"
+
+* **Build middleware** gets a :class:`Construction` (``cls``, ``args``, ``kwargs``, all
+  changeable) and ``next``; calling ``next()`` builds the component (running the rest of the
+  chain) and you return it, or return a different component instead.
+* **Serialize middleware** gets the component and ``next``; ``next()`` is its JSON, which you
+  return, changed or replaced.
+* They nest in the order registered, first added outermost, like all Micro middleware
+  (:doc:`middleware`), but are **synchronous**, because builders are.
+* A component that build middleware constructs *itself* is built without the build chain
+  (so replacing a button cannot recurse into the middleware that replaced it).
+* ``only=Button`` (or a tuple of classes, subclasses included) limits one to those components.
+* Nested components are covered: a ``Container`` of an ``ActionRow`` of ``Button``\ s runs
+  the serialize middleware for each. **Plain dict components bypass both**, as they are
+  already JSON.
+* ``hooks.remove(fn)`` unregisters either kind; ``with hooks.scoped():`` restores the
+  registered middleware on exit, for tests.
+* The hooks are process-wide, so register them once at startup (an import in every
+  process that sends components). With none registered, building and serializing cost
+  nothing extra.
+
+The motivating use is signing custom IDs without touching each call site, shown in full in
+:doc:`middleware`.
+
 Reference
 ---------
 
@@ -135,3 +184,7 @@ Reference
    micro.discord.ui.is_v2
    micro.discord.ui.message_body
    micro.discord.ui.validate
+   micro.discord.ui.Hooks
+   micro.discord.ui.Construction
+   micro.discord.ui.BuildMiddleware
+   micro.discord.ui.SerializeMiddleware

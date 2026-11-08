@@ -17,7 +17,9 @@ a plain dict.
 """
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -55,6 +57,155 @@ _CHANNEL_TYPES = {
 }
 
 
+# Interception ----------------------------------------------------------------------
+#
+# Middleware around building and serializing components, so a rule (sign every custom
+# id, prefix them, forbid a style, add a tracking field) lives in one place instead of
+# at every call site. Synchronous, because builders are.
+
+type Only = type | tuple[type, ...] | None
+
+
+@dataclass(slots=True)
+class Construction:
+  """A component about to be built: change `args` / `kwargs` before calling `next()`."""
+
+  cls: type
+  args: tuple[Any, ...]
+  kwargs: dict[str, Any]
+
+
+type BuildMiddleware = Callable[[Construction, Callable[[], Any]], Any]
+"""`fn(call, next)`: return `next()` (the component), or a different one."""
+type SerializeMiddleware = Callable[[Any, Callable[[], Json]], Json]
+"""`fn(component, next)`: return `next()` (its JSON), changed or replaced."""
+
+
+class Hooks:
+  """The middleware that wraps component construction and serialization.
+
+  Builders are frozen dataclasses; `Button(...)` runs the *build* middleware and
+  `component.to_dict()` the *serialize* middleware (also when a message or modal
+  serializes its children). Middleware nests in registration order: the first added is
+  outermost. `only=` limits one to a component class (or a tuple of them, subclasses
+  included). Raw dict components are plain JSON and bypass both.
+
+      @hooks.serialize
+      def sign_ids(component, next):
+        data = next()
+        if "custom_id" in data:
+          data["custom_id"] = sign(data["custom_id"])
+        return data
+  """
+
+  def __init__(self) -> None:
+    self._build: list[tuple[BuildMiddleware, Only]] = []
+    self._serialize: list[tuple[SerializeMiddleware, Only]] = []
+
+  def build(self, function: BuildMiddleware | None = None, *, only: Only = None) -> Any:
+    """Register construction middleware (a decorator, with or without `only=`)."""
+    return self._add(self._build, function, only)
+
+  def serialize(
+    self, function: SerializeMiddleware | None = None, *, only: Only = None
+  ) -> Any:
+    """Register serialization middleware (a decorator, with or without `only=`)."""
+    return self._add(self._serialize, function, only)
+
+  def remove(self, function: Callable[..., Any]) -> bool:
+    """Unregister a middleware of either kind; True if it was registered."""
+    found = False
+    for registry in (self._build, self._serialize):
+      kept = [entry for entry in registry if entry[0] is not function]
+      found = found or len(kept) != len(registry)
+      registry[:] = kept
+    return found
+
+  @contextmanager
+  def scoped(self) -> Iterator[Hooks]:
+    """Restore the registered middleware on exit (for tests and one-off rules)."""
+    saved = list(self._build), list(self._serialize)
+    try:
+      yield self
+    finally:
+      self._build[:], self._serialize[:] = saved
+
+  def _add(self, registry: list[Any], function: Any, only: Only) -> Any:
+    def register(function: Any) -> Any:
+      registry.append((function, only))
+      return function
+
+    return register if function is None else register(function)
+
+  def run_build(self, cls: type, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    """Build `cls` through the build middleware. Components that middleware builds
+    itself skip the build chain, so a middleware cannot recurse into itself."""
+    chain = [fn for fn, only in self._build if _applies(only, cls)]
+    call = Construction(cls, args, kwargs)
+
+    def at(index: int) -> Any:
+      if index == len(chain):
+        return type.__call__(cls, *call.args, **call.kwargs)
+      return chain[index](call, lambda: at(index + 1))
+
+    token = _building.set(True)
+    try:
+      return at(0)
+    finally:
+      _building.reset(token)
+
+  def run_serialize(self, component: Any, original: Callable[[Any], Json]) -> Json:
+    """Serialize `component` through the serialize middleware."""
+    chain = [fn for fn, only in self._serialize if _applies(only, type(component))]
+
+    def at(index: int) -> Json:
+      if index == len(chain):
+        return original(component)
+      return chain[index](component, lambda: at(index + 1))
+
+    return at(0)
+
+  @property
+  def active(self) -> bool:
+    """Whether any middleware is registered."""
+    return bool(self._build or self._serialize)
+
+
+def _applies(only: Only, cls: type) -> bool:
+  return only is None or issubclass(cls, only)
+
+
+_building: ContextVar[bool] = ContextVar("micro_ui_building", default=False)
+
+hooks = Hooks()
+"""The process-wide hooks every builder in this module runs."""
+
+
+class _Hooked(type):
+  """Metaclass of the builders: runs the build and serialize middleware."""
+
+  def __new__(
+    mcs, name: str, bases: tuple[type, ...], namespace: dict[str, Any]
+  ) -> Any:
+    original = namespace.get("to_dict")
+    if original is not None and not getattr(original, "_hooked", False):
+
+      def to_dict(self: Any, _original: Callable[[Any], Json] = original) -> Json:
+        if not hooks._serialize:  # pyright: ignore[reportPrivateUsage]
+          return _original(self)
+        return hooks.run_serialize(self, _original)
+
+      to_dict._hooked = True  # type: ignore[attr-defined]
+      to_dict.__doc__ = original.__doc__
+      namespace["to_dict"] = to_dict
+    return super().__new__(mcs, name, bases, namespace)
+
+  def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+    if not hooks._build or _building.get():  # pyright: ignore[reportPrivateUsage]
+      return super().__call__(*args, **kwargs)
+    return hooks.run_build(cls, args, kwargs)
+
+
 def _put(data: Json, **items: JsonValue) -> Json:
   """Add the items that are not None."""
   for key, item in items.items():
@@ -67,7 +218,7 @@ def _put(data: Json, **items: JsonValue) -> Json:
 
 
 @dataclass(frozen=True, slots=True)
-class AllowedMentions:
+class AllowedMentions(metaclass=_Hooked):
   """Which mentions in a message may ping. Micro defaults to `none()`."""
 
   parse: tuple[Literal["users", "roles", "everyone"], ...] = ()
@@ -151,7 +302,7 @@ _CUSTOM_EMOJI = re.compile(r"<(a?):(\w{2,32}):(\d+)>")
 
 
 @dataclass(frozen=True, slots=True)
-class Emoji:
+class Emoji(metaclass=_Hooked):
   """A unicode emoji (`Emoji("🙂")`) or a custom one (`Emoji("name", 123456)`)."""
 
   name: str
@@ -185,7 +336,7 @@ type ButtonStyle = Literal[
 
 
 @dataclass(frozen=True, slots=True)
-class Button:
+class Button(metaclass=_Hooked):
   """A button: `custom_id` (an interaction), `url` (a link), or `sku_id` (premium)."""
 
   label: str | None = None
@@ -216,7 +367,7 @@ class Button:
 
 
 @dataclass(frozen=True, slots=True)
-class SelectOption:
+class SelectOption(metaclass=_Hooked):
   """One option of a string select."""
 
   label: str
@@ -232,7 +383,7 @@ class SelectOption:
 
 
 @dataclass(frozen=True, slots=True)
-class Default:
+class Default(metaclass=_Hooked):
   """A preselected entry of a user, role, mentionable or channel select."""
 
   type: Literal["user", "role", "channel"]
@@ -296,7 +447,7 @@ def _select(
 
 
 @dataclass(frozen=True, slots=True)
-class StringSelect:
+class StringSelect(metaclass=_Hooked):
   """A menu of string options; options may be plain strings or `SelectOption`s."""
 
   custom_id: str
@@ -325,7 +476,7 @@ Select = StringSelect
 
 
 @dataclass(frozen=True, slots=True)
-class UserSelect:
+class UserSelect(metaclass=_Hooked):
   """A menu of users."""
 
   custom_id: str
@@ -347,7 +498,7 @@ class UserSelect:
 
 
 @dataclass(frozen=True, slots=True)
-class RoleSelect:
+class RoleSelect(metaclass=_Hooked):
   """A menu of server roles."""
 
   custom_id: str
@@ -369,7 +520,7 @@ class RoleSelect:
 
 
 @dataclass(frozen=True, slots=True)
-class MentionableSelect:
+class MentionableSelect(metaclass=_Hooked):
   """Users and roles together; `defaults` are `Default.user(id)` / `Default.role(id)`."""
 
   custom_id: str
@@ -391,7 +542,7 @@ class MentionableSelect:
 
 
 @dataclass(frozen=True, slots=True)
-class ChannelSelect:
+class ChannelSelect(metaclass=_Hooked):
   """Channels; `channel_types` limits them: `"text"`, `"voice"`, `"category"`, ..."""
 
   custom_id: str
@@ -423,7 +574,7 @@ type Component = Button | Select_
 
 
 @dataclass(frozen=True, slots=True)
-class ActionRow:
+class ActionRow(metaclass=_Hooked):
   """Up to five buttons, or one select."""
 
   components: Sequence[Component]
@@ -444,7 +595,7 @@ class ActionRow:
 
 
 @dataclass(frozen=True, slots=True)
-class TextDisplay:
+class TextDisplay(metaclass=_Hooked):
   """Markdown text. Counts toward the message's 4000 characters of text in total."""
 
   content: str
@@ -456,7 +607,7 @@ class TextDisplay:
 
 
 @dataclass(frozen=True, slots=True)
-class Thumbnail:
+class Thumbnail(metaclass=_Hooked):
   """A small image beside text: only as a `Section` accessory."""
 
   url: str
@@ -471,7 +622,7 @@ class Thumbnail:
 
 
 @dataclass(frozen=True, slots=True)
-class Section:
+class Section(metaclass=_Hooked):
   """One to three texts with a `Button` or `Thumbnail` beside them."""
 
   texts: Sequence[TextDisplay | str]
@@ -500,7 +651,7 @@ class Section:
 
 
 @dataclass(frozen=True, slots=True)
-class MediaItem:
+class MediaItem(metaclass=_Hooked):
   """One picture or video of a `MediaGallery`: a URL or `attachment://name`."""
 
   url: str
@@ -514,7 +665,7 @@ class MediaItem:
 
 
 @dataclass(frozen=True, slots=True)
-class MediaGallery:
+class MediaGallery(metaclass=_Hooked):
   """Up to ten pictures or videos."""
 
   items: Sequence[MediaItem | str]
@@ -531,7 +682,7 @@ class MediaGallery:
 
 
 @dataclass(frozen=True, slots=True)
-class File:
+class File(metaclass=_Hooked):
   """An uploaded file shown in the message; `url` is `attachment://name`."""
 
   url: str
@@ -549,7 +700,7 @@ class File:
 
 
 @dataclass(frozen=True, slots=True)
-class Separator:
+class Separator(metaclass=_Hooked):
   """Space between components, with an optional dividing line."""
 
   divider: bool = True
@@ -567,7 +718,7 @@ class Separator:
 
 
 @dataclass(frozen=True, slots=True)
-class Container:
+class Container(metaclass=_Hooked):
   """A bordered box of components with an optional accent colour."""
 
   components: Sequence[Any]
@@ -652,7 +803,7 @@ def is_v2(components: Sequence[Any] | None) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class TextInput:
+class TextInput(metaclass=_Hooked):
   """A text field. In a `Label`, leave `label` out; bare in a `Modal`, it needs one."""
 
   custom_id: str
@@ -685,7 +836,7 @@ class TextInput:
 
 
 @dataclass(frozen=True, slots=True)
-class GroupOption:
+class GroupOption(metaclass=_Hooked):
   """An option of a `RadioGroup` or `CheckboxGroup`."""
 
   label: str
@@ -706,7 +857,7 @@ def _group(options: Sequence[GroupOption | str]) -> list[JsonValue]:
 
 
 @dataclass(frozen=True, slots=True)
-class RadioGroup:
+class RadioGroup(metaclass=_Hooked):
   """Pick exactly one of two to ten options."""
 
   custom_id: str
@@ -725,7 +876,7 @@ class RadioGroup:
 
 
 @dataclass(frozen=True, slots=True)
-class CheckboxGroup:
+class CheckboxGroup(metaclass=_Hooked):
   """Pick any of up to ten options (`min_values`, `max_values` limit how many)."""
 
   custom_id: str
@@ -752,7 +903,7 @@ class CheckboxGroup:
 
 
 @dataclass(frozen=True, slots=True)
-class Checkbox:
+class Checkbox(metaclass=_Hooked):
   """A single yes/no box."""
 
   custom_id: str
@@ -767,7 +918,7 @@ class Checkbox:
 
 
 @dataclass(frozen=True, slots=True)
-class FileUpload:
+class FileUpload(metaclass=_Hooked):
   """Ask for files; read them with `ctx.attachments` after the submission."""
 
   custom_id: str
@@ -796,7 +947,7 @@ type ModalInput = (
 
 
 @dataclass(frozen=True, slots=True)
-class Label:
+class Label(metaclass=_Hooked):
   """A titled field of a modal: wraps one input and gives it a label and a hint."""
 
   label: str
@@ -815,7 +966,7 @@ class Label:
 
 
 @dataclass(frozen=True, slots=True)
-class Modal:
+class Modal(metaclass=_Hooked):
   """A pop-up form of up to five `Label`s and `TextDisplay`s.
 
   A bare `TextInput` (with a label) is still accepted and sent in the older way.

@@ -101,19 +101,33 @@ place you sign when sending.
 
 .. code-block:: python
 
-   # in any service: sign when you send, nothing changes in the handlers
-   from myapp.signing import sign
+   # myapp/ids.py: import this once in every process that sends components
+   from micro.discord.ui import hooks
+
+   from .signing import sign
+
+   @hooks.serialize
+   def sign_custom_ids(component, next):
+     data = next()
+     if "custom_id" in data:                    # buttons, selects, modals, uploads...
+       data["custom_id"] = sign(data["custom_id"])
+     return data
+
+That is a *serialize hook* (:doc:`ui`): it runs whenever any component becomes JSON, so no
+call site changes. Services keep writing the plain id, and the handlers keep matching it:
+
+.. code-block:: python
 
    await ctx.respond("Close it?", components=[
-     Button("Close", custom_id=sign(CLOSE.encode(Ticket(id=42)))),
+     Button("Close", custom_id=CLOSE.encode(Ticket(id=42))),     # sent as ...~<mac>
    ])
 
    @components.match(CLOSE)                      # still matches plain "ticket.close:[42]"
    async def close(ctx: Interaction, ticket: Ticket) -> None: ...
 
 Notes: the signature counts toward Discord's 100-character limit (``CustomId.encode`` checks
-its own part, so leave room); every component and modal you send must then be signed, because
-the middleware refuses unsigned ids; commands and autocomplete have no ``custom_id`` and pass
+its own part, so leave room); every component and modal you send must then be signed (the hook does it, but a plain
+dict component bypasses hooks and would be refused); commands and autocomplete have no ``custom_id`` and pass
 straight through; and the secret must be the same in every process that signs or checks.
 
 Deferring
