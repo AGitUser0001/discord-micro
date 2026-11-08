@@ -135,6 +135,18 @@ def free_port() -> int:
     return sock.getsockname()[1]
 
 
+async def wait_listening(port: int) -> None:
+  """Return as soon as something accepts connections on the port."""
+  while True:
+    try:
+      _, writer = await asyncio.open_connection("127.0.0.1", port)
+    except OSError:
+      await asyncio.sleep(0.02)
+      continue
+    writer.close()
+    return
+
+
 class Stack:
   """NATS, the fake Discord, and every Micro component, wired together."""
 
@@ -173,7 +185,7 @@ class Stack:
       stdout=asyncio.subprocess.DEVNULL,
       stderr=asyncio.subprocess.DEVNULL,
     )
-    await asyncio.sleep(0.8)
+    await wait_listening(port)
     self.runtime = Runtime(
       f"nats://127.0.0.1:{port}", name="smoke", storage=StorageType.MEMORY
     )
@@ -1905,6 +1917,9 @@ class SignedRoute(Route):
 
 async def route_scenarios() -> None:
   print("routes: declared custom ID routes (template, regex, custom, legacy)")
+  from micro.runtime import _consumer as consumer_module
+
+  consumer_module._FETCH_WAIT = 0.5  # pyright: ignore[reportPrivateUsage]
   from micro.discord.interactions import PatternRoute
   from micro.discord.interactions._pattern import literal_head
 
@@ -1930,7 +1945,6 @@ async def route_scenarios() -> None:
   async with Stack(App()) as s:
     await s.runtime.add(service)
     await s.fake.until(lambda: len(s.runtime.directory.entries("service")) >= 4, 8)
-    await asyncio.sleep(0.5)
     f = s.fake
     cases = [
       ("ticket.close:42", "template", {"action": "close", "id": "42"}),
@@ -1957,7 +1971,9 @@ async def route_scenarios() -> None:
 
     slow: list[tuple[str, float]] = []
     for _ in range(2):
-      await asyncio.sleep(12)  # idle long enough for every consumer's fetch to cycle
+      # Idle for several fetch cycles (the stall this guards against follows a timed-out
+      # fetch), with the cycle shortened so that takes seconds, not a minute.
+      await asyncio.sleep(consumer_module._FETCH_WAIT * 2.4)  # pyright: ignore[reportPrivateUsage]
       for custom_id in ("ticket.close:42", "legacy:x", "ticket.close:42"):
         started = time.monotonic()
         await s.interact(f.component(custom_id))
@@ -1985,6 +2001,11 @@ async def health_scenarios() -> None:
     f = s.fake
     await f.until(lambda: "health" in s.names(), 10)
     data = await health.report(s.runtime)
+    for _ in range(100):  # two reads at two moments: retry until they describe one
+      if data["consumers"] == sum(item["consumers"] for item in data["streams"]):
+        break
+      await asyncio.sleep(0.05)
+      data = await health.report(s.runtime)
     names = [item["stream"] for item in data["streams"]]
     check("report lists the streams", "MICRO_EVENTS" in names, names)
     check(
@@ -2519,7 +2540,7 @@ async def api_scenarios() -> None:
       stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
     )  # fmt: skip
     try:
-      await asyncio.sleep(0.8)
+      await wait_listening(port)
       async with Runtime(
         f"nats://127.0.0.1:{port}", name="api", storage=StorageType.MEMORY
       ) as runtime:
@@ -2538,7 +2559,7 @@ async def api_scenarios() -> None:
         http_worker.hook(hooked.append)
         unhook = http_worker.hook(late_hook)
         await runtime.add(http_worker)
-        await asyncio.sleep(0.5)
+        await runtime.directory.wait_for(lambda d: bool(d.entries(http_worker.kind)))
         api = DiscordHTTPClient(runtime).api
 
         message = {
@@ -2990,7 +3011,6 @@ async def scheduler_scenarios() -> None:
     timers = Timers(runtime)
     scheduler = Scheduler()
     await runtime.add(scheduler)
-    await asyncio.sleep(0.5)
 
     now = time.monotonic() - started
     await timers.event("t.event", REMIND, Note(text="soon"), after=1.5)
@@ -3424,12 +3444,65 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
 
 async def main() -> int:
   wanted = sys.argv[1:]
-  for name, scenario in SCENARIOS.items():
-    if not wanted or any(item in name for item in wanted):
-      await scenario()
+  chosen = [n for n in SCENARIOS if not wanted or any(item in n for item in wanted)]
+  if len(chosen) > 1 and not os.environ.get("SMOKE_CHILD"):
+    return await main_parallel(chosen)
+  timings: list[tuple[str, float]] = []
+  for name in chosen:
+    started = time.perf_counter()
+    await SCENARIOS[name]()
+    timings.append((name, time.perf_counter() - started))
   failed = [name for name, ok in results if not ok]
   print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
   return len(failed)
+
+
+async def main_parallel(chosen: list[str]) -> int:
+  """Run each scenario in its own process, all at once.
+
+  Scenarios own their NATS server, ports and fake Discord, so they do not interact;
+  separate processes also keep the ones that edit the environment from leaking.
+  """
+  started = time.perf_counter()
+
+  async def run(name: str) -> tuple[str, int, str, float]:
+    begun = time.perf_counter()
+    proc = await asyncio.create_subprocess_exec(
+      sys.executable,
+      __file__,
+      name,
+      env={**os.environ, "SMOKE_CHILD": "1"},
+      stdout=asyncio.subprocess.PIPE,
+      stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    return (
+      name,
+      proc.returncode or 0,
+      out.decode(errors="replace"),
+      time.perf_counter() - begun,
+    )
+
+  finished = await asyncio.gather(*(run(name) for name in chosen))
+  passed = failed = 0
+  for name, code, out, _ in finished:
+    print(out, end="")
+    for line in out.splitlines():
+      if line.endswith(" failed") and " passed, " in line:
+        counts = line.split()
+        passed += int(counts[0])
+        failed += int(counts[2])
+    if code and not any(" passed, " in line for line in out.splitlines()):
+      print(f"  FAIL  scenario {name} crashed (exit {code})")
+      failed += 1
+  print(f"\n{passed} passed, {failed} failed in {time.perf_counter() - started:.0f}s")
+  print(
+    "slowest:",
+    ", ".join(
+      f"{n} {t:.0f}s" for n, _, _, t in sorted(finished, key=lambda f: -f[3])[:5]
+    ),
+  )
+  return failed
 
 
 if __name__ == "__main__":
