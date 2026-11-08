@@ -214,12 +214,11 @@ class Stack:
     await self.runtime.add(
       *self.first,
       DiscordHTTPWorker(TOKEN, api_url=api),
-      GatewayWorker(TOKEN, api_url=api, shard_count=1, **self.gateway),
+      GatewayWorker(TOKEN, api_url=api, **self.gateway),
       *(
         GatewayWorker(
           TOKEN,
           api_url=api,
-          shard_count=1,
           name=f"gateway{i}",
           **self.gateway,
         )
@@ -1162,86 +1161,92 @@ async def config_scenarios() -> None:
         again.value,
       )
 
-      # micro configure, through the real CLI
+      # micro configure: the editor's logic, driven by keys against the real table
+      from micro._configure import Configure
       from micro.gateway import GatewaySettings
 
       await a.config("gateway", GatewaySettings)
-      work = Path(tempfile.mkdtemp())
-      (work / "micro.toml").write_text(f'name = "cfg"\nnats = ["{url}"]\n')
+      ctable = await a.table(subjects.CONFIG_BUCKET, dict)
+      app = Configure(
+        ctable, {"gateway": GatewaySettings, "limits": None}, title="test"
+      )
+      await app.load()
+      check(
+        "the editor lists every stored table",
+        app.names == ["gateway", "limits"],
+        app.names,
+      )
 
-      async def configure(*words: str, editor: str | None = None) -> tuple[int, str]:
-        if editor is not None:
-          os.environ["EDITOR"] = editor
-        try:
-          return await _micro(work, "configure", *words)
-        finally:
-          os.environ.pop("EDITOR", None)
+      async def stored(name: str) -> dict[str, Any]:
+        found = await ctable.get(name)
+        assert found is not None
+        return found.value
 
-      code, out = await configure()
+      async def press(*keys: str) -> None:
+        for key in keys:
+          await app.handle(key)
+
+      async def typed(text: str) -> None:
+        await press(*text)
+
+      await press("down", "enter")  # open limits (a table with no known model)
+      await press("enter")
       check(
-        "micro configure lists the documents",
-        code == 0 and "gateway" in out and "limits" in out,
-        out,
+        "a table's fields are shown and can be opened",
+        app.focus == "fields" and [k for k, _ in app.rows()][:1] == ["rate"],
+        app.rows(),
       )
-      code, out = await configure("gateway")
+      await press("enter")
+      await typed("99")
+      await press("enter")
       check(
-        "micro configure NAME shows it",
-        code == 0 and "max_concurrency" in out and "lease_ttl" in out,
-        out,
+        "editing a field saves it against the latest revision",
+        (await stored("limits"))["rate"] == 99 and app.message[0] == "ok",
+        app.message,
       )
-      code, out = await configure("gateway", "max_concurrency=3")
+      await press("a")
+      await typed("pool=4")
+      await press("enter")
       check(
-        "KEY=VALUE changes just that field and says what changed",
-        code == 0 and "max_concurrency: 1 -> 3" in out and "revision" in out,
-        out,
+        "a table with no model accepts new keys",
+        (await stored("limits"))["pool"] == 4,
+        app.message,
       )
-      code, out = await configure("gateway", "lease_ttl=1")
+      await press("esc", "up", "enter", "down", "enter")  # gateway, then its intents
+      await typed("unprivileged,message_content")
+      await press("enter")
+      gateway_doc = await stored("gateway")
       check(
-        "a value the model refuses is not written",
-        code == 2 and "lease_ttl" in out,
-        out,
+        "gateway settings are an ordinary table",
+        gateway_doc["intents"] == "unprivileged,message_content",
+        gateway_doc,
       )
-      code, out = await configure("gateway", "max_concurency=2")
+      await press("down", "down", "enter")  # lease_ttl
+      await typed("1")
+      await press("enter")
       check(
-        "a misspelled field gets a suggestion",
-        code == 2 and "max_concurrency" in out,
-        out,
+        "a value the model refuses is shown and not written",
+        app.message[0] == "error" and (await stored("gateway"))["lease_ttl"] == 10.0,
+        app.message,
       )
-      code, out = await configure("gateway", "intents=all")
+      await press("up", "up", "up", "enter", "esc")
+      check("escape cancels an edit", app.input is None)
+      await ctable.put("limits", {"rate": 5, "pool": 4})
+      follower = asyncio.create_task(app.follow())
+      await asyncio.sleep(0.3)
+      await ctable.put("limits", {"rate": 6, "pool": 4})
+      await asyncio.sleep(0.5)
+      follower.cancel()
       check(
-        "intents point to the one way to set them",
-        code == 2 and "micro gateway intents" in out,
-        out,
+        "a change made elsewhere shows up",
+        app.docs["limits"].value == {"rate": 6, "pool": 4}
+        and "elsewhere" in app.message[1],
+        app.message,
       )
-      code, out = await configure("gateway", "max_concurrency=3")
       check(
-        "setting what is already set is unchanged",
-        code == 0 and "Unchanged" in out,
-        out,
-      )
-      code, out = await configure("gateway", "--edit", editor="sed -i s/3/4/")
-      check(
-        "--edit opens the document in $EDITOR and saves it",
-        code == 0 and "max_concurrency: 3 -> 4" in out,
-        out,
-      )
-      code, out = await configure("gateway", "--json")
-      check(
-        "--json prints the stored document",
-        code == 0 and '"max_concurrency": 4' in out,
-        out,
-      )
-      code, out = await configure("limits", "rate=77", "name=my bot")
-      check(
-        "a document with no known model is still editable, unvalidated",
-        code == 0 and "rate: 8 -> 77" in out and "name: " in out and "no model" in out,
-        out,
-      )
-      code, out = await configure("nothing")
-      check(
-        "an unknown document is a clear error",
-        code == 1 and "No configuration named" in out,
-        out,
+        "the frame fits the terminal",
+        all(len(x) < 400 for x in app.render(80, 20)[0])
+        and len(app.render(80, 20)[0]) == 20,
       )
 
       # Cleanup
@@ -1290,7 +1295,7 @@ async def gateway_config_scenarios() -> None:
 
   from micro.gateway import GatewayControl
 
-  offline = GatewayWorker(TOKEN, networked=True)
+  offline = GatewayWorker(TOKEN)
   check(
     "bootstrap settings are available before NATS connects",
     offline.settings is None
@@ -1312,9 +1317,7 @@ async def gateway_config_scenarios() -> None:
     )
 
   wide = unprivileged | hikari.Intents.MESSAGE_CONTENT
-  async with Stack(
-    App(), intents=wide, gateway={"networked": True}, extra_gateways=1
-  ) as s:
+  async with Stack(App(), intents=wide, extra_gateways=1) as s:
     f = s.fake
     control = GatewayControl(s.runtime)
     await f.until(lambda: f.identifies >= 1, 15)
@@ -1387,8 +1390,33 @@ async def gateway_config_scenarios() -> None:
     check("other settings follow the shared document", ok)
     config = await control.settings()
     check(
-      "intents are not part of the shared settings",
-      "intents" not in config.value.model_dump(),
+      "the gateway table holds every setting",
+      set(config.value.model_dump())
+      == {"shard_count", "intents", "max_concurrency", "lease_ttl", "presence"},
+      config.value,
+    )
+    # Writing the table directly (as `micro configure` does) is enough: the workers
+    # follow it and make a generation match.
+    before = (await control.status()).desired
+    assert before is not None
+    await config.update(shard_count=2)
+    check(
+      "editing the table rolls a generation with the new shard count",
+      await _until_async(
+        lambda: control.status(),
+        lambda st: (
+          st.desired is not None
+          and st.desired.id > before.id
+          and st.desired.shard_count == 2
+        ),
+        20,
+      ),
+    )
+    await control.update_presence(status="idle")
+    presence = (await config.read()).value.presence
+    check(
+      "presence is a field of the same table",
+      presence is not None and presence.status == "idle",
     )
 
 

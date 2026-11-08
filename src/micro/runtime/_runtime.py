@@ -392,11 +392,14 @@ class Runtime:
   ) -> Config[M]:
     """Open and start a shared, typed configuration document (see `micro.config`).
 
-    It is closed with the runtime. `bootstrap` is this process's own settings: what
+    Asking again for the same name and model returns the one already open. It is closed with the runtime. `bootstrap` is this process's own settings: what
     `value` returns before the first load and the document written if none exists.
     """
     from micro.config import Config
 
+    for existing in self._configs:
+      if existing.name == name and existing.model is model:
+        return existing
     config = Config(self, name, model, bootstrap=bootstrap, seed=seed)
     await config.start()
     self._configs.append(config)

@@ -91,7 +91,7 @@ CLI
    micro server start | status
    micro worker app | discord app | mybot.services.* micro.discord:DiscordHTTPWorker
 
-   micro gateway status | shards N | roll | intents [NAMES] | presence idle --activity "..."
+   micro configure [TABLE]              # edit the shared configuration (gateway settings, ...)
    micro commands list | sync | forget TYPE:NAME
 
 A command that needs the server and finds none says so at once.

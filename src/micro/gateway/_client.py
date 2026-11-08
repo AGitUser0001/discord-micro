@@ -21,7 +21,7 @@ from ._control import (
   VoiceStateUpdate,
 )
 from ._settings import SETTINGS_NAME, GatewaySettings
-from ._worker import ACTIVE_KEY, DESIRED_KEY, PRESENCE_KEY, WORKER_KIND, lease_key
+from ._worker import ACTIVE_KEY, DESIRED_KEY, WORKER_KIND, lease_key
 
 
 class _Keep:
@@ -67,57 +67,87 @@ class GatewayControl:
       self.runtime.directory.entries(WORKER_KIND),
     )
 
-  async def set_shard_count(self, shard_count: int) -> GatewayGeneration:
-    """Start a new generation with `shard_count` shards beside the current one."""
-    return await self._new_generation(shard_count)
-
-  async def set_intents(self, intents: int | str) -> GatewayGeneration:
-    """Set the Gateway intents, as a new generation. The only way to change them.
-
-    `intents` is a number or names (`"unprivileged,message_content"`; see `parse_intents`). The new generation connects beside
-    the old one and takes over only once every shard is READY, so intents Discord
-    refuses (a privileged one not switched on in the developer portal) never take the
-    bot offline: the old generation keeps serving. Idempotent: if the Gateway already
-    wants these intents nothing is written, so every worker can call it for one change.
-    """
-    if isinstance(intents, str):
-      from ._worker import parse_intents
-
-      intents = int(parse_intents(intents))
-    wanted = intents
-    return await self._new_generation(
-      None, wanted, unless=lambda generation: generation.intents == wanted
-    )
-
-  async def intents(self) -> int:
-    """The intents the Gateway connects with now (Discord's unprivileged set by default)."""
-    import hikari
-
-    desired = (await self.status()).desired
-    if desired is not None and desired.intents is not None:
-      return desired.intents
-    return int(hikari.Intents.ALL_UNPRIVILEGED)
+  async def settings(self) -> Config[GatewaySettings]:
+    """The `gateway` config table every worker follows (started; closed with the runtime)."""
+    return await self.runtime.config(SETTINGS_NAME, GatewaySettings)
 
   async def configure(
-    self, *, max_concurrency: int | None = None, lease_ttl: float | None = None
+    self,
+    *,
+    shard_count: int | None = None,
+    intents: str | int | None = None,
+    max_concurrency: int | None = None,
+    lease_ttl: float | None = None,
   ) -> GatewaySettings:
-    """Change the shared settings that workers with `networked=True` follow.
+    """Change the Gateway's settings: only the fields you pass change.
 
-    Only the fields you pass change. Returns the stored settings. A worker applies a
-    change after its refresh middleware accepts it, so this does not wait for them.
-    Intents are not a setting: they belong to the generation, see `set_intents`.
+    This writes the `gateway` config table, the one place the Gateway's settings live
+    (`micro configure` edits the same document). The workers follow it; this also makes
+    the generation match straight away, so it works with no worker running yet.
+    `intents` is a number or names (`"unprivileged,message_content"`); a typo raises
+    `ValueError` before anything is written. Returns the stored settings.
     """
     fields: dict[str, object] = {}
+    if shard_count is not None:
+      fields["shard_count"] = shard_count
+    if intents is not None:
+      from ._worker import format_intents, parse_intents
+
+      text = format_intents(intents) if isinstance(intents, int) else intents
+      parse_intents(text)  # refuse a typo here, not in every worker
+      fields["intents"] = text
     if max_concurrency is not None:
       fields["max_concurrency"] = max_concurrency
     if lease_ttl is not None:
       fields["lease_ttl"] = lease_ttl
     config = await self.settings()
-    return (await config.update(**fields)).value
+    stored = (await config.update(**fields)).value
+    if shard_count is not None or intents is not None:
+      from ._worker import parse_intents
 
-  async def settings(self) -> Config[GatewaySettings]:
-    """The shared Gateway settings document (started; closed with the runtime)."""
-    return await self.runtime.config(SETTINGS_NAME, GatewaySettings)
+      await self.ensure_generation(
+        stored.shard_count, int(parse_intents(stored.intents))
+      )
+    return stored
+
+  async def set_shard_count(self, count: int) -> GatewayGeneration:
+    """Set the shard count (in the `gateway` table) and return the generation for it."""
+    await self.configure(shard_count=count)
+    return await self._desired()
+
+  async def set_intents(self, intents: int | str) -> GatewayGeneration:
+    """Set the Gateway intents (in the `gateway` table) and return the generation for them.
+
+    The change connects as a new generation beside the old one and takes over only once
+    every shard is READY, so intents Discord refuses never take the bot offline.
+    """
+    await self.configure(intents=intents)
+    return await self._desired()
+
+  async def intents(self) -> int:
+    """The intents the Gateway connects with now."""
+    from ._worker import parse_intents
+
+    return int(parse_intents((await self.settings()).value.intents))
+
+  async def ensure_generation(
+    self, shard_count: int, intents: int
+  ) -> GatewayGeneration:
+    """Make the desired generation have this shard count and intents, if it does not.
+
+    Idempotent, so every worker (and the control client) can call it for one change.
+    """
+    return await self._new_generation(
+      shard_count,
+      intents,
+      unless=lambda g: g.shard_count == shard_count and g.intents == intents,
+    )
+
+  async def _desired(self) -> GatewayGeneration:
+    desired = (await self.status()).desired
+    if desired is None:
+      raise RoutingError("No Gateway generation exists yet.")
+    return desired
 
   async def roll(self) -> GatewayGeneration:
     """Replace every connection with a new generation of the same size."""
@@ -165,12 +195,14 @@ class GatewayControl:
     idle_since: datetime | None = None,
     afk: bool = False,
   ) -> None:
-    """Set the bot's presence on every current and future shard connection."""
+    """Set the bot's presence on every current and future shard connection.
+
+    Stored in the `presence` field of the `gateway` config table.
+    """
     update = PresenceUpdate.model_validate(
       {"status": status, "activity": activity, "idle_since": idle_since, "afk": afk}
     )
-    table = await self.runtime.table(subjects.GATEWAY_BUCKET, PresenceUpdate)
-    await table.put(PRESENCE_KEY, update)
+    await (await self.settings()).update(presence=update)
 
   async def request_guild_members(
     self,

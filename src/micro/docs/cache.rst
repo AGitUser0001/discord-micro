@@ -37,9 +37,10 @@ guilds, channels, roles, members, presences and voice states into a store, in ev
    [processes.cache]
    components = ["micro.store:Store", "micro.gateway.projection:GatewayProjection"]
 
-.. code-block:: console
+.. code-block:: python
 
-   micro gateway intents unprivileged,guild_members
+   await GatewayControl(runtime).configure(intents="unprivileged,guild_members")
+   # or: micro configure, open "gateway", and change intents
 
 * Run **one** projection replica: it applies events in order.
 * With the ``guild_members`` intent (switch on *Server Members Intent* in the developer

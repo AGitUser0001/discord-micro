@@ -131,62 +131,56 @@ has to be rebuilt the process re-reads the stored document and catches up. A del
 is reported and the snapshot is kept. ``close()`` (done by the runtime) cancels the tasks and
 ends every ``watch()`` and ``wait_for``.
 
-Networked Gateway settings
---------------------------
+The Gateway's table
+-------------------
 
-:class:`GatewayWorker` can follow a shared :class:`GatewaySettings` document: pass
-``networked=True``. Its own arguments become the bootstrap, so the token and the NATS address
-stay local; ``max_concurrency`` and ``lease_ttl`` come from the network.
+Gateway workers read the ``gateway`` table and follow it: shard count, intents, identify
+concurrency, lease TTL and presence all live there, so they are changed in one place with no
+worker argument or environment variable to disagree. See :doc:`gateway` for the fields and how
+each takes effect. Programmatically:
 
 .. code-block:: python
 
-   await GatewayWorker(networked=True)            # or in micro.toml, with the same components
-
    control = GatewayControl(runtime)
-   await control.configure(max_concurrency=2)     # only the fields you pass change
+   await control.configure(intents="unprivileged,message_content", shard_count=2)
+   await control.update_presence(status="idle")
+
+Terminal editor: ``micro configure``
+------------------------------------
+
+``micro configure`` is a full-screen editor for **every table** in the shared configuration.
 
 .. code-block:: console
 
-   micro configure gateway max_concurrency=2
+   micro configure             # all tables
+   micro configure gateway     # open one directly
 
-The Gateway **intents are not a setting**. They belong to the Gateway generation and have one
-way to be set, ``GatewayControl.set_intents`` / ``micro gateway intents`` (see :doc:`gateway`),
-so there is never a second source for them.
-
-Command line: ``micro configure``
----------------------------------
-
-``micro configure`` views and edits every shared document from the terminal.
-
-.. code-block:: console
-
-   micro configure                              # list the documents and their values
-   micro configure gateway                      # show one
-   micro configure gateway max_concurrency=2    # change just that field
-   micro configure limits rate=20 pool.size=4   # several at once; dots reach into nested objects
-   micro configure gateway --edit               # the whole document in $EDITOR
-   micro configure gateway --json               # raw JSON
-
-* **KEY=VALUE** values are read as JSON when they are (``20``, ``true``, ``[1,2]``) and as
-  text otherwise (``name=my bot``). It prints what changed (``max_concurrency: 1 -> 2``) and
-  the new revision, and writes nothing if nothing changed.
-* **Safe against concurrent edits.** A field change is applied to the latest document and
-  written only if nothing intervened (it retries on the newer one). ``--edit`` writes only if the
-  document is still at the revision you opened, and otherwise tells you to run it again.
-* **Validated** when the document's model is known: a value the model refuses is not written,
-  and a misspelled field gets a suggestion (``Did you mean max_concurrency?``). The model is
-  ``--model module:Model``, or the ``[config]`` table of ``micro.toml``, or built in for
-  ``gateway``:
+* **Left:** the tables. **Right:** the selected table's fields, with their types. Move with the
+  arrow keys (or ``j``/``k``), ``enter`` opens a table or changes a field, ``←`` goes back.
+* **Changing a field** depends on its type: booleans toggle, fixed choices (a status, an enum)
+  cycle, objects open so you can edit their fields (an unset optional object is created with its
+  defaults), and anything else opens a prompt; the first key you type replaces the current value,
+  and the value is read as JSON when it is JSON (``20``, ``true``), else as text.
+* **Safe by construction.** A write is applied to the latest stored revision and refused rather
+  than overwritten if someone changed the table meanwhile (it re-applies your edit to the newer
+  document). When the table's model is known, a value the model refuses (``lease_ttl`` below 3)
+  is shown as an error and nothing is written.
+* **Live.** Changes other processes make appear as they happen.
+* ``d`` sets a field to null, ``a`` / ``x`` add and remove keys (in tables without a model, or
+  fields that are dictionaries), ``e`` edits the whole table as JSON in ``$VISUAL``/``$EDITOR``,
+  ``c`` creates a table that does not exist yet from its model's defaults, ``r`` reloads, ``q``
+  quits.
+* **Which tables.** All tables stored in NATS appear. Models for validation and defaults come from
+  the Gateway's own settings, and from the ``[config]`` table of ``micro.toml``:
 
   .. code-block:: toml
 
      [config]
-     limits = "myapp.config:Limits"
+     limits = "myapp.config:Limits"      # name = "module:Model"
 
-  Without a known model the edit still works but is not validated here (it says so), and the
-  processes that use the document will reject a bad value in their own refresh.
-* A document that does not exist yet is an error: it is created by the first process that
-  uses it.
+  A table without a known model can still be edited; it just is not validated here (the processes
+  that use it still reject an invalid value in their own refresh).
+* Without a terminal (a pipe, CI) it prints the tables read-only instead.
 
 Reference
 ---------

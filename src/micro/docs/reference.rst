@@ -45,7 +45,7 @@ Buckets
 ==================  ===================================================================
 ``micro_presence``  ``<kind>.<id>`` → registration (TTL)
 ``micro_shards``    ``<generation>.<shard>`` → shard lease (TTL)
-``micro_gateway``   ``generation.desired``, ``generation.active``, ``presence``
+``micro_gateway``   ``generation.desired``, ``generation.active``
 ``micro_locks``     identify gates, ``commands.sync``, application locks
 ``micro_config``    one document per ``Config`` (``gateway`` ...)
 ``micro_state``     ``decl.<kind>.<hash>``, ``applied.<kind>.<key>``, ``synced.commands.<scope>``, ``rtcmd.<type>.<name>`` (runtime commands)

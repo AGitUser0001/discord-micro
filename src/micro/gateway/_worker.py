@@ -13,7 +13,7 @@ from nats.aio.subscription import Subscription
 from pydantic import BaseModel, ValidationError
 
 from micro import subjects
-from micro.config import Applied, Config
+from micro.config import Applied, Config, Refresh
 from micro.coordination import Locks, Table, Versioned
 from micro.runtime import Component, Presence
 
@@ -42,7 +42,6 @@ logger = logging.getLogger("micro")
 WORKER_KIND = "gateway"
 DESIRED_KEY = "generation.desired"
 ACTIVE_KEY = "generation.active"
-PRESENCE_KEY = "presence"
 
 type SessionFactory = Callable[[ShardHost, int, int, int], ShardSession]
 
@@ -93,6 +92,13 @@ def guild_of(name: str, payload: Mapping[str, Any]) -> str | None:
   ):
     guild = payload.get("id")
   return guild if isinstance(guild, str) and guild.isdecimal() else None
+
+
+def _intents_or_none(text: str) -> int | None:
+  try:
+    return int(parse_intents(text))
+  except ValueError:
+    return None
 
 
 def format_intents(value: int) -> str:
@@ -159,36 +165,22 @@ class GatewayWorker(Component):
     self,
     token: str | None = None,
     *,
-    shard_count: int = 1,
-    max_concurrency: int = 1,
-    lease_ttl: float = 10.0,
     name: str = "gateway",
     api_url: str | None = None,
     session_factory: SessionFactory = HikariShard,
-    networked: bool = False,
   ) -> None:
 
     token = token if token is not None else os.environ.get("DISCORD_TOKEN")
     if not token:
       raise ValueError("A Discord token is required (argument or DISCORD_TOKEN).")
-    if not 1 <= shard_count <= 4096:
-      raise ValueError("shard_count must be between 1 and 4096.")
-    if max_concurrency < 1:
-      raise ValueError("max_concurrency must be positive.")
-    if lease_ttl < 3:
-      raise ValueError("lease_ttl must be at least 3 seconds.")
     super().__init__(name)
     self.token = token
     self.api_url = api_url or os.environ.get("DISCORD_API_URL")
-    self.initial_shard_count = shard_count
-    self.max_concurrency = max_concurrency
-    self.lease_ttl = lease_ttl
-    self.networked = networked
+    defaults = GatewaySettings()
+    self.max_concurrency = defaults.max_concurrency
+    self.lease_ttl = defaults.lease_ttl
     self.settings: Config[GatewaySettings] | None = None
-    """The shared settings (set when `networked`, once started)."""
-    self._bootstrap = GatewaySettings(
-      max_concurrency=max_concurrency, lease_ttl=lease_ttl
-    )
+    """The shared settings every worker follows (set once started)."""
     self._generation_intents: dict[int, int | None] = {}
     self._factory = session_factory
     self.address = subjects.token(os.urandom(8).hex())
@@ -238,20 +230,20 @@ class GatewayWorker(Component):
   async def on_start(self) -> None:
     """Join the deployment, watch generations and presence, and start claiming shards."""
     runtime = self.runtime
-    if self.networked:
-      self.settings = Config(
-        runtime, SETTINGS_NAME, GatewaySettings, bootstrap=self._bootstrap
-      )
-      self.settings.on_change(self._settings_applied)
-      await self.settings.start()
-      self._use_settings(self.settings.value)
+    self.settings = Config(runtime, SETTINGS_NAME, GatewaySettings)
+    self.settings.use(self._follow_settings)
+    self.settings.on_change(self._settings_applied)
+    await self.settings.start()  # the first load also creates generation 1 if needed
+    self._use_settings(self.settings.value)
     self._generations = await runtime.table(subjects.GATEWAY_BUCKET, GatewayGeneration)
-    self._statuses = await runtime.table(subjects.GATEWAY_BUCKET, PresenceUpdate)
     self._shards: Table[ShardLease] = await runtime.table(
       subjects.SHARDS_BUCKET, ShardLease, ttl_markers=True
     )
     self._locks: Locks = await runtime.locks()
-    initial = GatewayGeneration(id=1, shard_count=self.initial_shard_count)
+    value = self.settings.value
+    initial = GatewayGeneration(
+      id=1, shard_count=value.shard_count, intents=_intents_or_none(value.intents)
+    )
     await self._generations.create(DESIRED_KEY, initial)
     await self._generations.create(ACTIVE_KEY, initial)
     self._presence = await runtime.register(
@@ -293,11 +285,32 @@ class GatewayWorker(Component):
     """Take the shared settings."""
     self.max_concurrency = settings.max_concurrency
     self.lease_ttl = settings.lease_ttl
+    self._status = settings.presence
+
+  async def _follow_settings(
+    self, refresh: Refresh[GatewaySettings], next: Any
+  ) -> None:
+    """Refresh middleware: refuse intents that do not parse, and make the Gateway
+    generation match the shard count and intents (idempotent across workers)."""
+    try:
+      intents = parse_intents(refresh.new.intents)
+    except ValueError as error:
+      raise refresh.reject(str(error)) from error
+    from ._client import GatewayControl
+
+    await GatewayControl(self.runtime).ensure_generation(
+      refresh.new.shard_count, int(intents)
+    )
+    await next()
 
   async def _settings_applied(self, applied: Applied[GatewaySettings]) -> None:
     self._use_settings(applied.new)
     if applied.new.max_concurrency != applied.old.max_concurrency and self._presence:
       await self._presence.update({"max_concurrency": self.max_concurrency})
+    if applied.new.presence != applied.old.presence:
+      for held in tuple(self._held.values()):
+        if held.ready:
+          await self._apply_status(held)
     self._wake.set()
 
   # Watches ---------------------------------------------------------------------
@@ -329,18 +342,9 @@ class GatewayWorker(Component):
         self._wake.set()
     # Unreachable unless the watch ends.
 
-  async def _watch_status(self) -> None:
-    async for change in self._statuses.watch(PRESENCE_KEY):
-      if change is not None and change.value is not None:
-        self._status = change.value
-        for held in tuple(self._held.values()):
-          if held.ready:
-            await self._apply_status(held)
-
   # Control loop ----------------------------------------------------------------
 
   async def _control_loop(self) -> None:
-    self.spawn(self._watch_status(), name="watch.status")
     while True:
       with suppress(TimeoutError):
         await asyncio.wait_for(self._wake.wait(), self.lease_ttl / 3)

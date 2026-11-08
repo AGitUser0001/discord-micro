@@ -36,6 +36,6 @@ git and the network; ``micro pkg upgrade`` merges newer versions into your edite
 copies. See :doc:`project`.
 
 Two examples need a little setup: ``chat``'s ``!ping`` reads message text, so set
-the Gateway intents with ``micro gateway intents unprivileged,message_content`` and enable
-the Message Content intent in the developer portal (:doc:`gateway`); ``notes`` needs a store process
+the Gateway ``intents`` setting to ``unprivileged,message_content`` (run ``micro configure``,
+open ``gateway``) and enable the Message Content intent in the developer portal (:doc:`gateway`); ``notes`` needs a store process
 in ``micro.toml`` (:doc:`store`).

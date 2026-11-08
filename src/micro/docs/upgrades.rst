@@ -31,8 +31,8 @@ Compatibility rules
 Infrastructure
 --------------
 
-* Gateway: shard handoff overlaps (duplicates, never gaps); ``micro gateway
-  roll`` or ``shards N`` builds a new generation before it publishes.
+* Gateway: shard handoff overlaps (duplicates, never gaps); changing
+  the shard count or intents (``micro configure``) builds a new generation before it publishes.
 * HTTP workers: only a departed worker's partitions move.
 * Services: draining finishes in-flight requests; queue groups route new ones
   to remaining replicas.

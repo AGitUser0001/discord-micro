@@ -25,10 +25,14 @@ connection, so you can restart, scale, or replace them without Discord noticing.
 
    from micro.gateway import GatewayWorker
 
-   await runtime.add(GatewayWorker(shard_count=4, max_concurrency=1))
+   await runtime.add(GatewayWorker())
 
 Configuration
 -------------
+
+A worker takes only three arguments. **Everything else about the Gateway is a setting in the
+shared ``gateway`` table** (next section), so it is changed in one place, for every worker, while
+they run.
 
 .. list-table::
    :header-rows: 1
@@ -40,64 +44,78 @@ Configuration
    * - ``token``
      - ``DISCORD_TOKEN``
      - The bot token. Never written to NATS.
-   * - ``shard_count``
-     -
-     - Shards when no generation exists yet (1 to 4096, default 1). After that,
-       :class:`GatewayControl` decides.
-   * - ``max_concurrency``
-     -
-     - Identifies Discord allows per 5 seconds (default 1; your bot's
-       ``max_concurrency`` from Discord's gateway info).
-   * - ``lease_ttl``
-     -
-     - Seconds a shard lease lives without renewal (at least 3, default 10).
    * - ``api_url``
      - ``DISCORD_API_URL``
      - Another API with Discord's shape, such as a fake for tests.
-   * - ``networked``
-     -
-     - Follow the shared :class:`GatewaySettings` document (see below). Default false.
    * - ``name``
      -
      - Component name (default ``gateway``).
 
+The token and the address of NATS stay in the process environment because they are needed
+before NATS is reachable.
+
 Run **as many workers as you like**. They divide the shards between themselves; with more
 workers than shards the extras idle as spares.
 
+Settings: the ``gateway`` table
+--------------------------------
+
+The Gateway's settings are one document in the shared configuration (:doc:`config`). Edit it in
+the terminal with ``micro configure`` (open the ``gateway`` table), or from code with
+``GatewayControl.configure(...)``; every worker follows it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Default
+     - Meaning
+   * - ``shard_count``
+     - 1
+     - How many shards the bot is split into (1 to 4096).
+   * - ``intents``
+     - ``unprivileged``
+     - Gateway intents: names or numbers, comma separated (see below).
+   * - ``max_concurrency``
+     - 1
+     - Identifies Discord allows per 5 seconds (your bot's ``max_concurrency``).
+   * - ``lease_ttl``
+     - 10.0
+     - Seconds a shard lease lives without renewal (at least 3).
+   * - ``presence``
+     - none
+     - The bot's status and activity (``status``, ``activity``, ``idle_since``, ``afk``), applied
+       to every shard.
+
+How a change takes effect:
+
+* ``max_concurrency``, ``lease_ttl`` and ``presence`` apply to running workers at once.
+* ``shard_count`` and ``intents`` need fresh connections, so a change makes the workers connect a
+  **new generation** beside the old one, which takes over only when every shard is READY (see
+  Generations below). Every worker notices the change but only one generation is written.
+* Because the table is persisted, it survives restarts of any process and of NATS. A fresh
+  deployment starts with the defaults above.
+* A worker whose refresh refuses a value (intents that do not parse) keeps the previous settings,
+  and the problem is reported (:doc:`config`).
+
 Intents
--------
+~~~~~~~
 
-There is **one way** to set the Gateway intents: ``GatewayControl.set_intents`` (or the same
-thing from the command line). There is no worker argument and no environment variable, so
-there is never a second place that disagrees with the first.
-
-.. code-block:: console
-
-   micro gateway intents                                  # show what is in force
-   micro gateway intents unprivileged,message_content     # set them
+Names are hikari's intent names (``message_content``, ``guild_members``, ...), plus
+``unprivileged``, ``privileged`` and ``all`` for hikari's groups, comma separated, or a number.
+A typo is rejected with a suggestion. There is one place intents are set, the ``intents`` field
+above; there is no worker argument or environment variable for them.
 
 .. code-block:: python
 
-   await GatewayControl(runtime).set_intents("unprivileged,message_content,guild_members")
-   await GatewayControl(runtime).set_intents(0b1000000000000001)    # or a number
+   await GatewayControl(runtime).configure(intents="unprivileged,message_content,guild_members")
 
-Names are hikari's intent names (``message_content``, ``guild_members``, ...), plus
-``unprivileged``, ``privileged`` and ``all`` for hikari's groups, comma separated. A typo is
-rejected with a suggestion before anything is written.
-
-* Until you set them, workers connect with Discord's **unprivileged** set.
-* They are stored in the Gateway **generation** (next to the shard count), so they persist
-  across restarts of any process and of NATS, and every worker, including one that starts
-  later, connects each generation with the intents recorded in it.
-* Changing them is a **new generation**: it connects beside the old one and takes over only
-  when every shard is READY. So intents Discord refuses (a privileged one not switched on in
-  the developer portal) never take the bot offline: the old generation keeps serving, and
-  setting the previous intents again replaces the stuck one. Resharding keeps them.
-* It is idempotent: setting the intents already in force writes nothing.
-
-Three intents need switching on under **Bot > Privileged Gateway Intents** in the developer
-portal as well: ``message_content`` (message text, for ``!ping``-style commands),
-``guild_members`` (the member list, :doc:`cache`) and ``guild_presences``.
+Intents Discord refuses (a privileged one not switched on in the developer portal) never take the
+bot offline: the new generation never gets READY, so the old one keeps serving, and setting the
+previous intents again replaces the stuck one. Three intents need switching on under **Bot >
+Privileged Gateway Intents** as well: ``message_content`` (message text, for ``!ping``-style
+commands), ``guild_members`` (the member list, :doc:`cache`) and ``guild_presences``.
 
 
 How shards are shared
@@ -129,20 +147,9 @@ keeps serving, so reshard live:
    from micro.gateway import ActivityUpdate, GatewayControl
 
    control = GatewayControl(runtime)
-   await control.set_shard_count(4)     # new generation of 4 shards, flip when ready
+   await control.configure(shard_count=4)   # new generation of 4 shards, flip when ready
    await control.roll()                 # new generation, same size
    status = await control.status()      # generations, shards, owners, who is ready
-
-Networked settings
-------------------
-
-``GatewayWorker(networked=True)`` follows a shared :class:`GatewaySettings` document for
-``max_concurrency`` and ``lease_ttl``, so they are changed once for every worker, with
-``GatewayControl.configure(...)`` or ``micro configure gateway max_concurrency=2``. The token
-and the NATS address stay in each process's environment (they are needed before NATS is
-reachable); the worker's own arguments are its **bootstrap** values, used until the document
-is loaded and to create it the first time. Intents are deliberately not in it (see above).
-Details in :doc:`config`.
 
 Controlling a live connection
 -----------------------------
