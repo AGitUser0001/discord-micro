@@ -14,6 +14,9 @@ micro.toml
    enabled = true
    store_dir = ".micro/nats"
 
+   [config]                           # shared settings `micro configure` can validate
+   limits = "myapp.config:Limits"     # name = "module:Model" (see Configuration)
+
    [processes.gateway]
    components = ["micro.gateway:GatewayWorker"]
    replicas = 2
@@ -88,7 +91,7 @@ CLI
    micro server start | status
    micro worker app | discord app | mybot.services.* micro.discord:DiscordHTTPWorker
 
-   micro gateway status | shards N | roll | presence idle --activity "..."
+   micro gateway status | shards N | roll | intents [NAMES] | presence idle --activity "..."
    micro commands list | sync | forget TYPE:NAME
 
 A command that needs the server and finds none says so at once.

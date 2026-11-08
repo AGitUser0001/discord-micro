@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, Self
@@ -157,6 +158,7 @@ class Stack:
     *,
     guilds: tuple[str, ...] = ("500",),
     intents: hikari.Intents | None = None,
+    seed_intents: bool = True,
     first: Sequence[Any] = (),
     router: InteractionRouter | None = None,
     gateway: dict[str, Any] | None = None,
@@ -170,6 +172,7 @@ class Stack:
     self.gateway = gateway or {}
     self.extra_gateways = extra_gateways
     self.intents = intents
+    self.seed_intents = seed_intents
     self.guilds = guilds
     self.connection_events: list[dict[str, Any]] = []
 
@@ -204,15 +207,18 @@ class Stack:
       hikari.Intents.ALL_UNPRIVILEGED | hikari.Intents.MESSAGE_CONTENT
     )
     self.sync = CommandSync()
+    if self.seed_intents:
+      from micro.gateway import GatewayControl
+
+      await GatewayControl(self.runtime).set_intents(int(intents))
     await self.runtime.add(
       *self.first,
       DiscordHTTPWorker(TOKEN, api_url=api),
-      GatewayWorker(TOKEN, api_url=api, intents=intents, shard_count=1, **self.gateway),
+      GatewayWorker(TOKEN, api_url=api, shard_count=1, **self.gateway),
       *(
         GatewayWorker(
           TOKEN,
           api_url=api,
-          intents=intents,
           shard_count=1,
           name=f"gateway{i}",
           **self.gateway,
@@ -1156,6 +1162,88 @@ async def config_scenarios() -> None:
         again.value,
       )
 
+      # micro configure, through the real CLI
+      from micro.gateway import GatewaySettings
+
+      await a.config("gateway", GatewaySettings)
+      work = Path(tempfile.mkdtemp())
+      (work / "micro.toml").write_text(f'name = "cfg"\nnats = ["{url}"]\n')
+
+      async def configure(*words: str, editor: str | None = None) -> tuple[int, str]:
+        if editor is not None:
+          os.environ["EDITOR"] = editor
+        try:
+          return await _micro(work, "configure", *words)
+        finally:
+          os.environ.pop("EDITOR", None)
+
+      code, out = await configure()
+      check(
+        "micro configure lists the documents",
+        code == 0 and "gateway" in out and "limits" in out,
+        out,
+      )
+      code, out = await configure("gateway")
+      check(
+        "micro configure NAME shows it",
+        code == 0 and "max_concurrency" in out and "lease_ttl" in out,
+        out,
+      )
+      code, out = await configure("gateway", "max_concurrency=3")
+      check(
+        "KEY=VALUE changes just that field and says what changed",
+        code == 0 and "max_concurrency: 1 -> 3" in out and "revision" in out,
+        out,
+      )
+      code, out = await configure("gateway", "lease_ttl=1")
+      check(
+        "a value the model refuses is not written",
+        code == 2 and "lease_ttl" in out,
+        out,
+      )
+      code, out = await configure("gateway", "max_concurency=2")
+      check(
+        "a misspelled field gets a suggestion",
+        code == 2 and "max_concurrency" in out,
+        out,
+      )
+      code, out = await configure("gateway", "intents=all")
+      check(
+        "intents point to the one way to set them",
+        code == 2 and "micro gateway intents" in out,
+        out,
+      )
+      code, out = await configure("gateway", "max_concurrency=3")
+      check(
+        "setting what is already set is unchanged",
+        code == 0 and "Unchanged" in out,
+        out,
+      )
+      code, out = await configure("gateway", "--edit", editor="sed -i s/3/4/")
+      check(
+        "--edit opens the document in $EDITOR and saves it",
+        code == 0 and "max_concurrency: 3 -> 4" in out,
+        out,
+      )
+      code, out = await configure("gateway", "--json")
+      check(
+        "--json prints the stored document",
+        code == 0 and '"max_concurrency": 4' in out,
+        out,
+      )
+      code, out = await configure("limits", "rate=77", "name=my bot")
+      check(
+        "a document with no known model is still editable, unvalidated",
+        code == 0 and "rate: 8 -> 77" in out and "name: " in out and "no model" in out,
+        out,
+      )
+      code, out = await configure("nothing")
+      check(
+        "an unknown document is a clear error",
+        code == 1 and "No configuration named" in out,
+        out,
+      )
+
       # Cleanup
       from micro.config import ConfigClosed
 
@@ -1197,54 +1285,63 @@ async def config_scenarios() -> None:
 
 
 async def gateway_config_scenarios() -> None:
-  print("gateway settings: networked intents roll a generation")
+  print("gateway intents and settings: one way to set intents")
   import hikari
 
   from micro.gateway import GatewayControl
 
-  offline = GatewayWorker(TOKEN, intents=hikari.Intents.GUILDS, networked=True)
+  offline = GatewayWorker(TOKEN, networked=True)
   check(
     "bootstrap settings are available before NATS connects",
-    offline.intents == hikari.Intents.GUILDS
-    and offline.settings is None
-    and offline.max_concurrency == 1,
+    offline.settings is None
+    and offline.max_concurrency == 1
+    and offline.lease_ttl == 10.0,
   )
-  async with Stack(App(), gateway={"networked": True}, extra_gateways=1) as s:
+  unprivileged = hikari.Intents.ALL_UNPRIVILEGED
+  async with Stack(App(), seed_intents=False) as s:
     f = s.fake
-    control = GatewayControl(s.runtime)
     await f.until(lambda: f.identifies >= 1, 15)
-    config = await control.settings()
-    issues: list[Any] = []
-    config.on_error(issues.append)
     check(
-      "the first workers seed one shared document from their bootstrap",
-      config.value.intents != "" and config.revision is not None,
-      config.value,
-    )
-    first = (await control.status()).desired
-    assert first is not None
-    identified = f.identifies
-    unprivileged = hikari.Intents.ALL_UNPRIVILEGED | hikari.Intents.MESSAGE_CONTENT
-    check(
-      "connections use the intents of the settings",
+      "until intents are set, workers connect with Discord's unprivileged set",
       int(list(f.sessions.values())[-1].identify["intents"]) == int(unprivileged),
       list(f.sessions.values())[-1].identify.get("intents"),
     )
-    wanted = "unprivileged,message_content,guild_members"
-    await control.configure(intents=wanted)
     check(
-      "changing intents starts a new generation that identifies with them",
+      "GatewayControl reports what is in force",
+      await GatewayControl(s.runtime).intents() == int(unprivileged),
+    )
+
+  wide = unprivileged | hikari.Intents.MESSAGE_CONTENT
+  async with Stack(
+    App(), intents=wide, gateway={"networked": True}, extra_gateways=1
+  ) as s:
+    f = s.fake
+    control = GatewayControl(s.runtime)
+    await f.until(lambda: f.identifies >= 1, 15)
+    workers = [w for w in s.runtime.components if isinstance(w, GatewayWorker)]
+    first = (await control.status()).desired
+    assert first is not None
+    check(
+      "the generation carries the intents it connects with",
+      first.intents == int(wide)
+      and int(list(f.sessions.values())[-1].identify["intents"]) == int(wide),
+      (first.intents, list(f.sessions.values())[-1].identify.get("intents")),
+    )
+    identified = f.identifies
+    new = wide | hikari.Intents.GUILD_MEMBERS
+    await control.set_intents("unprivileged,message_content,guild_members")
+    check(
+      "set_intents starts a new generation that identifies with them",
       await f.until(lambda: f.identifies > identified, 20)
-      and int(list(f.sessions.values())[-1].identify["intents"])
-      == int(unprivileged | hikari.Intents.GUILD_MEMBERS),
+      and int(list(f.sessions.values())[-1].identify["intents"]) == int(new),
       [x.identify.get("intents") for x in f.sessions.values()],
     )
     status = await control.status()
     check(
-      "two workers saw the change but wrote one generation",
+      "two workers, one change, one generation",
       status.desired is not None
       and status.desired.id == first.id + 1
-      and status.desired.intents == int(unprivileged | hikari.Intents.GUILD_MEMBERS),
+      and status.desired.intents == int(new),
       status.desired,
     )
     check(
@@ -1256,55 +1353,43 @@ async def gateway_config_scenarios() -> None:
       ),
     )
     check(
-      "every worker follows the shared document",
-      all(
-        w.intents == unprivileged | hikari.Intents.GUILD_MEMBERS
-        for w in s.runtime.components
-        if isinstance(w, GatewayWorker)
-      ),
+      "every worker connects that generation with its intents",
+      all(w.intents_for(first.id + 1) == new for w in workers),
     )
-
-    # A nonsense value written straight to the document is refused by the workers.
     generation = (await control.status()).desired
-    await config.update(lambda c: c.model_copy(update={"intents": "nonsense"}))
-    await asyncio.sleep(0.5)
+    await control.set_intents(int(new))
     check(
-      "invalid intents are rejected: no new generation, previous settings kept",
-      (await control.status()).desired == generation
-      and all(
-        w.intents == unprivileged | hikari.Intents.GUILD_MEMBERS
-        for w in s.runtime.components
-        if isinstance(w, GatewayWorker)
-      ),
+      "setting the intents already in force writes nothing",
+      (await control.status()).desired == generation,
     )
     try:
-      await control.configure(intents="nonsense")
+      await control.set_intents("nonsense")
       refused = False
     except ValueError:
       refused = True
-    check("configure() refuses a typo before writing anything", refused)
-
-    # Same intents again: nothing to do.
-    await config.update(lambda c: c.model_copy(update={"intents": wanted}))
-    await asyncio.sleep(0.5)
     check(
-      "setting the intents already in force writes no generation",
-      (await control.status()).desired == generation,
+      "a typo is refused before anything is written",
+      refused and (await control.status()).desired == generation,
     )
+    after_reshard = await control.set_shard_count(1)
+    check(
+      "resharding keeps the intents",
+      after_reshard.intents == int(new),
+      after_reshard,
+    )
+
     await control.configure(max_concurrency=2, lease_ttl=6.0)
     ok = await _until_async(
-      lambda: asyncio.sleep(
-        0,
-        [
-          w.max_concurrency
-          for w in s.runtime.components
-          if isinstance(w, GatewayWorker)
-        ],
-      ),
+      lambda: asyncio.sleep(0, [w.max_concurrency for w in workers]),
       lambda values: values == [2, 2],
       10,
     )
-    check("other settings apply to the running workers", ok)
+    check("other settings follow the shared document", ok)
+    config = await control.settings()
+    check(
+      "intents are not part of the shared settings",
+      "intents" not in config.value.model_dump(),
+    )
 
 
 async def _until_async(read: Any, ok: Any, timeout: float) -> bool:
@@ -3917,6 +4002,10 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
 }
 
 
+SCENARIO_TIMEOUT = 150
+"""Seconds a scenario may take before it fails with a dump of what is waiting."""
+
+
 async def main() -> int:
   wanted = sys.argv[1:]
   chosen = [n for n in SCENARIOS if not wanted or any(item in n for item in wanted)]
@@ -3925,7 +4014,14 @@ async def main() -> int:
   timings: list[tuple[str, float]] = []
   for name in chosen:
     started = time.perf_counter()
-    await SCENARIOS[name]()
+    try:
+      await asyncio.wait_for(SCENARIOS[name](), SCENARIO_TIMEOUT)
+    except TimeoutError as error:
+      print(
+        f"  scenario {name} did not finish in {SCENARIO_TIMEOUT}s; it was waiting here:"
+      )
+      traceback.print_exception(error, limit=-8)
+      check(f"scenario {name} finishes", False)
     timings.append((name, time.perf_counter() - started))
   failed = [name for name, ok in results if not ok]
   print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")

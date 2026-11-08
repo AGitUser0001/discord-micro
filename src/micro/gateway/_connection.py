@@ -14,7 +14,6 @@ class ShardHost(Protocol):
   """What a shard session reports to the worker that owns it."""
 
   token: str
-  intents: hikari.Intents
   api_url: str | None
 
   def intents_for(self, generation: int) -> hikari.Intents:

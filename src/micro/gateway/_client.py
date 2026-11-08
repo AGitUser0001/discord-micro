@@ -72,9 +72,9 @@ class GatewayControl:
     return await self._new_generation(shard_count)
 
   async def set_intents(self, intents: int | str) -> GatewayGeneration:
-    """Make the Gateway connect with these intents, as a new generation.
+    """Set the Gateway intents, as a new generation. The only way to change them.
 
-    `intents` is a number or `DISCORD_INTENTS` text. The new generation connects beside
+    `intents` is a number or names (`"unprivileged,message_content"`; see `parse_intents`). The new generation connects beside
     the old one and takes over only once every shard is READY, so intents Discord
     refuses (a privileged one not switched on in the developer portal) never take the
     bot offline: the old generation keeps serving. Idempotent: if the Gateway already
@@ -89,24 +89,25 @@ class GatewayControl:
       None, wanted, unless=lambda generation: generation.intents == wanted
     )
 
+  async def intents(self) -> int:
+    """The intents the Gateway connects with now (Discord's unprivileged set by default)."""
+    import hikari
+
+    desired = (await self.status()).desired
+    if desired is not None and desired.intents is not None:
+      return desired.intents
+    return int(hikari.Intents.ALL_UNPRIVILEGED)
+
   async def configure(
-    self,
-    *,
-    intents: str | int | None = None,
-    max_concurrency: int | None = None,
-    lease_ttl: float | None = None,
+    self, *, max_concurrency: int | None = None, lease_ttl: float | None = None
   ) -> GatewaySettings:
-    """Change the shared Gateway settings that workers with `networked=True` follow.
+    """Change the shared settings that workers with `networked=True` follow.
 
     Only the fields you pass change. Returns the stored settings. A worker applies a
     change after its refresh middleware accepts it, so this does not wait for them.
+    Intents are not a setting: they belong to the generation, see `set_intents`.
     """
-    from ._worker import parse_intents
-
     fields: dict[str, object] = {}
-    if intents is not None:
-      parse_intents(str(intents))  # refuse a typo here, not in every worker
-      fields["intents"] = str(intents)
     if max_concurrency is not None:
       fields["max_concurrency"] = max_concurrency
     if lease_ttl is not None:

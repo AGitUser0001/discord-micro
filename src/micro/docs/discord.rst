@@ -43,8 +43,6 @@ Configuration
    * - ``DISCORD_TOKEN``
      - The bot token. Set it in ``.env`` or the environment; it is read by workers and never
        stored in NATS. Rotate it by rolling the processes.
-   * - ``DISCORD_INTENTS``
-     - Gateway intents, names or numbers (see :doc:`gateway`). Default ``unprivileged``.
    * - ``DISCORD_API_URL``
      - Point workers at another API with Discord's shape, such as a proxy or a fake for
        testing (or pass ``api_url=`` to the workers).

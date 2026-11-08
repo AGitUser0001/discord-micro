@@ -10,13 +10,12 @@ class GatewaySettings(BaseModel):
   """What every Gateway worker follows when it runs with `networked=True`.
 
   The token and the NATS address are not here: they are needed before NATS is reachable
-  and stay in each process's environment.
+  and stay in each process's environment. Intents are not here either: they belong to the
+  Gateway generation and are changed only with `GatewayControl.set_intents`.
   """
 
   model_config = ConfigDict(frozen=True, extra="ignore")
 
-  intents: str = "unprivileged"
-  """Gateway intents as in `DISCORD_INTENTS`: names or numbers, comma separated."""
   max_concurrency: int = Field(default=1, ge=1)
   """Identifies Discord allows per 5 seconds."""
   lease_ttl: float = Field(default=10.0, ge=3)

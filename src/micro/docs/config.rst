@@ -135,25 +135,58 @@ Networked Gateway settings
 --------------------------
 
 :class:`GatewayWorker` can follow a shared :class:`GatewaySettings` document: pass
-``networked=True``. Its own arguments and ``DISCORD_*`` environment become the bootstrap, so
-the token and the NATS address stay local; the Gateway intents, ``max_concurrency`` and
-``lease_ttl`` come from the network.
+``networked=True``. Its own arguments become the bootstrap, so the token and the NATS address
+stay local; ``max_concurrency`` and ``lease_ttl`` come from the network.
 
 .. code-block:: python
 
    await GatewayWorker(networked=True)            # or in micro.toml, with the same components
 
    control = GatewayControl(runtime)
-   await control.configure(intents="unprivileged,message_content,guild_members")
    await control.configure(max_concurrency=2)     # only the fields you pass change
 
-Changing intents is a **new Gateway generation**: the settings change goes through each
-worker's refresh middleware, which rejects an intents string that does not parse and otherwise
-asks for a generation carrying the new intents (``GatewayControl.set_intents``, idempotent, so
-any number of workers produce one). The new generation connects beside the old and takes over
-only when every shard is READY. So **intents Discord refuses** (a privileged intent not
-switched on in the developer portal) never take the bot offline: the old generation keeps
-serving, and setting the previous intents back replaces the stuck one. See :doc:`gateway`.
+.. code-block:: console
+
+   micro configure gateway max_concurrency=2
+
+The Gateway **intents are not a setting**. They belong to the Gateway generation and have one
+way to be set, ``GatewayControl.set_intents`` / ``micro gateway intents`` (see :doc:`gateway`),
+so there is never a second source for them.
+
+Command line: ``micro configure``
+---------------------------------
+
+``micro configure`` views and edits every shared document from the terminal.
+
+.. code-block:: console
+
+   micro configure                              # list the documents and their values
+   micro configure gateway                      # show one
+   micro configure gateway max_concurrency=2    # change just that field
+   micro configure limits rate=20 pool.size=4   # several at once; dots reach into nested objects
+   micro configure gateway --edit               # the whole document in $EDITOR
+   micro configure gateway --json               # raw JSON
+
+* **KEY=VALUE** values are read as JSON when they are (``20``, ``true``, ``[1,2]``) and as
+  text otherwise (``name=my bot``). It prints what changed (``max_concurrency: 1 -> 2``) and
+  the new revision, and writes nothing if nothing changed.
+* **Safe against concurrent edits.** A field change is applied to the latest document and
+  written only if nothing intervened (it retries on the newer one). ``--edit`` writes only if the
+  document is still at the revision you opened, and otherwise tells you to run it again.
+* **Validated** when the document's model is known: a value the model refuses is not written,
+  and a misspelled field gets a suggestion (``Did you mean max_concurrency?``). The model is
+  ``--model module:Model``, or the ``[config]`` table of ``micro.toml``, or built in for
+  ``gateway``:
+
+  .. code-block:: toml
+
+     [config]
+     limits = "myapp.config:Limits"
+
+  Without a known model the edit still works but is not validated here (it says so), and the
+  processes that use the document will reject a bad value in their own refresh.
+* A document that does not exist yet is an error: it is created by the first process that
+  uses it.
 
 Reference
 ---------

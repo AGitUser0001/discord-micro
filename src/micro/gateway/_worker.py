@@ -13,7 +13,7 @@ from nats.aio.subscription import Subscription
 from pydantic import BaseModel, ValidationError
 
 from micro import subjects
-from micro.config import Applied, Config, Refresh
+from micro.config import Applied, Config
 from micro.coordination import Locks, Table, Versioned
 from micro.runtime import Component, Presence
 
@@ -95,6 +95,18 @@ def guild_of(name: str, payload: Mapping[str, Any]) -> str | None:
   return guild if isinstance(guild, str) and guild.isdecimal() else None
 
 
+def format_intents(value: int) -> str:
+  """Intent names for a number (`guilds,guild_members`), or `none`."""
+  import hikari
+
+  names = [
+    flag.name.lower()
+    for flag in hikari.Intents
+    if flag.name and flag.value and flag.value & (flag.value - 1) == 0 and value & flag
+  ]
+  return ",".join(names) or "none"
+
+
 def parse_intents(text: str) -> hikari.Intents:
   """Intents from names or numbers: `unprivileged,message_content` or `33280`.
 
@@ -147,7 +159,6 @@ class GatewayWorker(Component):
     self,
     token: str | None = None,
     *,
-    intents: hikari.Intents | int | None = None,
     shard_count: int = 1,
     max_concurrency: int = 1,
     lease_ttl: float = 10.0,
@@ -156,16 +167,10 @@ class GatewayWorker(Component):
     session_factory: SessionFactory = HikariShard,
     networked: bool = False,
   ) -> None:
-    import hikari
 
     token = token if token is not None else os.environ.get("DISCORD_TOKEN")
     if not token:
       raise ValueError("A Discord token is required (argument or DISCORD_TOKEN).")
-    intents_text = os.environ.get("DISCORD_INTENTS", "unprivileged")
-    if intents is None:
-      intents = parse_intents(intents_text)
-    else:
-      intents_text = str(int(intents))
     if not 1 <= shard_count <= 4096:
       raise ValueError("shard_count must be between 1 and 4096.")
     if max_concurrency < 1:
@@ -175,7 +180,6 @@ class GatewayWorker(Component):
     super().__init__(name)
     self.token = token
     self.api_url = api_url or os.environ.get("DISCORD_API_URL")
-    self.intents = hikari.Intents(intents)
     self.initial_shard_count = shard_count
     self.max_concurrency = max_concurrency
     self.lease_ttl = lease_ttl
@@ -183,7 +187,7 @@ class GatewayWorker(Component):
     self.settings: Config[GatewaySettings] | None = None
     """The shared settings (set when `networked`, once started)."""
     self._bootstrap = GatewaySettings(
-      intents=intents_text, max_concurrency=max_concurrency, lease_ttl=lease_ttl
+      max_concurrency=max_concurrency, lease_ttl=lease_ttl
     )
     self._generation_intents: dict[int, int | None] = {}
     self._factory = session_factory
@@ -201,11 +205,12 @@ class GatewayWorker(Component):
   # Introspection ---------------------------------------------------------------
 
   def intents_for(self, generation: int) -> hikari.Intents:
-    """The intents a generation connects with: its own, else this worker's current."""
+    """The intents a generation connects with: the one it records, else Discord's
+    unprivileged set. Intents are changed only by `GatewayControl.set_intents`."""
     import hikari
 
     chosen = self._generation_intents.get(generation)
-    return self.intents if chosen is None else hikari.Intents(chosen)
+    return hikari.Intents.ALL_UNPRIVILEGED if chosen is None else hikari.Intents(chosen)
 
   @property
   def owned_shards(self) -> dict[int, tuple[int, ...]]:
@@ -237,7 +242,6 @@ class GatewayWorker(Component):
       self.settings = Config(
         runtime, SETTINGS_NAME, GatewaySettings, bootstrap=self._bootstrap
       )
-      self.settings.use(self._check_settings)
       self.settings.on_change(self._settings_applied)
       await self.settings.start()
       self._use_settings(self.settings.value)
@@ -286,26 +290,9 @@ class GatewayWorker(Component):
   # Networked settings ----------------------------------------------------------
 
   def _use_settings(self, settings: GatewaySettings) -> None:
-    """Take the shared settings; an invalid document keeps what the worker has."""
-    try:
-      self.intents = parse_intents(settings.intents)
-    except ValueError:
-      logger.warning("Ignoring invalid shared Gateway intents %r", settings.intents)
+    """Take the shared settings."""
     self.max_concurrency = settings.max_concurrency
     self.lease_ttl = settings.lease_ttl
-
-  async def _check_settings(self, refresh: Refresh[GatewaySettings], next: Any) -> None:
-    """Refresh middleware: refuse nonsense, and start the generation an intents change needs."""
-    try:
-      wanted = parse_intents(refresh.new.intents)
-    except ValueError as error:
-      raise refresh.reject(str(error)) from error
-    if not refresh.initial and wanted != parse_intents(refresh.old.intents):
-      from ._client import GatewayControl
-
-      # Idempotent: every worker sees the change, only the first writes the generation.
-      await GatewayControl(self.runtime).set_intents(int(wanted))
-    await next()
 
   async def _settings_applied(self, applied: Applied[GatewaySettings]) -> None:
     self._use_settings(applied.new)
@@ -318,6 +305,7 @@ class GatewayWorker(Component):
   async def _watch_generations(self) -> None:
     async for change in self._generations.watch("generation.*"):
       if change is not None and change.value is not None:
+        self._generation_intents[change.value.id] = change.value.intents
         if change.key == DESIRED_KEY:
           self._desired = change.value
         elif change.key == ACTIVE_KEY:

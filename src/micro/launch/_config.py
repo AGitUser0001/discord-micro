@@ -59,7 +59,18 @@ class DeploymentConfig(BaseModel):
   nats_server: NatsServerConfig = Field(default_factory=NatsServerConfig)
   invite: InviteConfig = Field(default_factory=InviteConfig)
   sources: dict[str, str] = Field(default_factory=dict)
+  config: dict[str, str] = Field(default_factory=dict)
+  """Shared configuration documents by name, as `module:Model`, so `micro configure`
+  can validate edits to them."""
   processes: dict[str, ProcessConfig] = Field(default_factory=dict)
+
+  @field_validator("config")
+  @classmethod
+  def _models(cls, value: dict[str, str]) -> dict[str, str]:
+    for name, target in value.items():
+      if ":" not in target:
+        raise ValueError(f"config.{name} must look like module:Model, not {target!r}.")
+    return value
 
   @field_validator("nats", mode="before")
   @classmethod

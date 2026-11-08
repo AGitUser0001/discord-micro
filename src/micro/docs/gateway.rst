@@ -40,9 +40,6 @@ Configuration
    * - ``token``
      - ``DISCORD_TOKEN``
      - The bot token. Never written to NATS.
-   * - ``intents``
-     - ``DISCORD_INTENTS``
-     - Gateway intents (see below). Default ``unprivileged``.
    * - ``shard_count``
      -
      - Shards when no generation exists yet (1 to 4096, default 1). After that,
@@ -70,18 +67,37 @@ workers than shards the extras idle as spares.
 Intents
 -------
 
-``DISCORD_INTENTS`` takes names or numbers separated by commas. ``unprivileged`` (the
-default), ``privileged`` and ``all`` stand for hikari's groups; anything else is a hikari
-intent name such as ``message_content`` or ``guild_members``. A typo is rejected with a
-suggestion.
+There is **one way** to set the Gateway intents: ``GatewayControl.set_intents`` (or the same
+thing from the command line). There is no worker argument and no environment variable, so
+there is never a second place that disagrees with the first.
 
-.. code-block:: sh
+.. code-block:: console
 
-   DISCORD_INTENTS=unprivileged,message_content,guild_members
+   micro gateway intents                                  # show what is in force
+   micro gateway intents unprivileged,message_content     # set them
 
-Three intents need switching on under **Bot > Privileged Gateway Intents** in the
-developer portal as well: ``message_content`` (message text, for ``!ping``-style
-commands), ``guild_members`` (the member list, :doc:`cache`) and ``guild_presences``.
+.. code-block:: python
+
+   await GatewayControl(runtime).set_intents("unprivileged,message_content,guild_members")
+   await GatewayControl(runtime).set_intents(0b1000000000000001)    # or a number
+
+Names are hikari's intent names (``message_content``, ``guild_members``, ...), plus
+``unprivileged``, ``privileged`` and ``all`` for hikari's groups, comma separated. A typo is
+rejected with a suggestion before anything is written.
+
+* Until you set them, workers connect with Discord's **unprivileged** set.
+* They are stored in the Gateway **generation** (next to the shard count), so they persist
+  across restarts of any process and of NATS, and every worker, including one that starts
+  later, connects each generation with the intents recorded in it.
+* Changing them is a **new generation**: it connects beside the old one and takes over only
+  when every shard is READY. So intents Discord refuses (a privileged one not switched on in
+  the developer portal) never take the bot offline: the old generation keeps serving, and
+  setting the previous intents again replaces the stuck one. Resharding keeps them.
+* It is idempotent: setting the intents already in force writes nothing.
+
+Three intents need switching on under **Bot > Privileged Gateway Intents** in the developer
+portal as well: ``message_content`` (message text, for ``!ping``-style commands),
+``guild_members`` (the member list, :doc:`cache`) and ``guild_presences``.
 
 
 How shards are shared
@@ -120,13 +136,13 @@ keeps serving, so reshard live:
 Networked settings
 ------------------
 
-``GatewayWorker(networked=True)`` follows a shared :class:`GatewaySettings` document instead of
-only its own arguments: intents, ``max_concurrency`` and ``lease_ttl`` are then changed once, for
-every worker, with ``GatewayControl.configure(...)``. The token and the NATS address stay in each
-process's environment (they are needed before NATS is reachable); the worker's other arguments and
-``DISCORD_INTENTS`` are its **bootstrap** values, used until the document is loaded and to create it
-the first time. An intents change rolls a new generation that takes over only once every shard is
-READY, so intents Discord refuses cannot take the bot offline. Details in :doc:`config`.
+``GatewayWorker(networked=True)`` follows a shared :class:`GatewaySettings` document for
+``max_concurrency`` and ``lease_ttl``, so they are changed once for every worker, with
+``GatewayControl.configure(...)`` or ``micro configure gateway max_concurrency=2``. The token
+and the NATS address stay in each process's environment (they are needed before NATS is
+reachable); the worker's own arguments are its **bootstrap** values, used until the document
+is loaded and to create it the first time. Intents are deliberately not in it (see above).
+Details in :doc:`config`.
 
 Controlling a live connection
 -----------------------------

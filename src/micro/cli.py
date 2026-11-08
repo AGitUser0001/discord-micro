@@ -57,7 +57,7 @@ def _version() -> str:
 
 GROUPS: dict[str, tuple[str, ...]] = {
   "Project": ("init", "services", "pkg", "docs", "invite", "help"),
-  "Run": ("dev", "server", "worker", "nodes"),
+  "Run": ("dev", "server", "worker", "nodes", "configure"),
   "Discord": ("commands", "gateway"),
 }
 """How `micro --help` sections the commands."""
@@ -403,6 +403,32 @@ def _parser() -> argparse.ArgumentParser:
   forget.add_argument("service")
   forget.set_defaults(handler=_commands, action="forget")
 
+  configure = command(
+    "configure",
+    "view and edit the shared configuration",
+    description=(
+      "Shared settings every process follows. Without a name, lists them; with one, "
+      "shows it; with KEY=VALUE pairs, changes just those fields (safely, against the "
+      "latest revision); with --edit, opens the whole document in $EDITOR."
+    ),
+  )
+  configure.add_argument("name", nargs="?", help="the document, e.g. gateway")
+  configure.add_argument(
+    "assignments",
+    nargs="*",
+    metavar="KEY=VALUE",
+    help="fields to set (dotted for nested: pool.size=4; values are JSON or text)",
+  )
+  configure.add_argument("--edit", action="store_true", help="edit it in $EDITOR")
+  configure.add_argument("--json", action="store_true", help="print raw JSON")
+  configure.add_argument(
+    "--model",
+    metavar="MODULE:MODEL",
+    help="the Pydantic model to validate against (else [config] in micro.toml)",
+  )
+  configure.add_argument("--config", default=DEFAULT_CONFIG, help="micro.toml to read")
+  configure.set_defaults(handler=_configure)
+
   gateway = command("gateway", "operate the Discord Gateway")
   actions = gateway.add_subparsers()
   actions.add_parser("status", parents=[config]).set_defaults(
@@ -416,6 +442,15 @@ def _parser() -> argparse.ArgumentParser:
   actions.add_parser(
     "roll", help="replace every connection", parents=[config]
   ).set_defaults(handler=_gateway, action="roll")
+  intents = actions.add_parser(
+    "intents", help="show or set the Gateway intents", parents=[config]
+  )
+  intents.add_argument(
+    "names",
+    nargs="?",
+    help="names or a number, e.g. unprivileged,message_content,guild_members",
+  )
+  intents.set_defaults(handler=_gateway, action="intents")
   presence = actions.add_parser(
     "presence", help="set the bot presence", parents=[config]
   )
@@ -947,6 +982,188 @@ def _deployment(path: str) -> tuple[str, list[str] | None]:
   return "micro", None
 
 
+def _config_model(name: str, args: argparse.Namespace) -> Any:
+  """The Pydantic model for a document: --model, micro.toml's [config], or built in."""
+  import importlib
+
+  target = args.model
+  if target is None and Path(args.config).exists():
+    from micro.launch import load_config
+
+    target = load_config(args.config).config.get(name)
+  if target is None and name == "gateway":
+    from micro.gateway import GatewaySettings
+
+    return GatewaySettings
+  if target is None:
+    return None
+  module, _, attribute = target.partition(":")
+  value: Any = importlib.import_module(module)
+  for part in attribute.split("."):
+    value = getattr(value, part)
+  return value
+
+
+def _parse_assignment(text: str) -> tuple[list[str], Any]:
+  key, separator, raw = text.partition("=")
+  if not separator or not key.strip():
+    raise ValueError(f"{text!r} is not KEY=VALUE.")
+  try:
+    value = json.loads(raw)
+  except ValueError:
+    value = raw  # plain text: rate=fast, name=my bot
+  return key.strip().split("."), value
+
+
+def _apply(document: dict[str, Any], assignments: Sequence[str]) -> dict[str, Any]:
+  result = json.loads(json.dumps(document))
+  for text in assignments:
+    path, value = _parse_assignment(text)
+    cursor = result
+    for part in path[:-1]:
+      nested = cursor.setdefault(part, {})
+      if not isinstance(nested, dict):
+        raise ValueError(  # noqa: TRY004
+          f"{'.'.join(path)}: {part!r} is not an object."
+        )
+      cursor = nested
+    cursor[path[-1]] = value
+  return result
+
+
+def _differences(
+  before: Any, after: Any, prefix: str = ""
+) -> list[tuple[str, Any, Any]]:
+  if isinstance(before, dict) and isinstance(after, dict):
+    changes: list[tuple[str, Any, Any]] = []
+    for key in sorted(before.keys() | after.keys()):
+      changes += _differences(before.get(key), after.get(key), f"{prefix}{key}.")
+    return changes
+  return [] if before == after else [(prefix.removesuffix("."), before, after)]
+
+
+def _show_value(value: Any) -> str:
+  return value if isinstance(value, str) else json.dumps(value)
+
+
+def _check_keys(name: str, model: Any, assignments: Sequence[str]) -> None:
+  """Refuse a field the model does not have, suggesting the nearest one."""
+  import difflib
+
+  known = list(model.model_fields)
+  for text in assignments:
+    top = _parse_assignment(text)[0][0]
+    if top in known:
+      continue
+    if name == "gateway" and top == "intents":
+      raise ValueError(
+        "Intents are not a setting: use `micro gateway intents NAMES` (they belong to "
+        "the Gateway generation)."
+      )
+    close = difflib.get_close_matches(top, known, n=1)
+    hint = f" Did you mean {close[0]}?" if close else f" Fields: {', '.join(known)}."
+    raise ValueError(f"{name} has no field {top!r}.{hint}")
+
+
+def _edit_in_editor(text: str) -> str:
+  import shlex
+  import subprocess
+  import tempfile
+
+  editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+  with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as file:
+    file.write(text)
+    path = file.name
+  try:
+    status = subprocess.call([*shlex.split(editor), path])
+    if status:
+      raise ValueError(f"{editor} exited with status {status}; nothing was changed.")
+    return Path(path).read_text()
+  finally:
+    os.unlink(path)
+
+
+async def _configure(args: argparse.Namespace) -> int:
+  from pydantic import ValidationError
+
+  from micro.coordination import Table
+
+  _, servers = _deployment(args.config)
+  async with _connect(servers) as runtime:
+    table: Table[Any] = await runtime.table(subjects.CONFIG_BUCKET, dict)
+    if args.name is None:
+      items = await table.items()
+      if not items:
+        print("No shared configuration yet. Components create theirs when they start.")
+      for key, found in sorted(items.items()):
+        fields = ", ".join(f"{k}={_show_value(v)}" for k, v in found.value.items())
+        print(f"{key}  (revision {found.revision})  {fields}")
+      return 0
+    name = args.name
+    found = await table.get(name)
+    if found is None:
+      print(
+        f"No configuration named {name!r}. It is created by the first process that "
+        "uses it (for the Gateway, a worker started with networked=True).",
+        file=sys.stderr,
+      )
+      return 1
+    model = _config_model(name, args)
+    if not args.assignments and not args.edit:
+      if args.json:
+        print(json.dumps(found.value, indent=2))
+      else:
+        width = max((len(k) for k in found.value), default=0)
+        print(f"{name}  (revision {found.revision})")
+        for key, value in found.value.items():
+          print(f"  {key:<{width}}  {_show_value(value)}")
+      return 0
+    if model is None:
+      print(
+        f"(no model is known for {name!r}: the change is not validated here; add it "
+        "under [config] in micro.toml, or pass --model)",
+        file=sys.stderr,
+      )
+    while True:
+      try:
+        if args.edit:
+          edited = json.loads(_edit_in_editor(json.dumps(found.value, indent=2) + "\n"))
+          if not isinstance(edited, dict):
+            raise ValueError("The document must be a JSON object.")
+          candidate = edited
+        else:
+          if model is not None:
+            _check_keys(name, model, args.assignments)
+          candidate = _apply(found.value, args.assignments)
+        if model is not None:
+          candidate = model.model_validate(candidate).model_dump(mode="json")
+      except (ValueError, ValidationError) as error:
+        print(error, file=sys.stderr)
+        return 2
+      changes = _differences(found.value, candidate)
+      if not changes:
+        print("Unchanged.")
+        return 0
+      written = await table.update(name, candidate, revision=found.revision)
+      if written is not None:
+        for key, before, after in changes:
+          print(f"{key}: {_show_value(before)} -> {_show_value(after)}")
+        print(f"revision {written}")
+        return 0
+      current = await table.get(name)
+      if current is None:
+        print(f"{name!r} was deleted meanwhile.", file=sys.stderr)
+        return 1
+      if args.edit:
+        print(
+          "It changed while you were editing (revision "
+          f"{current.revision}); run the command again to edit the latest.",
+          file=sys.stderr,
+        )
+        return 1
+      found = current  # field edits are re-applied to the newer document
+
+
 async def _gateway(args: argparse.Namespace) -> int:
   from micro.gateway import ActivityUpdate, GatewayControl
 
@@ -972,6 +1189,18 @@ async def _gateway(args: argparse.Namespace) -> int:
       print((await control.set_shard_count(args.count)).model_dump_json())
     elif args.action == "roll":
       print((await control.roll()).model_dump_json())
+    elif args.action == "intents":
+      from micro.gateway._worker import format_intents
+
+      if args.names:
+        try:
+          generation = await control.set_intents(args.names)
+        except ValueError as error:
+          print(error, file=sys.stderr)
+          return 2
+        print(f"generation {generation.id}: {format_intents(generation.intents or 0)}")
+      else:
+        print(format_intents(await control.intents()))
     else:
       activity = ActivityUpdate(name=args.activity) if args.activity else None
       await control.update_presence(status=args.status, activity=activity)

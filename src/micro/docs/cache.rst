@@ -37,9 +37,9 @@ guilds, channels, roles, members, presences and voice states into a store, in ev
    [processes.cache]
    components = ["micro.store:Store", "micro.gateway.projection:GatewayProjection"]
 
-.. code-block:: sh
+.. code-block:: console
 
-   DISCORD_INTENTS=unprivileged,guild_members
+   micro gateway intents unprivileged,guild_members
 
 * Run **one** projection replica: it applies events in order.
 * With the ``guild_members`` intent (switch on *Server Members Intent* in the developer
