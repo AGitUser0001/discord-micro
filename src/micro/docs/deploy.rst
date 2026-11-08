@@ -46,7 +46,7 @@ projects need.
 
 Logs go to stderr at ``INFO`` (``MICRO_LOG_LEVEL`` or ``-v`` changes it; ``-v`` also
 shows every HTTP request to Discord) and are
-colored when stderr is a terminal. ``NO_COLOR=1`` turns the color off and
+coloured when stderr is a terminal. ``NO_COLOR=1`` turns the colour off and
 ``FORCE_COLOR=1`` turns it on (through a pager, say).
 
 The pieces underneath, each also usable on its own:

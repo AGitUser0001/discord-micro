@@ -26,6 +26,8 @@ from typing import Any, ClassVar, Literal, cast
 
 from pydantic import JsonValue
 
+from .colour import Colour, ColourLike
+
 type Json = dict[str, JsonValue]
 
 EPHEMERAL = 1 << 6
@@ -440,7 +442,7 @@ def embed(
   title: str | None = None,
   description: str | None = None,
   *,
-  color: int | None = None,
+  colour: ColourLike | None = None,
   url: str | None = None,
   fields: Sequence[tuple[str, str] | tuple[str, str, bool]] = (),
   footer: str | None = None,
@@ -454,7 +456,13 @@ def embed(
 ) -> Json:
   """Build an embed; `fields` are `(name, value)` or `(name, value, inline)`."""
   value: Json = {}
-  _put(value, title=title, description=description, color=color, url=url)
+  _put(
+    value,
+    title=title,
+    description=description,
+    color=None if colour is None else int(Colour.parse(colour)),  # Discord's key
+    url=url,
+  )
   if timestamp is not None:
     value["timestamp"] = (
       timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp
@@ -905,19 +913,23 @@ class Container(_Measured):
   """A bordered box of components with an optional accent colour."""
 
   components: Sequence[Any]
-  accent_color: int | None = None
+  accent_colour: Colour | None = None
   spoiler: bool = False
   id: int | None = None
 
   def __init__(
     self,
     *components: Any,
-    accent_color: int | None = None,
+    accent_colour: ColourLike | None = None,
     spoiler: bool = False,
     id: int | None = None,
   ) -> None:
     object.__setattr__(self, "components", tuple(components))
-    object.__setattr__(self, "accent_color", accent_color)
+    object.__setattr__(
+      self,
+      "accent_colour",
+      None if accent_colour is None else Colour.parse(accent_colour),
+    )
     object.__setattr__(self, "spoiler", spoiler)
     object.__setattr__(self, "id", id)
 
@@ -928,7 +940,11 @@ class Container(_Measured):
       "components": rows(self.components),
       "spoiler": self.spoiler,
     }
-    return _put(value, id=self.id, accent_color=self.accent_color)
+    return _put(
+      value,
+      id=self.id,
+      accent_color=None if self.accent_colour is None else int(self.accent_colour),
+    )  # Discord's key
 
 
 _LAYOUT = (TextDisplay, Section, Thumbnail, MediaGallery, File, Separator, Container)

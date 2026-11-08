@@ -76,7 +76,8 @@ Objects and ``.full()``
 Events, interactions and some API results give you light **views** (``User``, ``Member``,
 ``Role``, ``Channel``, ``Guild``, ``Attachment``, ``Message``, :doc:`objects`) that type a
 few fields but keep every other one Discord sent (``message.pinned``,
-``user.accent_color``). ``.full()`` converts one to Discord's full generated model.
+``user.banner``). A field Discord spells ``color`` is ``colour`` here, as a :class:`Colour`
+(``role.colour``, ``user.accent_colour``). ``.full()`` converts one to Discord's full generated model.
 
 Generated models
 ----------------

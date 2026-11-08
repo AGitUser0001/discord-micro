@@ -571,8 +571,8 @@ class Configure:
       lines.append(style(fit(line, width), CYAN))
       cursor = (len(lines) - 1, min(len(line), width - 1))
     else:
-      color = {"ok": GREEN, "error": RED, "info": DIM}[kind_]
-      lines.append(style(fit(" " + text, width), color) if text else " " * width)
+      colour = {"ok": GREEN, "error": RED, "info": DIM}[kind_]
+      lines.append(style(fit(" " + text, width), colour) if text else " " * width)
     lines.append(style(fit(" " + self.footer(), width), DIM))
     return lines, cursor
 

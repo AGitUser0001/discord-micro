@@ -960,6 +960,69 @@ async def ui_limits_scenarios() -> None:
     )
 
 
+async def colour_scenarios() -> None:
+  print("colour: a helper, and colour spelled the Canadian way")
+  from micro.discord import ui
+  from micro.discord.colour import Colour
+  from micro.discord.objects import Role, User
+
+  check(
+    "a colour is an int in range",
+    Colour(0x5865F2) == 0x5865F2 and isinstance(Colour.BLURPLE, int),
+  )
+  check(
+    "it parses numbers, hex, short hex, names and tuples to the same colour",
+    Colour.parse(0x5865F2)
+    == Colour.parse("#5865f2")
+    == Colour.parse("blurple")
+    == Colour.parse((88, 101, 242))
+    == Colour.from_hex("5865F2"),
+  )
+  check("short hex doubles each digit", Colour.from_hex("#58f") == 0x5588FF)
+  check(
+    "rgb, hex and parts read back",
+    (Colour.BLURPLE.rgb, Colour.BLURPLE.hex, Colour.BLURPLE.r)
+    == ((88, 101, 242), "#5865f2", 88),
+  )
+  check(
+    "lighten, darken and mix make new colours",
+    Colour.BLURPLE.lighten(0.2).hex == "#7984f5"
+    and Colour.BLURPLE.darken(0.2).hex == "#4651c2"
+    and Colour.RED.mix("blue").hex == "#906d90",
+  )
+  for bad in (0x1000000, -1, "nope", (1, 2, 300)):
+    try:
+      Colour.parse(bad)  # type: ignore[arg-type]
+      refused = False
+    except ValueError:
+      refused = True
+    check(f"{bad!r} is refused", refused)
+  check(
+    "embed and container take any colour-like and send Discord's key as a plain int",
+    ui.embed("t", colour="teal")["color"] == 0x1ABC9C
+    and type(ui.embed("t", colour=Colour.GREEN)["color"]) is int
+    and ui.Container(ui.TextDisplay("x"), accent_colour=(1, 2, 3)).to_dict()[
+      "accent_color"
+    ]
+    == 0x010203,
+  )
+  role = Role.model_validate({"id": "1", "color": 0x5865F2})
+  check(
+    "a role's colour is a Colour read from Discord's color",
+    isinstance(role.colour, Colour) and role.colour == 0x5865F2,
+  )
+  check(
+    "and it dumps back to color on the wire",
+    role.model_dump(by_alias=True)["color"] == 0x5865F2
+    and Role(id="2", colour=Colour(0xFF0000)).colour == 0xFF0000,
+  )
+  check(
+    "a user's accent_colour is aliased the same way",
+    User.model_validate({"id": "1", "accent_color": 5}).accent_colour == 5
+    and User(id="1").accent_colour is None,
+  )
+
+
 async def signed_ids_scenarios() -> None:
   print("signed custom ids: the middleware example from the docs, as written")
   import re
@@ -2877,7 +2940,7 @@ async def ui_scenarios() -> None:
       ActionRow(Button("b", custom_id="b")),
       Button("loose", custom_id="l"),
       UserSelect("loose-select"),
-      accent_color=0xFF8800,
+      accent_colour=0xFF8800,
       spoiler=True,
     ),
   )
@@ -3344,7 +3407,7 @@ async def api_scenarios() -> None:
           body.get("allowed_mentions"),
         )
         await api.create_message(
-          5, components=[ui.Container(ui.TextDisplay("hi"), accent_color=0xFF0000)]
+          5, components=[ui.Container(ui.TextDisplay("hi"), accent_colour=0xFF0000)]
         )
         body = json_of(seen[-1])
         check(
@@ -4164,6 +4227,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "docs": docs_scenarios,
   "ui-hooks": ui_hooks_scenarios,
   "ui-limits": ui_limits_scenarios,
+  "colour": colour_scenarios,
   "signed-ids": signed_ids_scenarios,
   "members": member_cache_scenarios,
   "endpoint": endpoint_scenarios,

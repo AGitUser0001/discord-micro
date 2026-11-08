@@ -1,6 +1,6 @@
-"""Terminal logging: the same line as always, with color when a person is reading it.
+"""Terminal logging: the same line as always, with colour when a person is reading it.
 
-Color is on when the stream is a terminal; `NO_COLOR` turns it off and
+Colour is on when the stream is a terminal; `NO_COLOR` turns it off and
 `FORCE_COLOR` turns it on (for example through a pager or a process manager).
 """
 
@@ -22,7 +22,7 @@ _LEVELS = {
 }
 
 
-def wants_color(stream: IO[str]) -> bool:
+def wants_colour(stream: IO[str]) -> bool:
   if os.environ.get("NO_COLOR"):
     return False
   if os.environ.get("FORCE_COLOR", "0") not in ("", "0"):
@@ -30,17 +30,17 @@ def wants_color(stream: IO[str]) -> bool:
   return stream.isatty() and os.environ.get("TERM") != "dumb"
 
 
-class ColorFormatter(logging.Formatter):
-  """Dim timestamp and logger name, the level in its color; the message as is."""
+class ColourFormatter(logging.Formatter):
+  """Dim timestamp and logger name, the level in its colour; the message as is."""
 
   def __init__(self) -> None:
     super().__init__(
-      f"{_DIM}%(asctime)s{_RESET} %(levelcolor)s%(levelname)-8s{_RESET}"
+      f"{_DIM}%(asctime)s{_RESET} %(levelcolour)s%(levelname)-8s{_RESET}"
       f" {_DIM}%(name)s:{_RESET} %(message)s"
     )
 
   def format(self, record: logging.LogRecord) -> str:
-    record.levelcolor = _LEVELS.get(record.levelno, "")
+    record.levelcolour = _LEVELS.get(record.levelno, "")
     return super().format(record)
 
 
@@ -54,8 +54,8 @@ def _demote_http_requests(record: logging.LogRecord) -> bool:
 
 def configure(level: str | int) -> None:
   handler = logging.StreamHandler(sys.stderr)
-  if wants_color(handler.stream):
-    handler.setFormatter(ColorFormatter())
+  if wants_colour(handler.stream):
+    handler.setFormatter(ColourFormatter())
   else:
     handler.setFormatter(logging.Formatter(FORMAT))
   handler.addFilter(_demote_http_requests)

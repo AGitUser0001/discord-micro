@@ -9,11 +9,11 @@ accepts them, and anything a builder lacks can be passed as a plain dict instead
 
 .. code-block:: python
 
-   from micro.discord.ui import ActionRow, AllowedMentions, Button, StringSelect, embed
+   from micro.discord.ui import ActionRow, AllowedMentions, Button, Colour, StringSelect, embed
 
    await channel.send(
      "Report ready",
-     embeds=[embed("Title", "Body", color=0x5865F2, fields=[("a", "b", True)])],
+     embeds=[embed("Title", "Body", colour=Colour.BLURPLE, fields=[("a", "b", True)])],
      components=[Button("Open", custom_id="report.open"), Button("Docs", url="https://...")],
      allowed_mentions=AllowedMentions.only(users=[1]),
    )
@@ -25,10 +25,38 @@ Embeds
 ------
 
 :func:`embed` builds the dictionary Discord wants: ``title``, ``description``, ``url``,
-``color``, ``timestamp`` (a ``datetime`` or ISO string), ``fields`` (``(name, value,
+``colour``, ``timestamp`` (a ``datetime`` or ISO string), ``fields`` (``(name, value,
 inline)`` tuples), ``footer`` / ``footer_icon``, ``author`` / ``author_icon`` /
 ``author_url``, ``image``, ``thumbnail``. Discord's size limits are checked by
 :func:`validate` below.
+
+Colours
+-------
+
+Embeds take ``colour=`` and containers ``accent_colour=``. Give either a :class:`Colour`, or
+anything it understands: a number, ``"#5865f2"`` (or the short ``"#58f"``), a name such as
+``"blurple"``, or ``(r, g, b)``. A :class:`Colour` is an ``int``, so it works anywhere Discord
+wants a colour.
+
+.. code-block:: python
+
+   embed("Done", colour=Colour.GREEN)
+   embed("Done", colour="#57f287")
+   Container(TextDisplay("hi"), accent_colour=(88, 101, 242))
+
+   c = Colour.from_hex("#5865f2")      # also from_rgb(88, 101, 242), from_hsv(235, 0.64, 0.95)
+   c.hex, c.rgb, c.hsv, c.r            # '#5865f2', (88, 101, 242), (...), 88
+   c.lighten(0.2), c.darken(0.2)       # new colours, mixed toward white / black
+   c.mix("red", 0.5)                   # half way to another colour (anything ``parse`` takes)
+
+The named colours are ``BLURPLE``, ``GREEN``, ``YELLOW``, ``FUCHSIA``, ``RED``, ``WHITE``,
+``DARK``, ``BLUE``, ``TEAL``, ``PURPLE``, ``ORANGE``, ``GOLD``, ``GREY`` and ``MAPLE``. Anything
+outside 0 to 0xFFFFFF, an unknown name or a malformed hex string raises ``ValueError``.
+
+Discord's JSON spells these ``color`` and ``accent_color``; Micro's API spells them ``colour``
+and sends the wire names for you. The object views do the same with pydantic aliases:
+``role.colour`` and ``user.accent_colour`` are :class:`Colour` values that read and write
+``color`` / ``accent_color`` on the wire.
 
 Classic components
 ------------------
@@ -65,7 +93,7 @@ A message that uses any of these sets Discord's ``IS_COMPONENTS_V2`` flag for yo
      MediaGallery("https://.../1.png", MediaItem("attachment://2.png", "alt text")),
      File("attachment://report.pdf"),
      ActionRow(Button("Close", custom_id="close")),
-     accent_color=0x5865F2,
+     accent_colour=Colour.BLURPLE,
    )
 
 Modals
@@ -317,3 +345,9 @@ Reference
    micro.discord.ui.Construction
    micro.discord.ui.BuildMiddleware
    micro.discord.ui.SerializeMiddleware
+
+Colours live in ``micro.discord.colour``:
+
+.. api::
+   micro.discord.colour.Colour
+   micro.discord.colour.ColourLike

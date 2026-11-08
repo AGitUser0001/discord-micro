@@ -2,14 +2,17 @@
 
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+
+from .colour import Colour
 
 
 class _View(BaseModel):
   """A slim, forgiving view of a Discord object. Every other field Discord sent stays
-  on it as an attribute (`message.pinned`, `user.accent_color`); `full()` types them all."""
+  on it as an attribute (`message.pinned`, `user.banner`); `full()` types them all. Fields Discord spells `color` are `colour` here
+  (`role.colour`, `user.accent_colour`) and still read and write `color` on the wire."""
 
-  model_config = ConfigDict(extra="allow", frozen=True)
+  model_config = ConfigDict(extra="allow", frozen=True, populate_by_name=True)
   _full: ClassVar[str | None] = None
 
   def full(self) -> Any:
@@ -25,13 +28,19 @@ class _View(BaseModel):
     if self._full is None:
       raise TypeError(f"{type(self).__name__} has no full model.")
     return TypeAdapter(getattr(http, self._full)).validate_python(
-      self.model_dump(mode="json")
+      self.model_dump(mode="json", by_alias=True)
     )
 
 
 class User(_View):
   _full = "UserResponse"
   id: str
+  accent_colour: Colour | None = Field(
+    default=None,
+    validation_alias=AliasChoices("accent_color", "accent_colour"),
+    serialization_alias="accent_color",
+  )
+  """The banner colour the user chose, if any; Discord's JSON calls it `accent_color`."""
   username: str = ""
   global_name: str | None = None
   bot: bool = False
@@ -71,6 +80,12 @@ class Role(_View):
   _full = "GuildRoleResponse"
   id: str
   name: str = ""
+  colour: Colour = Field(
+    default=Colour(0),
+    validation_alias=AliasChoices("color", "colour"),
+    serialization_alias="color",
+  )
+  """The role's colour (0 means none); Discord's JSON calls it `color`."""
   permissions: str = "0"
   position: int = 0
 
