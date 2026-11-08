@@ -284,9 +284,15 @@ def _tally(item: Any) -> tuple[int, int]:
   return 1, 0
 
 
-def message_measures(components: Sequence[Any] | Any) -> tuple[Measure, ...]:
+def message_measures(
+  components: Buildable | Sequence[Buildable],
+) -> tuple[Measure, ...]:
   """A message's totals against Discord's two message-wide limits."""
-  items = components if isinstance(components, list | tuple) else [components]
+  items = (
+    cast(Sequence[Buildable], components)
+    if isinstance(components, list | tuple)
+    else [components]
+  )
   components_in_all = text_in_all = 0
   for item in items:
     more, characters = _tally(item)
@@ -908,18 +914,31 @@ class Separator(_Measured):
     return _put(value, id=self.id)
 
 
+type ContainerChild = (
+  Component
+  | ActionRow
+  | TextDisplay
+  | Section
+  | MediaGallery
+  | File
+  | Separator
+  | Mapping[str, JsonValue]
+)
+"""Anything that can sit inside a `Container`; a plain dict is passed through."""
+
+
 @dataclass(frozen=True, slots=True)
 class Container(_Measured):
   """A bordered box of components with an optional accent colour."""
 
-  components: Sequence[Any]
+  components: Sequence[ContainerChild]
   accent_colour: Colour | None = None
   spoiler: bool = False
   id: int | None = None
 
   def __init__(
     self,
-    *components: Any,
+    *components: ContainerChild,
     accent_colour: ColourLike | None = None,
     spoiler: bool = False,
     id: int | None = None,
@@ -937,7 +956,7 @@ class Container(_Measured):
     """This component as the JSON object Discord expects."""
     value: Json = {
       "type": 17,
-      "components": rows(self.components),
+      "components": list(rows(self.components)),
       "spoiler": self.spoiler,
     }
     return _put(
@@ -948,25 +967,16 @@ class Container(_Measured):
 
 
 _LAYOUT = (TextDisplay, Section, Thumbnail, MediaGallery, File, Separator, Container)
-type Buildable = (
-  Component
-  | ActionRow
-  | TextDisplay
-  | Section
-  | MediaGallery
-  | File
-  | Separator
-  | Container
-)
+type Buildable = ContainerChild | Container
 """Anything that can be a top-level component of a message."""
 
 
-def rows(components: Sequence[Any]) -> list[JsonValue]:
+def rows(components: Sequence[Buildable]) -> list[Json]:
   """Lay out components: loose buttons fill rows of five, loose selects get a row.
 
   Rows and layout components stay as they are; a plain dict passes through.
   """
-  laid_out: list[JsonValue] = []
+  laid_out: list[Json] = []
   buttons: list[Button] = []
 
   def flush() -> None:
@@ -989,7 +999,7 @@ def rows(components: Sequence[Any]) -> list[JsonValue]:
   return laid_out
 
 
-def is_v2(components: Sequence[Any] | None) -> bool:
+def is_v2(components: Sequence[Buildable] | None) -> bool:
   """Whether a message's components use the layout set (so it is a v2 message)."""
   return any(
     isinstance(item, _LAYOUT)
@@ -1173,12 +1183,14 @@ class Modal(_Measured):
 
   custom_id: str
   title: str
-  components: Sequence[Label | TextDisplay | TextInput | Mapping[str, Any]] = field(
-    default_factory=tuple
+  components: Sequence[Label | TextDisplay | TextInput | Mapping[str, JsonValue]] = (
+    field(default_factory=tuple)
   )
 
   @property
-  def inputs(self) -> Sequence[Label | TextDisplay | TextInput | Mapping[str, Any]]:
+  def inputs(
+    self,
+  ) -> Sequence[Label | TextDisplay | TextInput | Mapping[str, JsonValue]]:
     """The modal's components, as a sequence."""
     return self.components
 
@@ -1204,7 +1216,7 @@ def message_body(
   content: str | None = None,
   *,
   embeds: Sequence[Json] = (),
-  components: Sequence[Any] | None = None,
+  components: Sequence[Buildable] | None = None,
   allowed_mentions: AllowedMentions | None = None,
   ephemeral: bool = False,
   flags: int = 0,
@@ -1229,7 +1241,8 @@ def message_body(
   if embeds:
     body["embeds"] = list(embeds)
   if components is not None:
-    body["components"] = laid_out = rows(components)
+    laid_out = rows(components)
+    body["components"] = list(laid_out)
     enforce(message_measures(laid_out), "This message")
   if ephemeral:
     flags |= EPHEMERAL
@@ -1273,7 +1286,9 @@ _MODAL_MODELS = {
 }
 
 
-def validate(components: Sequence[Any] | Any, *, modal: bool = False) -> None:
+def validate(
+  components: Buildable | Sequence[Buildable], *, modal: bool = False
+) -> None:
   """Check components against Discord's request models; ValueError if one is wrong.
 
   Accepts a builder, a dict, or a list of either; `modal=True` checks modal rules.
@@ -1283,14 +1298,18 @@ def validate(components: Sequence[Any] | Any, *, modal: bool = False) -> None:
   from micro.discord.models import http as models
 
   table = _MODAL_MODELS if modal else _MESSAGE_MODELS
-  items: Sequence[Any] = (
-    components if isinstance(components, list | tuple) else [components]
+  items: Sequence[Buildable] = (
+    cast(Sequence[Buildable], components)
+    if isinstance(components, list | tuple)
+    else [cast(Buildable, components)]
   )
   if not modal:
     enforce(message_measures(items), "This message")
   for item in items:
-    payload: Mapping[str, Any] = item if isinstance(item, Mapping) else item.to_dict()
-    name = table.get(payload.get("type", -1))
+    payload: Mapping[str, JsonValue] = (
+      item if isinstance(item, Mapping) else item.to_dict()
+    )
+    name = table.get(cast(int, payload.get("type", -1)))
     if name is None:
       raise ValueError(f"Component type {payload.get('type')!r} is not valid here.")
     try:

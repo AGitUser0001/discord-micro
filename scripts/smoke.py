@@ -861,7 +861,7 @@ async def ui_limits_scenarios() -> None:
   )
   check(
     "a container sums its children's counts",
-    Container(box(), section).components_count == 13,
+    Container(box(), section).components_count == 13,  # pyright: ignore[reportArgumentType]  # nesting is Discord-invalid; only counting is checked
   )
   row = ActionRow(button(1), button(2), button(3))
   select_row = ActionRow(ui.StringSelect("pick", ["a", "b"]))
