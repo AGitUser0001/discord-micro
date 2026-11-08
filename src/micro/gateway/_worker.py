@@ -253,7 +253,9 @@ class GatewayWorker(Component):
     self._presence = await runtime.register(
       self, id=self.address, metadata={"max_concurrency": self.max_concurrency}
     )
-    self._unwatch = runtime.directory.on_change(self._wake.set)
+    self._unwatch = runtime.directory.on_change(
+      self._wake.set, watching=lambda: self._peers()
+    )
     self.spawn(self._watch_generations(), name="watch.generations")
     self.spawn(self._watch_leases(), name="watch.leases")
     self.spawn(self._control_loop(), name="control")
@@ -327,11 +329,16 @@ class GatewayWorker(Component):
       if change is None:
         self._wake.set()
         continue
+      known = self._leases.get(change.key)
       if change.value is None:
         self._leases.pop(change.key, None)
-      else:
-        self._leases[change.key] = Versioned(change.value, change.revision)
-      self._wake.set()
+        self._wake.set()
+        continue
+      self._leases[change.key] = Versioned(change.value, change.revision)
+      # A renewal rewrites the same lease, ours or a peer's; waking for it would make
+      # every renewal trigger the next one. Wake only when ownership or state changed.
+      if known is None or known.value != change.value:
+        self._wake.set()
     # Unreachable unless the watch ends.
 
   async def _watch_status(self) -> None:

@@ -1317,6 +1317,33 @@ async def _until_async(read: Any, ok: Any, timeout: float) -> bool:
   return False
 
 
+async def idle_scenarios() -> None:
+  print("idle: an idle deployment does no work")
+  async with Stack(App(), extra_gateways=1) as s:
+    f = s.fake
+    await f.until(lambda: s.names() == ["feedback", "hello", "slow"], 10)
+    workers = [w for w in s.runtime.components if isinstance(w, GatewayWorker)]
+    await f.until(lambda: all(w.ready for w in workers), 15)
+    await asyncio.sleep(1)  # let the start-up churn settle
+    counts = {w.name: 0 for w in workers}
+    for worker in workers:
+      original = worker._reconcile  # pyright: ignore[reportPrivateUsage]
+
+      async def counted(original: Any = original, name: str = worker.name) -> None:
+        counts[name] += 1
+        await original()
+
+      worker._reconcile = counted  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+    await asyncio.sleep(4)
+    # One pass every lease_ttl / 3 (3.3 s) per worker is the design; a feedback loop
+    # (a lease renewal waking the loop that renews it) runs thousands of times a second.
+    check(
+      "an idle Gateway reconciles on its timer, not in a loop",
+      all(count <= 6 for count in counts.values()),
+      counts,
+    )
+
+
 async def sync_scenarios() -> None:
   print("sync: command registration under failure")
   async with Stack(App()) as s:
@@ -3869,6 +3896,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "basics": basics,
   "sync": sync_scenarios,
   "runtime-commands": runtime_command_scenarios,
+  "idle": idle_scenarios,
   "config": config_scenarios,
   "gateway-config": gateway_config_scenarios,
   "docs": docs_scenarios,
