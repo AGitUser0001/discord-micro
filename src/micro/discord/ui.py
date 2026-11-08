@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import JsonValue
 
@@ -205,14 +205,17 @@ class _Hooked(type):
     """What this kind of component can hold in its main dimension (read it on the class)."""
     return _primary_max(cls)
 
-  def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+  # Typed as returning the class's own instances, so type checkers ignore this
+  # `__call__` and check arguments against each component's real `__init__`.
+  def __call__[T](cls: type[T], *args: Any, **kwargs: Any) -> T:
+    built: Any
     if not hooks._build or _building.get():  # pyright: ignore[reportPrivateUsage]
-      built = super().__call__(*args, **kwargs)
+      built = super().__call__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
     else:
       built = hooks.run_build(cls, args, kwargs)
     if isinstance(built, _Measured):
       built._accumulate()  # pyright: ignore[reportPrivateUsage]
-    return built
+    return cast(T, built)
 
 
 # Counts and limits -------------------------------------------------------------------

@@ -775,7 +775,7 @@ async def ui_hooks_scenarios() -> None:
       button.to_dict()["custom_id"] == "o.go.i",
       button.to_dict(),
     )
-    tree = Container(
+    tree: Any = Container(
       ActionRow(Button("x", custom_id="x"), StringSelect("pick", ["a"]))
     ).to_dict()
     ids = [c["custom_id"] for row in tree["components"] for c in row["components"]]
