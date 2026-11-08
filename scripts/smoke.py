@@ -852,6 +852,14 @@ async def ui_limits_scenarios() -> None:
     section.components_count == 5 and section.text_count == 6,
   )
   check(
+    "text is counted in UTF-16 units: an emoji is 2",
+    ui.utf16_length("a😀") == 3 and TextDisplay("😀" * 2001).count == 4002,
+  )
+  check(
+    "so 2001 emoji overflow a 4000-unit Text Display",
+    "content is 4002" in refused(lambda: TextDisplay("😀" * 2001).to_dict()),
+  )
+  check(
     "a container sums its children's counts",
     Container(box(), section).components_count == 13,
   )

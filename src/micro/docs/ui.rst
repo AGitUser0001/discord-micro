@@ -104,6 +104,9 @@ Checking a message
    box.text_count           # 2: characters of Text Display content inside it
    box.measures             # every count with its limit, from Discord's own models
 
+* **Text is measured the way Discord measures it: in UTF-16 code units** (:func:`utf16_length`), so a
+  character outside the basic plane such as 😀 counts as 2. Every text count and limit here uses it;
+  Python's ``len`` would undercount.
 * ``components_count`` (this component and everything inside it) and ``text_count`` (characters
   of Text Display content inside it) are attributes set when it is constructed, summed from its
   children. Nothing re-walks JSON.
@@ -309,6 +312,7 @@ Reference
    micro.discord.ui.check_limits
    micro.discord.ui.MAX_COMPONENTS
    micro.discord.ui.MAX_TEXT
+   micro.discord.ui.utf16_length
    micro.discord.ui.Hooks
    micro.discord.ui.Construction
    micro.discord.ui.BuildMiddleware

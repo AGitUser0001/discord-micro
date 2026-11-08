@@ -263,11 +263,11 @@ def _tally(item: Any) -> tuple[int, int]:
   if isinstance(item, _Measured):
     return item.components_count, item.text_count
   if isinstance(item, str):  # a Section's plain-text shorthand is a Text Display
-    return 1, len(item)
+    return 1, utf16_length(item)
   if isinstance(item, Mapping):
     components, text = (
       1,
-      len(item.get("content") or "") if item.get("type") == 10 else 0,
+      utf16_length(item.get("content") or "") if item.get("type") == 10 else 0,
     )
     for child in item.get("components") or ():
       more, characters = _tally(child)
@@ -362,9 +362,18 @@ def _slots(item: Any) -> int:
   return getattr(item, "slots", 1)
 
 
+def utf16_length(text: str) -> int:
+  """Length the way Discord counts text: UTF-16 code units, so 😀 is 2, not 1."""
+  return len(text.encode("utf-16-le")) // 2
+
+
 def _lengths(**fields: Any) -> dict[str, int]:
-  """`len()` of each field that is set."""
-  return {name: len(value) for name, value in fields.items() if value is not None}
+  """Size of each field that is set: text in UTF-16 units, lists by item count."""
+  return {
+    name: utf16_length(value) if isinstance(value, str) else len(value)
+    for name, value in fields.items()
+    if value is not None
+  }
 
 
 def check_limits(component: Any, next: Callable[[], Json]) -> Json:
@@ -1313,8 +1322,8 @@ _COUNTED: dict[type, dict[str, Callable[[Any], Any]]] = {
     )
   },
   TextDisplay: {
-    "text": lambda c: len(c.content),
-    "counts": lambda c: {"content": len(c.content)},
+    "text": lambda c: utf16_length(c.content),
+    "counts": lambda c: {"content": utf16_length(c.content)},
   },
   Thumbnail: {"counts": lambda c: _lengths(description=c.description)},
   Section: {
@@ -1344,8 +1353,8 @@ _COUNTED: dict[type, dict[str, Callable[[Any], Any]]] = {
   Modal: {
     "children": lambda c: c.components,
     "counts": lambda c: {
-      "title": len(c.title),
-      "custom_id": len(c.custom_id),
+      "title": utf16_length(c.title),
+      "custom_id": utf16_length(c.custom_id),
       "components": len(c.components),
     },
   },
@@ -1358,21 +1367,21 @@ for _cls, _how in _COUNTED.items():
 # is a field of Discord's model, or a number. This is `count` and `max`.
 _PRIMARY: dict[type, tuple[Callable[[Any], int], str | int | None]] = {
   ActionRow: (lambda c: sum(_slots(i) for i in c.components), "components"),
-  Button: (lambda c: len(c.label or ""), "label"),
+  Button: (lambda c: utf16_length(c.label or ""), "label"),
   StringSelect: (lambda c: len(c.options), "options"),
   UserSelect: (lambda c: len(c.defaults or ()), "default_values"),
   RoleSelect: (lambda c: len(c.defaults or ()), "default_values"),
   MentionableSelect: (lambda c: len(c.defaults or ()), "default_values"),
   ChannelSelect: (lambda c: len(c.defaults or ()), "default_values"),
-  TextDisplay: (lambda c: len(c.content), "content"),
-  Thumbnail: (lambda c: len(c.description or ""), "description"),
+  TextDisplay: (lambda c: utf16_length(c.content), "content"),
+  Thumbnail: (lambda c: utf16_length(c.description or ""), "description"),
   Section: (lambda c: len(c.texts), "components"),
   MediaGallery: (lambda c: len(c.items), "items"),
   File: (lambda c: 0, None),
   Separator: (lambda c: 0, None),
   Container: (lambda c: c.components_count, MAX_COMPONENTS),
-  TextInput: (lambda c: len(c.value or ""), "value"),
-  Label: (lambda c: len(c.label), "label"),
+  TextInput: (lambda c: utf16_length(c.value or ""), "value"),
+  Label: (lambda c: utf16_length(c.label), "label"),
   FileUpload: (lambda c: 0, None),
   RadioGroup: (lambda c: len(c.options), "options"),
   CheckboxGroup: (lambda c: len(c.options), "options"),
