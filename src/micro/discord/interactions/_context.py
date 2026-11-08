@@ -29,9 +29,8 @@ from micro.discord.routes import (
 )
 from micro.discord.ui import (
   EPHEMERAL,
-  ActionRow,
   AllowedMentions,
-  Component,
+  Buildable,
   Json,
   Modal,
   message_body,
@@ -451,7 +450,7 @@ class Interaction:
     content: str | None = None,
     *,
     embeds: Sequence[Json] = (),
-    components: Sequence[ActionRow | Component] | None = None,
+    components: Sequence[Buildable] | None = None,
     ephemeral: bool = False,
     allowed_mentions: AllowedMentions | None = None,
   ) -> Message | None:
@@ -505,7 +504,7 @@ class Interaction:
     content: str | None = None,
     *,
     embeds: Sequence[Json] | None = None,
-    components: Sequence[ActionRow | Component] | None = None,
+    components: Sequence[Buildable] | None = None,
     allowed_mentions: AllowedMentions | None = None,
   ) -> None:
     """Edit the message this interaction answered with."""
@@ -525,7 +524,7 @@ class Interaction:
     content: str | None = None,
     *,
     embeds: Sequence[Json] | None = None,
-    components: Sequence[ActionRow | Component] | None = None,
+    components: Sequence[Buildable] | None = None,
     allowed_mentions: AllowedMentions | None = None,
   ) -> None:
     """Edit the message a component was clicked on.
@@ -649,7 +648,7 @@ class Interaction:
 def _edit_body(
   content: str | None,
   embeds: Sequence[Json] | None,
-  components: Sequence[ActionRow | Component] | None,
+  components: Sequence[Buildable] | None,
   allowed_mentions: AllowedMentions | None,
 ) -> Json:
   body = message_body(

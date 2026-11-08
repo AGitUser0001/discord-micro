@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from micro.discord.objects import Message
-from micro.discord.ui import ActionRow, AllowedMentions, Component, Json, message_body
+from micro.discord.ui import AllowedMentions, Buildable, Json, message_body
 
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
@@ -16,7 +16,7 @@ async def send(
   content: str | None = None,
   *,
   embeds: Sequence[Json] = (),
-  components: Sequence[ActionRow | Component] | None = None,
+  components: Sequence[Buildable] | None = None,
   allowed_mentions: AllowedMentions | None = None,
   reply_to: int | str | None = None,
 ) -> Message:
