@@ -10,7 +10,7 @@ the token are handled for you.
 .. code-block:: python
 
    api = ctx.api
-   message = await api.create_message(channel_id, "hi", embeds=[embed("T", "D")])
+   message = (await api.create_message(channel_id, "hi", embeds=[Embed("T", "D")])).unwrap()
    await api.update_message(channel_id, message.id, content="edited")
    await api.create_message(channel_id, "see attached", files=[Upload("report.pdf", data)])
    await api.ban_user_from_guild(guild_id, user_id, delete_message_seconds=3600, reason="spam")

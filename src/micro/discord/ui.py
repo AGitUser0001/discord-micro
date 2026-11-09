@@ -20,15 +20,112 @@ import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, ClassVar, Literal, cast
+from os import PathLike
+from typing import Any, ClassVar, Literal, cast, overload
 
 from pydantic import JsonValue
 
 from .colour import Colour, ColourLike
 
 type Json = dict[str, JsonValue]
+
+
+@dataclass(frozen=True, slots=True)
+class Upload:
+  """A file to send with a message.
+
+      chart = Upload("chart.png", png_bytes)
+      await ctx.respond(components=[MediaGallery(chart)])     # shown, and attached
+      await ctx.respond("the log", files=[Upload.text("log.txt", text)])
+
+  Put it wherever a picture or file goes (`Thumbnail`, `MediaGallery`, `File`, an
+  embed's `image=`) and the message attaches it by itself; a file that is only
+  attached, not shown, goes in `files=`. `description` is its alt text.
+  `spoiler` hides it behind a click.
+  """
+
+  filename: str
+  data: bytes
+  content_type: str | None = None
+  description: str | None = None
+  spoiler: bool = False
+
+  @classmethod
+  def text(
+    cls,
+    filename: str,
+    text: str,
+    *,
+    description: str | None = None,
+    spoiler: bool = False,
+  ) -> Upload:
+    """A text file (UTF-8) from a string."""
+    return cls(
+      filename, text.encode(), "text/plain; charset=utf-8", description, spoiler
+    )
+
+  @classmethod
+  def json(
+    cls,
+    filename: str,
+    value: JsonValue,
+    *,
+    description: str | None = None,
+    spoiler: bool = False,
+  ) -> Upload:
+    """A JSON file from a value."""
+    import json
+
+    data = json.dumps(value, indent=2, ensure_ascii=False).encode()
+    return cls(filename, data, "application/json", description, spoiler)
+
+  @classmethod
+  def from_path(
+    cls,
+    path: str | PathLike[str],
+    *,
+    filename: str | None = None,
+    content_type: str | None = None,
+    description: str | None = None,
+    spoiler: bool = False,
+  ) -> Upload:
+    """A file read from disk now; named after the path unless `filename` is given."""
+    from pathlib import Path
+
+    source = Path(path)
+    return cls(
+      filename or source.name, source.read_bytes(), content_type, description, spoiler
+    )
+
+  @property
+  def name(self) -> str:
+    """The name it is sent under: `SPOILER_` is how Discord marks a spoiler."""
+    return f"SPOILER_{self.filename}" if self.spoiler else self.filename
+
+  @property
+  def url(self) -> str:
+    """`attachment://<name>`: how a message refers to a file sent with it."""
+    return f"attachment://{self.name}"
+
+  @property
+  def size(self) -> int:
+    """Its size in bytes."""
+    return len(self.data)
+
+
+type Media = str | Upload
+"""A picture, video or file: a URL, or an `Upload` sent with the message."""
+
+
+def _url(media: Media) -> str:
+  return media.url if isinstance(media, Upload) else media
+
+
+def _hidden(media: Media, spoiler: bool) -> bool:
+  return spoiler or (isinstance(media, Upload) and media.spoiler)
+
 
 EPHEMERAL = 1 << 6
 SUPPRESS_EMBEDS = 1 << 2
@@ -104,17 +201,43 @@ class Hooks:
     self._build: list[tuple[BuildMiddleware, Only]] = []
     self._serialize: list[tuple[SerializeMiddleware, Only]] = []
 
-  def build(self, function: BuildMiddleware | None = None, *, only: Only = None) -> Any:
+  @overload
+  def build[F: BuildMiddleware](self, function: F, /) -> F: ...
+  @overload
+  def build(
+    self, /, *, only: Only = None
+  ) -> Callable[[BuildMiddleware], BuildMiddleware]: ...
+
+  def build(
+    self, function: BuildMiddleware | None = None, /, *, only: Only = None
+  ) -> Any:
     """Register construction middleware (a decorator, with or without `only=`)."""
-    return self._add(self._build, function, only)
+
+    def register(function: BuildMiddleware) -> BuildMiddleware:
+      self._build.append((function, only))
+      return function
+
+    return register if function is None else register(function)
+
+  @overload
+  def serialize[F: SerializeMiddleware](self, function: F, /) -> F: ...
+  @overload
+  def serialize(
+    self, /, *, only: Only = None
+  ) -> Callable[[SerializeMiddleware], SerializeMiddleware]: ...
 
   def serialize(
-    self, function: SerializeMiddleware | None = None, *, only: Only = None
+    self, function: SerializeMiddleware | None = None, /, *, only: Only = None
   ) -> Any:
     """Register serialization middleware (a decorator, with or without `only=`)."""
-    return self._add(self._serialize, function, only)
 
-  def remove(self, function: Callable[..., Any]) -> bool:
+    def register(function: SerializeMiddleware) -> SerializeMiddleware:
+      self._serialize.append((function, only))
+      return function
+
+    return register if function is None else register(function)
+
+  def remove(self, function: BuildMiddleware | SerializeMiddleware) -> bool:
     """Unregister a middleware of either kind; True if it was registered."""
     found = False
     for registry in (self._build, self._serialize):
@@ -131,13 +254,6 @@ class Hooks:
       yield self
     finally:
       self._build[:], self._serialize[:] = saved
-
-  def _add(self, registry: list[Any], function: Any, only: Only) -> Any:
-    def register(function: Any) -> Any:
-      registry.append((function, only))
-      return function
-
-    return register if function is None else register(function)
 
   def run_build(self, cls: type, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     """Build `cls` through the build middleware. Components that middleware builds
@@ -215,7 +331,7 @@ class _Hooked(type):
       built = super().__call__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
     else:
       built = hooks.run_build(cls, args, kwargs)
-    if isinstance(built, _Measured):
+    if isinstance(built, Component):
       built._accumulate()  # pyright: ignore[reportPrivateUsage]
     return cast(T, built)
 
@@ -265,7 +381,7 @@ def enforce(measures: Iterable[Measure], subject: str) -> None:
 
 def _tally(item: Any) -> tuple[int, int]:
   """`(components, text characters)` of anything that can sit in a message."""
-  if isinstance(item, _Measured):
+  if isinstance(item, Component):
     return item.components_count, item.text_count
   if isinstance(item, str):  # a Section's plain-text shorthand is a Text Display
     return 1, utf16_length(item)
@@ -303,8 +419,14 @@ def message_measures(
   )
 
 
-class _Measured(metaclass=_Hooked):
-  """Base of every component: its counts, accumulated as it is constructed."""
+class Component(metaclass=_Hooked):
+  """The root of every message and modal component, version 1 and version 2 alike
+  (`Button`, `ActionRow`, `TextDisplay`, `Container`, `TextInput`, ...).
+
+  Every component knows its Discord JSON (`to_dict`), what it holds (`count`, `max`,
+  `remaining`, `components_count`, `text_count`) and the limits it must stay within; the
+  hooks (`micro.discord.ui.hooks`) run on all of them. `isinstance(x, Component)` is
+  how to tell a builder from a plain dict."""
 
   __slots__ = ("components_count", "text_count")
   components_count: int
@@ -392,12 +514,18 @@ def check_limits(component: Any, next: Callable[[], Json]) -> Json:
 
   Remove it with `hooks.remove(check_limits)` to send what Discord would reject.
   """
-  if isinstance(component, _Measured):
+  if isinstance(component, Component | Embed):
     enforce(component.measures, type(component).__name__)
   return next()
 
 
-def _put(data: Json, **items: JsonValue) -> Json:
+def _alt(media: Media, description: str | None) -> str | None:
+  if description is None and isinstance(media, Upload):
+    return media.description
+  return description
+
+
+def _put[D: Json](data: D, **items: JsonValue) -> D:
   """Add the items that are not None."""
   for key, item in items.items():
     if item is not None:
@@ -444,53 +572,217 @@ class AllowedMentions(metaclass=_Hooked):
     return value
 
 
-def embed(
-  title: str | None = None,
-  description: str | None = None,
-  *,
-  colour: ColourLike | None = None,
-  url: str | None = None,
-  fields: Sequence[tuple[str, str] | tuple[str, str, bool]] = (),
-  footer: str | None = None,
-  footer_icon: str | None = None,
-  image: str | None = None,
-  thumbnail: str | None = None,
-  author: str | None = None,
-  author_url: str | None = None,
-  author_icon: str | None = None,
-  timestamp: datetime | str | None = None,
-) -> Json:
-  """Build an embed; `fields` are `(name, value)` or `(name, value, inline)`."""
-  value: Json = {}
-  _put(
-    value,
-    title=title,
-    description=description,
-    color=None if colour is None else int(Colour.parse(colour)),  # Discord's key
-    url=url,
-  )
-  if timestamp is not None:
-    value["timestamp"] = (
-      timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp
+@dataclass(frozen=True, slots=True)
+class EmbedField(metaclass=_Hooked):
+  """One name and value in an embed; `inline` sets fields side by side."""
+
+  name: str
+  value: str
+  inline: bool = False
+
+  def to_dict(self) -> Json:
+    """This field as the JSON object Discord expects."""
+    return {"name": self.name, "value": self.value, "inline": self.inline}
+
+
+@dataclass(frozen=True, slots=True)
+class EmbedFooter(metaclass=_Hooked):
+  """Small text at the bottom of an embed, with an optional icon."""
+
+  text: str
+  icon: Media | None = None
+
+  def to_dict(self) -> Json:
+    """This footer as the JSON object Discord expects."""
+    return _put(
+      {"text": self.text}, icon_url=None if self.icon is None else _url(self.icon)
     )
-  if fields:
-    value["fields"] = [
-      {
-        "name": item[0],
-        "value": item[1],
-        "inline": bool(item[2]) if len(item) > 2 else False,
-      }
-      for item in fields
+
+
+@dataclass(frozen=True, slots=True)
+class EmbedAuthor(metaclass=_Hooked):
+  """A name (that may link somewhere) with an icon, at the top of an embed."""
+
+  name: str
+  url: str | None = None
+  icon: Media | None = None
+
+  def to_dict(self) -> Json:
+    """This author as the JSON object Discord expects."""
+    return _put(
+      {"name": self.name},
+      url=self.url,
+      icon_url=None if self.icon is None else _url(self.icon),
+    )
+
+
+type FieldLike = EmbedField | tuple[str, str] | tuple[str, str, bool]
+"""A field, or the tuple `(name, value)` / `(name, value, inline)`."""
+
+MAX_EMBEDS = 10
+MAX_EMBED_TEXT = 6000
+"""Characters of text all of a message's embeds may hold between them."""
+
+
+@dataclass(frozen=True, slots=True)
+class Embed(metaclass=_Hooked):
+  """A rich embed. Every part is optional; a picture is a URL or an `Upload`, which the
+  message then attaches by itself.
+
+      Embed("Sales", "This week", colour=Colour.GREEN, image=chart,
+            fields=[("North", "12"), ("South", "9", True)],
+            footer="updated", author=EmbedAuthor("Ada", icon=avatar_url))
+
+  `footer` and `author` are a string or an `EmbedFooter` / `EmbedAuthor`. Embeds are
+  immutable; `add_field`, or `dataclasses.replace`, gives a changed copy. The limits Discord enforces
+  (256 title, 4096 description, 25 fields, 6000 characters over a message's embeds, ...)
+  are checked when it is serialized (see `measures`).
+  """
+
+  title: str | None
+  description: str | None
+  colour: Colour | None
+  url: str | None
+  fields: tuple[EmbedField, ...]
+  footer: EmbedFooter | None
+  image: Media | None
+  thumbnail: Media | None
+  author: EmbedAuthor | None
+  timestamp: datetime | str | None
+
+  def __init__(
+    self,
+    title: str | None = None,
+    description: str | None = None,
+    *,
+    colour: ColourLike | None = None,
+    url: str | None = None,
+    fields: Sequence[FieldLike] = (),
+    footer: EmbedFooter | str | None = None,
+    image: Media | None = None,
+    thumbnail: Media | None = None,
+    author: EmbedAuthor | str | None = None,
+    timestamp: datetime | str | None = None,
+  ) -> None:
+    set_ = object.__setattr__
+    set_(self, "title", title)
+    set_(self, "description", description)
+    set_(self, "colour", None if colour is None else Colour.parse(colour))
+    set_(self, "url", url)
+    set_(self, "fields", tuple(_field(item) for item in fields))
+    set_(self, "footer", EmbedFooter(footer) if isinstance(footer, str) else footer)
+    set_(self, "image", image)
+    set_(self, "thumbnail", thumbnail)
+    set_(self, "author", EmbedAuthor(author) if isinstance(author, str) else author)
+    set_(self, "timestamp", timestamp)
+
+  def add_field(self, name: str, value: str, inline: bool = False) -> Embed:
+    """A copy with one more field."""
+    return replace(self, fields=(*self.fields, EmbedField(name, value, inline)))
+
+  @property
+  def uploads(self) -> tuple[Upload, ...]:
+    """The `Upload`s this embed shows."""
+    shown = (
+      self.image,
+      self.thumbnail,
+      self.footer.icon if self.footer else None,
+      self.author.icon if self.author else None,
+    )
+    return tuple(item for item in shown if isinstance(item, Upload))
+
+  @property
+  def length(self) -> int:
+    """Characters of text Discord counts toward the 6000 an embed (all of a message's
+    embeds, together) may hold: title, description, field names and values, footer and
+    author names; in UTF-16 units."""
+    return embed_length(self._json())
+
+  @property
+  def measures(self) -> tuple[Measure, ...]:
+    """Every count this embed has, with Discord's limit for it."""
+    from micro.discord.models import http as models
+
+    top = _limits_in(models.RichEmbed)
+    name = _limits_in(models.RichEmbedField)
+    value = name["value"][1]
+    found = [
+      Measure("title", utf16_length(self.title or ""), top["title"][1]),
+      Measure(
+        "description", utf16_length(self.description or ""), top["description"][1]
+      ),
+      Measure("fields", len(self.fields), top["fields"][1]),
+      Measure("text in all", self.length, MAX_EMBED_TEXT),
     ]
-  if footer is not None:
-    value["footer"] = _put({"text": footer}, icon_url=footer_icon)
-  if image is not None:
-    value["image"] = {"url": image}
-  if thumbnail is not None:
-    value["thumbnail"] = {"url": thumbnail}
-  if author is not None:
-    value["author"] = _put({"name": author}, url=author_url, icon_url=author_icon)
-  return value
+    for index, item in enumerate(self.fields, 1):
+      found.append(
+        Measure(f"field {index} name", utf16_length(item.name), name["name"][1], 1)
+      )
+      found.append(Measure(f"field {index} value", utf16_length(item.value), value, 1))
+    if self.footer is not None:
+      limit = _limits_in(models.RichEmbedFooter)["text"][1]
+      found.append(Measure("footer", utf16_length(self.footer.text), limit))
+    if self.author is not None:
+      limit = _limits_in(models.RichEmbedAuthor)["name"][1]
+      found.append(Measure("author", utf16_length(self.author.name), limit))
+    return tuple(found)
+
+  def to_dict(self) -> Json:
+    """This embed as the JSON object Discord expects."""
+    return self._json()
+
+  def _json(self) -> Json:
+    value: Json = {}
+    _put(
+      value,
+      title=self.title,
+      description=self.description,
+      color=None if self.colour is None else int(self.colour),  # Discord's key
+      url=self.url,
+    )
+    if self.timestamp is not None:
+      value["timestamp"] = (
+        self.timestamp.isoformat()
+        if isinstance(self.timestamp, datetime)
+        else self.timestamp
+      )
+    if self.fields:
+      value["fields"] = [item.to_dict() for item in self.fields]
+    if self.footer is not None:
+      value["footer"] = self.footer.to_dict()
+    if self.image is not None:
+      value["image"] = {"url": _url(self.image)}
+    if self.thumbnail is not None:
+      value["thumbnail"] = {"url": _url(self.thumbnail)}
+    if self.author is not None:
+      value["author"] = self.author.to_dict()
+    return value
+
+
+def _field(item: FieldLike) -> EmbedField:
+  if isinstance(item, EmbedField):
+    return item
+  return EmbedField(item[0], item[1], bool(item[2]) if len(item) > 2 else False)
+
+
+def embed_length(embed: Mapping[str, JsonValue]) -> int:
+  """The characters of an embed (as Discord's JSON) that count toward the 6000 limit."""
+  total = 0
+
+  def text(value: JsonValue) -> int:
+    return utf16_length(value) if isinstance(value, str) else 0
+
+  def part(name: str, key: str) -> int:
+    inner = embed.get(name)
+    return text(inner.get(key)) if isinstance(inner, Mapping) else 0
+
+  total += text(embed.get("title")) + text(embed.get("description"))
+  total += part("footer", "text") + part("author", "name")
+  fields = embed.get("fields")
+  for item in fields if isinstance(fields, list) else ():
+    if isinstance(item, Mapping):
+      total += text(item.get("name")) + text(item.get("value"))
+  return total
 
 
 # Emoji -------------------------------------------------------------------------
@@ -533,7 +825,7 @@ type ButtonStyle = Literal[
 
 
 @dataclass(frozen=True, slots=True)
-class Button(_Measured):
+class Button(Component):
   """A button: `custom_id` (an interaction), `url` (a link), or `sku_id` (premium)."""
 
   label: str | None = None
@@ -644,7 +936,7 @@ def _select(
 
 
 @dataclass(frozen=True, slots=True)
-class StringSelect(_Measured):
+class StringSelect(Component):
   """A menu of string options; options may be plain strings or `SelectOption`s."""
 
   custom_id: str
@@ -673,7 +965,7 @@ Select = StringSelect
 
 
 @dataclass(frozen=True, slots=True)
-class UserSelect(_Measured):
+class UserSelect(Component):
   """A menu of users."""
 
   custom_id: str
@@ -695,7 +987,7 @@ class UserSelect(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class RoleSelect(_Measured):
+class RoleSelect(Component):
   """A menu of server roles."""
 
   custom_id: str
@@ -717,7 +1009,7 @@ class RoleSelect(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class MentionableSelect(_Measured):
+class MentionableSelect(Component):
   """Users and roles together; `defaults` are `Default.user(id)` / `Default.role(id)`."""
 
   custom_id: str
@@ -739,7 +1031,7 @@ class MentionableSelect(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class ChannelSelect(_Measured):
+class ChannelSelect(Component):
   """Channels; `channel_types` limits them: `"text"`, `"voice"`, `"category"`, ..."""
 
   custom_id: str
@@ -767,17 +1059,18 @@ type Select_ = (
   StringSelect | UserSelect | RoleSelect | MentionableSelect | ChannelSelect
 )
 _SELECTS = (StringSelect, UserSelect, RoleSelect, MentionableSelect, ChannelSelect)
-type Component = Button | Select_
+type Interactive = Button | Select_
+"""What goes in an action row: a button or a select menu."""
 
 
 @dataclass(frozen=True, slots=True)
-class ActionRow(_Measured):
+class ActionRow(Component):
   """Up to five buttons, or one select."""
 
-  components: Sequence[Component]
+  components: Sequence[Interactive]
   id: int | None = None
 
-  def __init__(self, *components: Component, id: int | None = None) -> None:
+  def __init__(self, *components: Interactive, id: int | None = None) -> None:
     object.__setattr__(self, "components", tuple(components))
     object.__setattr__(self, "id", id)
 
@@ -792,7 +1085,7 @@ class ActionRow(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class TextDisplay(_Measured):
+class TextDisplay(Component):
   """Markdown text. Counts toward the message's 4000 characters of text in total."""
 
   content: str
@@ -804,22 +1097,34 @@ class TextDisplay(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class Thumbnail(_Measured):
-  """A small image beside text: only as a `Section` accessory."""
+class Thumbnail(Component):
+  """A small image beside text: only as a `Section` accessory.
 
-  url: str
+  `media` is a URL or an `Upload` (attached by the message itself).
+  """
+
+  media: Media
   description: str | None = None
   spoiler: bool = False
   id: int | None = None
 
+  @property
+  def url(self) -> str:
+    """The picture's URL (`attachment://name` for an `Upload`)."""
+    return _url(self.media)
+
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
-    value: Json = {"type": 11, "media": {"url": self.url}, "spoiler": self.spoiler}
-    return _put(value, id=self.id, description=self.description)
+    value: Json = {
+      "type": 11,
+      "media": {"url": self.url},
+      "spoiler": _hidden(self.media, self.spoiler),
+    }
+    return _put(value, id=self.id, description=_alt(self.media, self.description))
 
 
 @dataclass(frozen=True, slots=True)
-class Section(_Measured):
+class Section(Component):
   """One to three texts with a `Button` or `Thumbnail` beside them."""
 
   texts: Sequence[TextDisplay | str]
@@ -849,26 +1154,34 @@ class Section(_Measured):
 
 @dataclass(frozen=True, slots=True)
 class MediaItem(metaclass=_Hooked):
-  """One picture or video of a `MediaGallery`: a URL or `attachment://name`."""
+  """One picture or video of a `MediaGallery`: a URL or an `Upload`."""
 
-  url: str
+  media: Media
   description: str | None = None
   spoiler: bool = False
 
+  @property
+  def url(self) -> str:
+    """The item's URL (`attachment://name` for an `Upload`)."""
+    return _url(self.media)
+
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
-    value: Json = {"media": {"url": self.url}, "spoiler": self.spoiler}
-    return _put(value, description=self.description)
+    value: Json = {
+      "media": {"url": self.url},
+      "spoiler": _hidden(self.media, self.spoiler),
+    }
+    return _put(value, description=_alt(self.media, self.description))
 
 
 @dataclass(frozen=True, slots=True)
-class MediaGallery(_Measured):
+class MediaGallery(Component):
   """Up to ten pictures or videos."""
 
-  items: Sequence[MediaItem | str]
+  items: Sequence[MediaItem | Media]
   id: int | None = None
 
-  def __init__(self, *items: MediaItem | str, id: int | None = None) -> None:
+  def __init__(self, *items: MediaItem | Media, id: int | None = None) -> None:
     object.__setattr__(self, "items", tuple(items))
     object.__setattr__(self, "id", id)
 
@@ -879,25 +1192,38 @@ class MediaGallery(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class File(_Measured):
-  """An uploaded file shown in the message; `url` is `attachment://name`."""
+class File(Component):
+  """A file shown in the message: an `Upload`, or `attachment://name` for one
+  sent in `files=` (Discord shows only attached files this way, not other URLs)."""
 
-  url: str
+  file: Media
   spoiler: bool = False
   id: int | None = None
 
   def __post_init__(self) -> None:
     if not self.url.startswith("attachment://"):
-      raise ValueError("A File component shows an attachment: use attachment://name.")
+      raise ValueError(
+        "A File component shows an attached file: give it an Upload, or "
+        "attachment://name."
+      )
+
+  @property
+  def url(self) -> str:
+    """`attachment://name`."""
+    return _url(self.file)
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
-    value: Json = {"type": 13, "file": {"url": self.url}, "spoiler": self.spoiler}
+    value: Json = {
+      "type": 13,
+      "file": {"url": self.url},
+      "spoiler": _hidden(self.file, self.spoiler),
+    }
     return _put(value, id=self.id)
 
 
 @dataclass(frozen=True, slots=True)
-class Separator(_Measured):
+class Separator(Component):
   """Space between components, with an optional dividing line."""
 
   divider: bool = True
@@ -915,7 +1241,7 @@ class Separator(_Measured):
 
 
 type ContainerChild = (
-  Component
+  Interactive
   | ActionRow
   | TextDisplay
   | Section
@@ -928,7 +1254,7 @@ type ContainerChild = (
 
 
 @dataclass(frozen=True, slots=True)
-class Container(_Measured):
+class Container(Component):
   """A bordered box of components with an optional accent colour."""
 
   components: Sequence[ContainerChild]
@@ -1012,7 +1338,7 @@ def is_v2(components: Sequence[Buildable] | None) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class TextInput(_Measured):
+class TextInput(Component):
   """A text field. In a `Label`, leave `label` out; bare in a `Modal`, it needs one."""
 
   custom_id: str
@@ -1066,7 +1392,7 @@ def _group(options: Sequence[GroupOption | str]) -> list[JsonValue]:
 
 
 @dataclass(frozen=True, slots=True)
-class RadioGroup(_Measured):
+class RadioGroup(Component):
   """Pick exactly one of two to ten options."""
 
   custom_id: str
@@ -1085,7 +1411,7 @@ class RadioGroup(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class CheckboxGroup(_Measured):
+class CheckboxGroup(Component):
   """Pick any of up to ten options (`min_values`, `max_values` limit how many)."""
 
   custom_id: str
@@ -1112,7 +1438,7 @@ class CheckboxGroup(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class Checkbox(_Measured):
+class Checkbox(Component):
   """A single yes/no box."""
 
   custom_id: str
@@ -1127,7 +1453,7 @@ class Checkbox(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class FileUpload(_Measured):
+class FileUpload(Component):
   """Ask for files; read them with `ctx.attachments` after the submission."""
 
   custom_id: str
@@ -1156,7 +1482,7 @@ type ModalInput = (
 
 
 @dataclass(frozen=True, slots=True)
-class Label(_Measured):
+class Label(Component):
   """A titled field of a modal: wraps one input and gives it a label and a hint."""
 
   label: str
@@ -1175,7 +1501,7 @@ class Label(_Measured):
 
 
 @dataclass(frozen=True, slots=True)
-class Modal(_Measured):
+class Modal(Component):
   """A pop-up form of up to five `Label`s and `TextDisplay`s.
 
   A bare `TextInput` (with a label) is still accepted and sent in the older way.
@@ -1215,16 +1541,18 @@ class Modal(_Measured):
 def message_body(
   content: str | None = None,
   *,
-  embeds: Sequence[Json] = (),
+  embeds: Sequence[Embed | Json] = (),
   components: Sequence[Buildable] | None = None,
   allowed_mentions: AllowedMentions | None = None,
   ephemeral: bool = False,
   flags: int = 0,
+  files: Sequence[Upload] = (),
 ) -> Json:
   """A message payload with safe mention defaults.
 
   Layout components set IS_COMPONENTS_V2, and such a message has no `content` or
-  `embeds` (Discord rejects both).
+  `embeds` (Discord rejects both). `files` are the uploads sent alongside (see
+  `uploads_in`); they add the `attachments` list that carries their alt text.
   """
   body: Json = {
     "allowed_mentions": (allowed_mentions or AllowedMentions.none()).to_dict()
@@ -1239,7 +1567,15 @@ def message_body(
   if content is not None:
     body["content"] = content
   if embeds:
-    body["embeds"] = list(embeds)
+    written = [item.to_dict() if isinstance(item, Embed) else item for item in embeds]
+    enforce(
+      (
+        Measure("embeds", len(written), MAX_EMBEDS),
+        Measure("text in all embeds", sum(map(embed_length, written)), MAX_EMBED_TEXT),
+      ),
+      "This message",
+    )
+    body["embeds"] = list(written)
   if components is not None:
     laid_out = rows(components)
     body["components"] = list(laid_out)
@@ -1248,7 +1584,203 @@ def message_body(
     flags |= EPHEMERAL
   if flags:
     body["flags"] = flags
+  if any(file.description for file in files):
+    body["attachments"] = attachments(files)
   return body
+
+
+@dataclass(frozen=True, slots=True)
+class Draft(metaclass=_Hooked):
+  """A message as data: what to say, with everything that goes with it.
+
+      reply = Draft(
+        "Report ready",
+        embeds=[Embed("Sales", image=chart)],
+        components=[Button("Open", custom_id="report.open")],
+        ephemeral=True,
+      )
+      await ctx.respond(reply)              # also channel.send(reply), message.edit(reply)
+      await ctx.respond(replace(reply, content="again"))
+
+  A `Draft` is immutable, comparable and cheap, so build it anywhere (a helper, a
+  template, a test) and send it wherever. Nothing is sent until you do. The usual
+  arguments (`content`, `embeds`, `components`, `files`, `allowed_mentions`,
+  `ephemeral`) work the same without it, and you cannot mix the two.
+
+  For an edit, a part that is `None` is left as it is on the message and an empty one
+  clears it: `Draft(embeds=())` removes the embeds, `Draft(content="")` the text.
+  Layout components make it a components v2 message, which has no `content` or
+  `embeds`. `to_dict()` is the JSON Discord expects (and runs the serialize hooks).
+  """
+
+  content: str | None
+  embeds: tuple[Embed | Json, ...] | None
+  components: tuple[Buildable, ...] | None
+  files: tuple[Upload, ...]
+  allowed_mentions: AllowedMentions | None
+  ephemeral: bool
+  reply_to: int | str | None
+  tts: bool
+  silent: bool
+  suppress_embeds: bool
+
+  def __init__(
+    self,
+    content: str | None = None,
+    *,
+    embeds: Sequence[Embed | Json] | None = None,
+    components: Sequence[Buildable] | None = None,
+    files: Sequence[Upload] = (),
+    allowed_mentions: AllowedMentions | None = None,
+    ephemeral: bool = False,
+    reply_to: int | str | None = None,
+    tts: bool = False,
+    silent: bool = False,
+    suppress_embeds: bool = False,
+  ) -> None:
+    set_ = object.__setattr__
+    set_(self, "content", content)
+    set_(self, "embeds", None if embeds is None else tuple(embeds))
+    set_(self, "components", None if components is None else tuple(components))
+    set_(self, "files", tuple(files))
+    set_(self, "allowed_mentions", allowed_mentions)
+    set_(self, "ephemeral", ephemeral)
+    set_(self, "reply_to", reply_to)
+    set_(self, "tts", tts)
+    set_(self, "silent", silent)
+    set_(self, "suppress_embeds", suppress_embeds)
+
+  @classmethod
+  def of(
+    cls,
+    content: Draft | str | None = None,
+    *,
+    embeds: Sequence[Embed | Json] | None = None,
+    components: Sequence[Buildable] | None = None,
+    files: Sequence[Upload] = (),
+    allowed_mentions: AllowedMentions | None = None,
+    ephemeral: bool = False,
+  ) -> Draft:
+    """The `Draft` a send method works from: `content` itself if it is one, else a
+    `Draft` of the pieces. Giving a `Draft` and pieces together is a TypeError."""
+    if not isinstance(content, Draft):
+      return cls(
+        content,
+        embeds=embeds,
+        components=components,
+        files=files,
+        allowed_mentions=allowed_mentions,
+        ephemeral=ephemeral,
+      )
+    if (
+      embeds is not None
+      or components is not None
+      or files
+      or allowed_mentions is not None
+      or ephemeral
+    ):
+      raise TypeError(
+        "Pass a Draft, or content/embeds/components/files/..., not both: "
+        "use dataclasses.replace(draft, ...) to change a Draft."
+      )
+    return content
+
+  def add_embed(self, embed: Embed | Json) -> Draft:
+    """A copy with one more embed."""
+    return replace(self, embeds=(*(self.embeds or ()), embed))
+
+  def add_file(self, file: Upload) -> Draft:
+    """A copy with one more attached file."""
+    return replace(self, files=(*self.files, file))
+
+  @property
+  def uploads(self) -> tuple[Upload, ...]:
+    """Every file this message sends: `files`, then those its embeds and components show."""
+    return uploads_in(
+      files=self.files, embeds=self.embeds or (), components=self.components
+    )
+
+  def to_dict(self) -> Json:
+    """This message as the JSON Discord expects (without the files, which travel as
+    separate parts: see `uploads`)."""
+    flags = (SUPPRESS_NOTIFICATIONS if self.silent else 0) | (
+      SUPPRESS_EMBEDS if self.suppress_embeds else 0
+    )
+    body = message_body(
+      self.content,
+      embeds=self.embeds or (),
+      components=self.components,
+      allowed_mentions=self.allowed_mentions,
+      ephemeral=self.ephemeral,
+      flags=flags,
+      files=self.uploads,
+    )
+    if self.embeds is not None and not self.embeds:
+      body["embeds"] = []  # an empty list clears them on an edit
+    if self.reply_to is not None:
+      body["message_reference"] = {
+        "message_id": str(self.reply_to),
+        "fail_if_not_exists": False,
+      }
+    if self.tts:
+      body["tts"] = True
+    return body
+
+
+def uploads_in(
+  *,
+  files: Sequence[Upload] = (),
+  embeds: Sequence[Embed | Json] = (),
+  components: Sequence[Buildable] | None = None,
+) -> tuple[Upload, ...]:
+  """Every file a message sends: `files`, then the `Upload`s its embeds and
+  components show, each once. Two different files under one name is a ValueError,
+  since `attachment://name` could then mean either."""
+  found: dict[str, Upload] = {}
+
+  def add(upload: Upload) -> None:
+    known = found.setdefault(upload.name, upload)
+    if known is not upload and known != upload:
+      raise ValueError(f"Two different files are both named {upload.name!r}.")
+
+  def walk(item: object) -> None:
+    if isinstance(item, Upload):
+      add(item)
+    elif isinstance(item, Thumbnail | MediaItem):
+      walk(item.media)
+    elif isinstance(item, File):
+      walk(item.file)
+    elif isinstance(item, MediaGallery):
+      for inner in item.items:
+        walk(inner)
+    elif isinstance(item, Section):
+      walk(item.accessory)
+    elif isinstance(item, Container):
+      for inner in item.components:
+        walk(inner)
+
+  for upload in files:
+    add(upload)
+  for item in embeds:
+    if isinstance(item, Embed):
+      for upload in item.uploads:
+        add(upload)
+  for item in components or ():
+    walk(item)
+  return tuple(found.values())
+
+
+def attachments(
+  files: Sequence[Upload], keep: Sequence[str | int] | None = None
+) -> list[JsonValue]:
+  """Discord's `attachments` list for a message: the files sent with it (by their
+  position, with their alt text) after the ids of existing ones to `keep`."""
+  listed: list[JsonValue] = [{"id": str(item)} for item in keep or ()]
+  for index, file in enumerate(files):
+    listed.append(
+      _put({"id": str(index), "filename": file.name}, description=file.description)
+    )
+  return listed
 
 
 # Validation ---------------------------------------------------------------------
@@ -1451,19 +1983,13 @@ _NOT_IN_A_MODEL: dict[type, dict[str, tuple[int, int | None]]] = {
 _limit_cache: dict[type, dict[str, tuple[int, int | None]]] = {}
 
 
-def _limits_of(cls: type) -> dict[str, tuple[int, int | None]]:
-  """`{field: (minimum, maximum)}` for a component, from Discord's generated models."""
-  if cls in _NOT_IN_A_MODEL:
-    return _NOT_IN_A_MODEL[cls]
-  if cls not in _limit_cache:
+def _limits_in(model: Any) -> dict[str, tuple[int, int | None]]:
+  """`{field: (minimum, maximum)}` for a generated Discord model."""
+  if model not in _model_cache:
     import typing
 
     import annotated_types
 
-    from micro.discord.models import http as models
-
-    code = _TYPE_CODES[cls]
-    model = getattr(models, _MESSAGE_MODELS.get(code) or _MODAL_MODELS[code])
     found: dict[str, tuple[int, int | None]] = {}
     for name, info in model.model_fields.items():
       low: Any = 0
@@ -1484,7 +2010,24 @@ def _limits_of(cls: type) -> dict[str, tuple[int, int | None]]:
             low = getattr(rule, "min_length", None) or low
             high = getattr(rule, "max_length", None) or high
       found[name] = (int(low), None if high is None else int(high))
-    _limit_cache[cls] = found
+    _model_cache[model] = found
+  return _model_cache[model]
+
+
+_model_cache: dict[Any, dict[str, tuple[int, int | None]]] = {}
+
+
+def _limits_of(cls: type) -> dict[str, tuple[int, int | None]]:
+  """`{field: (minimum, maximum)}` for a component, from Discord's generated models."""
+  if cls in _NOT_IN_A_MODEL:
+    return _NOT_IN_A_MODEL[cls]
+  if cls not in _limit_cache:
+    from micro.discord.models import http as models
+
+    code = _TYPE_CODES[cls]
+    _limit_cache[cls] = _limits_in(
+      getattr(models, _MESSAGE_MODELS.get(code) or _MODAL_MODELS[code])
+    )
   return _limit_cache[cls]
 
 

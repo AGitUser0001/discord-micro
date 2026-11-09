@@ -15,7 +15,7 @@ from pydantic import BaseModel, ValidationError
 from micro import subjects
 from micro.config import Applied, Config, Refresh
 from micro.coordination import Locks, Table, Versioned
-from micro.runtime import Component, Presence
+from micro.runtime import Component, Presence, default_backoff
 
 from ._connection import HikariShard, ShardHost, ShardSession
 from ._control import (
@@ -316,31 +316,63 @@ class GatewayWorker(Component):
   # Watches ---------------------------------------------------------------------
 
   async def _watch_generations(self) -> None:
-    async for change in self._generations.watch("generation.*"):
-      if change is not None and change.value is not None:
-        self._generation_intents[change.value.id] = change.value.intents
-        if change.key == DESIRED_KEY:
-          self._desired = change.value
-        elif change.key == ACTIVE_KEY:
-          self._active = change.value
-      self._wake.set()
+    async def follow() -> None:
+      async for change in self._generations.watch("generation.*", lenient=True):
+        if change is not None and change.value is not None:
+          self._generation_intents[change.value.id] = change.value.intents
+          if change.key == DESIRED_KEY:
+            self._desired = change.value
+          elif change.key == ACTIVE_KEY:
+            self._active = change.value
+        self._wake.set()
+
+    await self._keep_watching("generations", follow)
 
   async def _watch_leases(self) -> None:
-    async for change in self._shards.watch():
-      if change is None:
-        self._wake.set()
-        continue
-      known = self._leases.get(change.key)
-      if change.value is None:
-        self._leases.pop(change.key, None)
-        self._wake.set()
-        continue
-      self._leases[change.key] = Versioned(change.value, change.revision)
-      # A renewal rewrites the same lease, ours or a peer's; waking for it would make
-      # every renewal trigger the next one. Wake only when ownership or state changed.
-      if known is None or known.value != change.value:
-        self._wake.set()
-    # Unreachable unless the watch ends.
+    async def follow() -> None:
+      # Each watch replays the table: leases are rebuilt from it, so one that expired
+      # while a previous watch was down does not linger.
+      fresh: dict[str, Versioned[ShardLease]] | None = {}
+      async for change in self._shards.watch(lenient=True):
+        if change is None:
+          if fresh is not None:
+            self._leases, fresh = fresh, None
+          self._wake.set()
+          continue
+        leases = self._leases if fresh is None else fresh
+        known = leases.get(change.key)
+        if change.value is None:
+          leases.pop(change.key, None)
+          self._wake.set()
+          continue
+        leases[change.key] = Versioned(change.value, change.revision)
+        # A renewal rewrites the same lease, ours or a peer's; waking for it would
+        # make every renewal trigger the next one. Wake only when ownership or state
+        # changed.
+        if known is None or known.value != change.value:
+          self._wake.set()
+
+    await self._keep_watching("shard leases", follow)
+
+  async def _keep_watching(self, what: str, follow: Callable[[], Any]) -> None:
+    """Run a table watch for as long as the worker lives, restarting it if it ends."""
+    failures = 0
+    while True:
+      started = asyncio.get_running_loop().time()
+      try:
+        await follow()
+        logger.warning("The Gateway's watch on %s ended; restarting", what)
+      except asyncio.CancelledError:
+        raise
+      except Exception:
+        logger.warning(
+          "The Gateway's watch on %s failed; restarting", what, exc_info=True
+        )
+      # A watch that ran for a while failed for a new reason: start the backoff over.
+      if asyncio.get_running_loop().time() - started > 60:
+        failures = 0
+      failures += 1
+      await asyncio.sleep(default_backoff(failures))
 
   # Control loop ----------------------------------------------------------------
 
@@ -545,9 +577,26 @@ class GatewayWorker(Component):
   async def _start(self, held: _Held) -> None:
     bucket = held.session.shard_id % self.max_concurrency
     await self._locks.gate(f"identify.{bucket}", ttl=5.0)
-    if self._held.get(held.key) is not held:
-      return
-    await held.session.start()
+    failures = 0
+    while self._held.get(held.key) is held:
+      try:
+        await held.session.start()
+        return
+      except asyncio.CancelledError:
+        raise
+      except Exception:
+        # Discord unreachable, or it refused the connection (intents not enabled for
+        # the bot, say). Keep trying: a shard that gave up would stay offline until
+        # the worker restarted.
+        failures += 1
+        delay = default_backoff(failures)
+        logger.exception(
+          "Shard %s could not connect (attempt %d); trying again in %.0fs",
+          held.key,
+          failures,
+          delay,
+        )
+        await asyncio.sleep(delay)
 
   async def _stop(self, held: _Held, *, delete_lease: bool) -> None:
     if self._held.get(held.key) is held:

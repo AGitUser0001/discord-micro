@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import JsonValue
 
 from micro.coordination import Declarations
-from micro.runtime import Runtime
+from micro.runtime import Runtime, default_backoff
 from micro.service import Client, RequestSchema, Service
 
 from ._module import GraphModule
@@ -115,10 +115,21 @@ class Store(Service):
       await declarations.mark_applied(key, value)
 
   async def _compose_loop(self) -> None:
+    failures = 0
     while True:
       await self._compose_requested.wait()
       self._compose_requested.clear()
-      await self._compose()
+      try:
+        await self._compose()
+        failures = 0
+      except asyncio.CancelledError:
+        raise
+      except Exception:
+        # Recording what was applied failed (NATS trouble): try the pass again.
+        failures += 1
+        logger.warning("The store could not record its modules", exc_info=True)
+        await asyncio.sleep(default_backoff(failures))
+        self._compose_requested.set()
 
   async def _execute(self, body: GraphQLBody) -> dict[str, JsonValue]:
     return await self.engine.execute(body)

@@ -1,10 +1,13 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
 from pydantic import BaseModel, ConfigDict
 
 from ._table import Table
+
+logger = logging.getLogger("micro")
 
 
 class LockHolder(BaseModel):
@@ -54,9 +57,17 @@ class Locks:
       nonlocal revision
       while True:
         await asyncio.sleep(ttl / 3)
-        renewed = await self._table.update(
-          name, LockHolder(owner=self.owner), revision=revision, ttl=ttl
-        )
+        try:
+          renewed = await self._table.update(
+            name, LockHolder(owner=self.owner), revision=revision, ttl=ttl
+          )
+        except asyncio.CancelledError:
+          raise
+        except Exception:
+          # Could not reach NATS: try again. If the lease expires meanwhile the
+          # next successful attempt finds it gone and reports the loss.
+          logger.warning("Could not renew lock %s", name, exc_info=True)
+          continue
         if renewed is None:
           lost.set()
           return
@@ -70,7 +81,13 @@ class Locks:
       with suppress(asyncio.CancelledError):
         await renewer
       if not lost.is_set():
-        await self._table.delete(name, revision=revision)
+        try:
+          released = await self._table.delete(name, revision=revision)
+        except Exception:
+          logger.warning("Could not release lock %s; it expires by itself", name)
+        else:
+          if not released:
+            lost.set()  # someone else holds it now: it expired while we worked
     if lost.is_set():
       raise LockLost(f"Lock {name!r} was lost while held.")
 

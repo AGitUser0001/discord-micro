@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from re import fullmatch
 from typing import TYPE_CHECKING, Any, Literal, Never, Protocol, overload
@@ -382,7 +383,18 @@ class Service(Component):
       except ServiceError as exc:
         body = error_body(exc.code, exc.message, exc.detail)
         headers = {STATUS_HEADER: "error"}
-      await self.runtime.respond(message, body, headers=headers)
+      try:
+        await self.runtime.respond(message, body, headers=headers)
+      except Exception as exc:
+        # The answer could not be sent (too large to store, say). Tell the caller
+        # why instead of leaving it to time out.
+        logger.exception("Could not send the reply to %s", schema.id)
+        with suppress(Exception):
+          await self.runtime.respond(
+            message,
+            error_body("reply_failed", f"{type(exc).__name__}: {exc}", None),
+            headers={STATUS_HEADER: "error"},
+          )
 
   async def _run_request[InputT, OutputT](
     self,
@@ -473,16 +485,7 @@ class Service(Component):
           decoded[event.id] = event.decode_json(message.data)
         except ValidationError as exc:
           self._undecodable("events", event.id, event.hash, exc)
-      payload = decoded[event.id]
-      if listener.when is not None and not listener.when(payload):
-        continue
-      runs.append(
-        (
-          index,
-          listener,
-          self._through("event", event.id, message, payload, listener.handler),
-        )
-      )
+      runs.append((index, listener, self._listen(listener, message, decoded[event.id])))
     results = await asyncio.gather(*(run for *_, run in runs), return_exceptions=True)
     failures: list[tuple[_Listener, BaseException]] = []
     for (index, listener, _), result in zip(runs, results):
@@ -502,6 +505,12 @@ class Service(Component):
       self._succeeded[sequence] = done
       raise Retry(min(2.0 ** ((message.metadata.num_delivered or 1) - 1), 60.0))
     self._succeeded.pop(sequence, None)
+
+  async def _listen(self, listener: _Listener, message: Msg, payload: Any) -> None:
+    """Run one listener; a failing `when` predicate fails only that listener."""
+    if listener.when is not None and not listener.when(payload):
+      return
+    await self._through("event", listener.event.id, message, payload, listener.handler)
 
   async def _through(
     self,

@@ -113,12 +113,66 @@ Rate limits
 
 :class:`RateLimits` is the per-worker state. Before each request the worker waits for its
 bucket (and the global limit) to allow it; after each response it reads Discord's
-``X-RateLimit-*`` headers to update the bucket. On a 429 from Discord it waits the
+``X-RateLimit-*`` headers to update the bucket. A bucket lets through only what Discord
+said remains, counting the requests still on their way; when that is not known (the
+route's first request, or a used-up window with no reset time) one request goes ahead and
+the rest wait for its answer, so a burst does not come back as a burst of 429s. A route
+Discord sends no rate-limit headers for is not held back. On a 429 from Discord it waits the
 ``Retry-After`` and tries again, up to ``max_attempts`` times, then returns the 429 to the
 caller (a ``DiscordAPIError`` with status 429). A *global* 429 is announced on NATS
 (``micro.ratelimit.discord.global``) so every worker pauses, not just the one that hit it.
 429s that did not come from Discord (no ``Via`` header, e.g. a CDN) are returned
 as they are rather than retried.
+
+What is sent again, up to ``max_attempts`` times with a short backoff, follows one rule:
+**a request is retried when the failed attempt certainly did nothing, or when doing it
+twice is the same as doing it once.**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 18 36
+
+   * - what happened
+     - retried
+     - why
+   * - 429 from Discord
+     - always
+     - Discord refused it
+   * - 502, 503
+     - always
+     - Discord's edge could not hand it to Discord
+   * - no connection (refused, connect timeout)
+     - always
+     - it never left
+   * - 504, or a timeout or dropped connection after sending
+     - ``GET``, ``PUT``, ``DELETE`` only
+     - it may have been carried out; these are idempotent
+
+A ``POST`` creates something each time, and a ``PATCH`` that adds files adds them each
+time, so when their outcome is unknown the error is returned for you to decide.
+
+Errors
+------
+
+An error status raises :class:`DiscordAPIError`, as the subclass for its status where
+there is one, so you catch what you mean:
+
+.. code-block:: python
+
+   from micro.discord import Forbidden, NotFound
+
+   try:
+     await ctx.api.message(channel_id, message_id).delete()
+   except NotFound:
+     pass                      # already gone
+   except Forbidden as error:
+     await ctx.respond(f"I can't do that here: {error.message}", ephemeral=True)
+
+``status`` is the HTTP status, ``code`` Discord's own error number (10008 "Unknown
+Message", 50013 "Missing Permissions"), ``message`` its description and ``body`` the
+whole decoded answer. :class:`BadRequest` is 400, :class:`Unauthorized` 401,
+:class:`Forbidden` 403, :class:`NotFound` 404, :class:`RateLimited` a 429 that outlasted
+every retry, and :class:`DiscordServerError` any 5xx.
 
 A request may carry an **idempotency key** (``DiscordHTTPRequest.idempotency_key``): the
 worker remembers the answer under that key, so a client that retries after a lost reply
@@ -184,6 +238,12 @@ Reference
    micro.discord.DiscordHTTPWorker
    micro.discord.DiscordHTTPClient
    micro.discord.DiscordAPIError
+   micro.discord.BadRequest
+   micro.discord.Unauthorized
+   micro.discord.Forbidden
+   micro.discord.NotFound
+   micro.discord.RateLimited
+   micro.discord.DiscordServerError
    micro.discord.DiscordHTTPRequest
    micro.discord.DiscordHTTPResponse
    micro.discord.http_service.DiscordHTTPFile

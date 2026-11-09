@@ -29,18 +29,25 @@ from micro.discord.routes import (
 )
 from micro.discord.ui import (
   EPHEMERAL,
+  IS_COMPONENTS_V2,
   AllowedMentions,
   Buildable,
+  Draft,
+  Embed,
   Json,
   Modal,
-  message_body,
+  Upload,
+  attachments,
 )
 from micro.errors import MicroError
 
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
   from micro.discord.api import DiscordAPI
+  from micro.discord.http_service import DiscordHTTPFile
   from micro.discord.refs import ChannelRef, GuildRef, MemberRef, MessageRef, UserRef
+
+  from ._commands import Choice
 
 TOKEN_LIFETIME = 15 * 60
 _DISCORD_EPOCH_MS = 1420070400000
@@ -121,23 +128,50 @@ REPLY_KEY = "micro_reply"
 on which the first response is the HTTP response Discord is waiting for."""
 
 
+def uploads(files: Sequence[Upload]) -> tuple[DiscordHTTPFile, ...]:
+  """Files as the multipart parts Discord reads: `files[0]`, `files[1]`, ..."""
+  if not files:
+    return ()
+  from micro.discord.http_service import DiscordHTTPFile
+
+  return tuple(
+    DiscordHTTPFile(
+      field=f"files[{index}]",
+      filename=file.name,
+      data=file.data,
+      content_type=file.content_type,
+    )
+    for index, file in enumerate(files)
+  )
+
+
 async def respond_initially(
-  http: DiscordHTTPClient, payload: Mapping[str, Any], body: Json
+  http: DiscordHTTPClient,
+  payload: Mapping[str, Any],
+  body: Json,
+  files: Sequence[Upload] = (),
 ) -> None:
   """Send an interaction's first response.
 
   Interactions from the Gateway are answered with Discord's callback endpoint.
   One that arrived over HTTP (see `InteractionEndpoint`) is answered in the
-  reply to that very request, which the endpoint is holding open.
+  reply to that very request, which the endpoint is holding open; that reply is
+  JSON, so it cannot carry `files` (see `Interaction.respond`, which sends them
+  right after acknowledging).
   """
   reply = payload.get(REPLY_KEY)
   if isinstance(reply, str):
+    if files:
+      raise InvalidResponse(
+        "An interaction received over HTTP cannot take files in its first response."
+      )
     await http.runtime.nats.publish(reply, json.dumps(body).encode())
     return
   await http.call(
     "create_interaction_response",
     path={"interaction_id": payload["id"], "interaction_token": payload["token"]},
     body=body,
+    files=uploads(files),
   )
 
 
@@ -422,21 +456,29 @@ class Interaction:
   # Low level: one Discord request each -----------------------------------------
 
   async def create_initial_response(
-    self, kind: ResponseType, data: Json | None = None
+    self,
+    kind: ResponseType,
+    data: Json | None = None,
+    *,
+    files: Sequence[Upload] = (),
   ) -> None:
     """Create Interaction Response: the one callback an interaction gets."""
     async with self._lock:
-      await self._initial(kind, data)
+      await self._initial(kind, data, files)
 
-  async def create_followup(self, body: Json) -> Message:
+  async def create_followup(
+    self, body: Json, *, files: Sequence[Upload] = ()
+  ) -> Message:
     """Create Followup Message (a new message after the initial response)."""
     async with self._lock:
-      return await self._followup(body)
+      return await self._followup(body, files)
 
-  async def edit_initial_response(self, body: Json) -> None:
+  async def edit_initial_response(
+    self, body: Json, *, files: Sequence[Upload] = ()
+  ) -> None:
     """Edit Original Interaction Response (the @original webhook message)."""
     async with self._lock:
-      await self._edit(body)
+      await self._edit(body, files)
 
   async def delete_initial_response(self) -> None:
     """Delete Original Interaction Response."""
@@ -447,38 +489,43 @@ class Interaction:
 
   async def respond(
     self,
-    content: str | None = None,
+    content: Draft | str | None = None,
     *,
-    embeds: Sequence[Json] = (),
+    embeds: Sequence[Embed | Json] | None = None,
     components: Sequence[Buildable] | None = None,
     ephemeral: bool = False,
     allowed_mentions: AllowedMentions | None = None,
+    files: Sequence[Upload] = (),
   ) -> Message | None:
-    """Answer the interaction with a message.
+    """Answer the interaction with a message: a `Draft`, or its pieces.
 
     The initial response when nothing was sent, the deferred message after a
-    `defer(thinking=True)`, and a follow-up (returned) otherwise.
+    `defer(thinking=True)`, and a follow-up (returned) otherwise. `files` are
+    attached; an `Upload` shown by a component or an embed is attached by itself
+    and need not be listed.
     """
-    body = message_body(
+    draft = Draft.of(
       content,
       embeds=embeds,
       components=components,
+      files=files,
       allowed_mentions=allowed_mentions,
       ephemeral=ephemeral,
     )
+    files = draft.uploads
+    body = draft.to_dict()
     async with self._lock:
       match self.state:
         case InteractionState.NEW:
-          await self._initial(ResponseType.MESSAGE_CREATE, body)
+          await self._initial(ResponseType.MESSAGE_CREATE, body, files)
           return None
         case InteractionState.DEFERRED_MESSAGE:
-          body.pop("flags", None)
-          await self._edit(body)
+          await self._edit(body, files)
           return None
         case InteractionState.MODAL | InteractionState.AUTOCOMPLETE:
           raise AlreadyResponded(f"The interaction is {self.state.value}.")
         case _:
-          return await self._followup(body)
+          return await self._followup(body, files)
 
   async def defer(self, *, thinking: bool = False, ephemeral: bool = False) -> None:
     """Acknowledge now and answer later.
@@ -501,17 +548,33 @@ class Interaction:
 
   async def edit_response(
     self,
-    content: str | None = None,
+    content: Draft | str | None = None,
     *,
-    embeds: Sequence[Json] | None = None,
+    embeds: Sequence[Embed | Json] | None = None,
     components: Sequence[Buildable] | None = None,
     allowed_mentions: AllowedMentions | None = None,
+    files: Sequence[Upload] = (),
+    keep: Sequence[Attachment | str | int] | None = None,
   ) -> None:
-    """Edit the message this interaction answered with."""
-    body = _edit_body(content, embeds, components, allowed_mentions)
+    """Edit the message this interaction answered with.
+
+    Give a `Draft` or the pieces: a part left as None stays as it is, an empty one
+    clears it. `files` (and any `Upload` the new embeds or components show) are added
+    to it. `keep` says which of the files already on it stay: None keeps them all, a
+    list keeps only those (`keep=[]` removes them all).
+    """
+    draft = Draft.of(
+      content,
+      embeds=embeds,
+      components=components,
+      files=files,
+      allowed_mentions=allowed_mentions,
+    )
+    files = draft.uploads
+    body = _edit_body(draft, files, keep)
     async with self._lock:
       self._require_original("edit")
-      await self._edit(body)
+      await self._edit(body, files)
 
   async def delete_response(self) -> None:
     """Delete the message this interaction answered with."""
@@ -521,13 +584,17 @@ class Interaction:
 
   async def update_message(
     self,
-    content: str | None = None,
+    content: Draft | str | None = None,
     *,
-    embeds: Sequence[Json] | None = None,
+    embeds: Sequence[Embed | Json] | None = None,
     components: Sequence[Buildable] | None = None,
     allowed_mentions: AllowedMentions | None = None,
+    files: Sequence[Upload] = (),
+    keep: Sequence[Attachment | str | int] | None = None,
   ) -> None:
     """Edit the message a component was clicked on.
+
+    `files` and `keep` work as in `edit_response`.
 
     Needs a source message: always there for components, and for modal submits
     only when the modal was opened from one. Fails after a message-mode defer
@@ -538,13 +605,21 @@ class Interaction:
         "update_message() needs the message a component was clicked on, and this "
         "interaction has none; use respond() or edit_response()."
       )
-    body = _edit_body(content, embeds, components, allowed_mentions)
+    draft = Draft.of(
+      content,
+      embeds=embeds,
+      components=components,
+      files=files,
+      allowed_mentions=allowed_mentions,
+    )
+    files = draft.uploads
+    body = _edit_body(draft, files, keep)
     async with self._lock:
       match self.state:
         case InteractionState.NEW:
-          await self._initial(ResponseType.MESSAGE_UPDATE, body)
+          await self._initial(ResponseType.MESSAGE_UPDATE, body, files)
         case InteractionState.DEFERRED_UPDATE | InteractionState.UPDATED:
-          await self._edit(body)
+          await self._edit(body, files)
         case InteractionState.DEFERRED_MESSAGE:
           raise InvalidResponse(
             "update_message() after defer(thinking=True): the pending message is "
@@ -564,7 +639,7 @@ class Interaction:
       self._require(InteractionState.NEW, "show a modal", AlreadyResponded)
       await self._initial(ResponseType.MODAL, modal.to_dict())
 
-  async def autocomplete(self, choices: Sequence[Any]) -> None:
+  async def autocomplete(self, choices: Sequence[Choice | str | int | float]) -> None:
     """Send autocomplete suggestions (at most 25, Discord's limit)."""
     from ._commands import Choice
 
@@ -607,30 +682,57 @@ class Interaction:
         f"Cannot {action} the response: the interaction is {self.state.value}."
       )
 
-  async def _initial(self, kind: ResponseType, data: Json | None = None) -> None:
+  async def _initial(
+    self,
+    kind: ResponseType,
+    data: Json | None = None,
+    files: Sequence[Upload] = (),
+  ) -> None:
     self._check()
+    if files and isinstance(self.payload.get(REPLY_KEY), str):
+      await self._initial_then_files(kind, data or {}, files)
+      return
     body: Json = {"type": int(kind)}
     if data is not None:
       body["data"] = data
-    await respond_initially(self.http, self.payload, body)
+    await respond_initially(self.http, self.payload, body, files)
     self.state = _AFTER[kind]
 
-  async def _followup(self, body: Json) -> Message:
+  async def _initial_then_files(
+    self, kind: ResponseType, data: Json, files: Sequence[Upload]
+  ) -> None:
+    """An interaction received over HTTP is answered in a JSON reply, which cannot
+    carry files: acknowledge in that reply, then put the message in place."""
+    if kind is ResponseType.MESSAGE_UPDATE:
+      await self._initial(ResponseType.DEFERRED_MESSAGE_UPDATE)
+    elif kind is ResponseType.MESSAGE_CREATE:
+      flags = data.get("flags")
+      hidden = isinstance(flags, int) and flags & EPHEMERAL
+      await self._initial(
+        ResponseType.DEFERRED_MESSAGE_CREATE, {"flags": EPHEMERAL} if hidden else None
+      )
+    else:
+      raise InvalidResponse("Only a message can carry files.")
+    await self._edit(data, files)
+
+  async def _followup(self, body: Json, files: Sequence[Upload] = ()) -> Message:
     self._check()
     result = await self.http.call(
       "execute_webhook",
       path={"webhook_id": self.application_id, "webhook_token": self.token},
       query={"wait": True},
       body=body,
+      files=uploads(files),
     )
     return Message.model_validate(result)
 
-  async def _edit(self, body: Json) -> None:
+  async def _edit(self, body: Json, files: Sequence[Upload] = ()) -> None:
     self._check()
     await self.http.call(
       "update_original_webhook_message",
       path={"webhook_id": self.application_id, "webhook_token": self.token},
-      body=body,
+      body=_editable(body),
+      files=uploads(files),
     )
     if self.state is InteractionState.DEFERRED_MESSAGE:
       self.state = InteractionState.MESSAGE
@@ -645,18 +747,28 @@ class Interaction:
     )
 
 
+def _editable(body: Json) -> Json:
+  """A message body as an edit: of its flags only "components v2" can be set by one
+  (whether a message is ephemeral was decided when it was created)."""
+  flags = body.get("flags")
+  if flags is None:
+    return body
+  kept = flags & IS_COMPONENTS_V2 if isinstance(flags, int) else 0
+  edited = {key: value for key, value in body.items() if key != "flags"}
+  if kept:
+    edited["flags"] = kept
+  return edited
+
+
 def _edit_body(
-  content: str | None,
-  embeds: Sequence[Json] | None,
-  components: Sequence[Buildable] | None,
-  allowed_mentions: AllowedMentions | None,
+  draft: Draft,
+  files: Sequence[Upload] = (),
+  keep: Sequence[Attachment | str | int] | None = None,
 ) -> Json:
-  body = message_body(
-    content,
-    embeds=embeds or (),
-    components=components,
-    allowed_mentions=allowed_mentions,
-  )
-  if embeds is not None and not embeds:
-    body["embeds"] = []
+  body = draft.to_dict()
+  if keep is not None:
+    # Listing attachments replaces the message's files with exactly these.
+    body["attachments"] = attachments(
+      files, [item.id if isinstance(item, Attachment) else item for item in keep]
+    )
   return body

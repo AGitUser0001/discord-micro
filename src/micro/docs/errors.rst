@@ -75,10 +75,42 @@ A :class:`RemoteError`'s ``code`` is either one of the framework's or one a
    * - ``ended_without_reply``
      - Middleware ended the request without setting an output (:doc:`services`).
 
+Results: Discord's refusals as values
+-------------------------------------
+
+Everything above is raised. The exception is Discord telling you *no*: missing permission,
+the message is gone, DMs are closed. That is not a bug and not a broken system, it is an
+ordinary answer from a working bot, so the API methods that are being moved to it return it
+as a value, a :class:`Result`: an :class:`Ok` with the value, or an :class:`Err` with the
+:class:`DiscordAPIError`.
+
+.. code-block:: python
+
+   from micro.discord import NotFound
+   from micro.result import Err, Ok
+
+   match await message.edit(content="hi"):
+     case Ok(edited): ...
+     case Err(NotFound()): ...                   # deleted meanwhile
+     case Err(error): raise error
+
+   sent = (await channel.send("hi")).unwrap()    # abort: raises the original error
+   maybe = (await channel.send("hi")).ok()       # the message, or None
+   (await message.delete()).ignore(NotFound)     # only "already gone" is fine
+
+Handle it where you need to, or write ``unwrap()`` to let it fail: that raises the original
+error, so your generic handler sees exactly what it always saw. Bugs and broken
+infrastructure (a bad argument, a limit exceeded, NATS down) are not results; they still
+raise. Today the message operations (``/channels/{id}/messages...``) return results; the
+rest of the API raises, until this settles.
+
 Reference
 ---------
 
 .. api::
+   micro.result.Ok
+   micro.result.Err
+   micro.result.Result
    micro.errors.MicroError
    micro.errors.RoutingError
    micro.errors.TopologyError

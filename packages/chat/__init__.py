@@ -15,8 +15,9 @@ from micro.discord.interactions import (
   Option,
 )
 from micro.discord.messages import reply_to
+from micro.discord.models.gateway import GatewayMessageCreateDispatchData
 from micro.discord.objects import Member
-from micro.discord.ui import AllowedMentions, Button, Modal, TextInput, embed
+from micro.discord.ui import AllowedMentions, Button, Embed, Modal, TextInput
 from micro.schemas import events
 from micro.service import Service
 
@@ -31,7 +32,7 @@ modals = Modals(service)
 @service.listen(
   events.MESSAGE_CREATE, when=all_of(ignore_bots, content_startswith("!ping"))
 )
-async def ping(message: object) -> None:
+async def ping(message: GatewayMessageCreateDispatchData) -> None:
   await reply_to(DiscordHTTPClient(service.runtime), message, "pong")
 
 
@@ -66,7 +67,7 @@ async def start_poll(
   yes = VOTE.encode(Poll(question=question, choice=1))
   no = VOTE.encode(Poll(question=question, choice=0))
   await ctx.respond(
-    embeds=[embed(question, "Vote below.")],
+    embeds=[Embed(question, "Vote below.")],
     components=[
       Button("Yes", custom_id=yes, style="success"),
       Button("No", custom_id=no, style="danger"),

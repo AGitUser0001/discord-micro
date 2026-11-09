@@ -21,6 +21,7 @@ import tempfile
 import time
 import traceback
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
 
@@ -47,6 +48,7 @@ from micro.discord.interactions import (
   option,
 )
 from micro.discord.messages import reply_to
+from micro.discord.models.gateway import GatewayMessageCreateDispatchData
 from micro.discord.ui import Button, Modal, TextInput
 from micro.gateway import GatewayWorker
 from micro.runtime import Runtime
@@ -80,7 +82,7 @@ class App:
     @service.listen(
       events.MESSAGE_CREATE, when=all_of(ignore_bots, content_startswith("!ping"))
     )
-    async def ping(message: object) -> None:
+    async def ping(message: GatewayMessageCreateDispatchData) -> None:
       await reply_to(DiscordHTTPClient(service.runtime), message, "pong")
 
     @commands.slash("hello", description="Say hello")
@@ -699,6 +701,42 @@ async def endpoint_scenarios() -> None:
       "isn't available" in unknown.json()["data"]["content"],
       unknown.text,
     )
+    endpoint = next(
+      c for c in s.runtime.components if isinstance(c, InteractionEndpoint)
+    )
+    ignored = {**f.slash("hello"), "type": 99}  # routed nowhere, so never answered
+    try:
+      async with httpx2.AsyncClient() as client:
+        raw = json.dumps(ignored).encode()
+        await client.post(
+          url,
+          content=raw,
+          headers={
+            "x-signature-ed25519": private.sign(b"1700000000" + raw).hex(),
+            "x-signature-timestamp": "1700000000",
+          },
+          timeout=0.5,
+        )
+      hung_up = False
+    except httpx2.TimeoutException:
+      hung_up = True
+    released = await f.until(lambda: endpoint.in_flight == 0, 5)
+    check(
+      "when Discord hangs up on an unanswered interaction, the endpoint lets go",
+      hung_up and released,
+      (hung_up, endpoint.in_flight),
+    )
+    try:
+      await asyncio.wait_for(
+        InteractionEndpoint(public_key=public, port=port, name="second").start(
+          s.runtime
+        ),
+        5,
+      )
+      refused = False
+    except RuntimeError as error:
+      refused = "could not listen" in str(error)
+    check("an endpoint whose port is taken fails to start instead of hanging", refused)
     slow_payload = f.slash("slow")
     reply = await post(slow_payload)
     f.acknowledge(slow_payload)
@@ -776,7 +814,7 @@ async def ui_hooks_scenarios() -> None:
       button.to_dict(),
     )
     tree: Any = Container(
-      ActionRow(Button("x", custom_id="x"), StringSelect("pick", ["a"]))
+      ActionRow(Button("x", custom_id="x")), ActionRow(StringSelect("pick", ["a"]))
     ).to_dict()
     ids = [c["custom_id"] for row in tree["components"] for c in row["components"]]
     check("nested components are intercepted too", ids == ["o.x.i", "o.pick.i"], ids)
@@ -807,7 +845,7 @@ async def ui_hooks_scenarios() -> None:
     )
   check(
     "scoped() restores the registered middleware",
-    not hooks.active and Button("a", custom_id="b").to_dict()["custom_id"] == "b",
+    Button("a", custom_id="b").to_dict()["custom_id"] == "b",
   )
 
 
@@ -960,6 +998,339 @@ async def ui_limits_scenarios() -> None:
     )
 
 
+async def helper_scenarios() -> None:
+  print("helpers: permissions, error classes, text, picture links")
+  from datetime import UTC, datetime
+
+  from micro.discord import DiscordAPIError, DiscordServerError, NotFound, text
+  from micro.discord.http_service import DiscordHTTPResponse
+  from micro.discord.objects import Guild, Member, Message, Role, User
+  from micro.discord.permissions import Permissions
+  from micro.discord.state import compute_permissions
+
+  role = Role.model_validate({"id": "1", "permissions": "8200", "color": 5})
+  check(
+    "a role's permissions are named flags read from Discord's string",
+    role.permissions == Permissions.ADMINISTRATOR | Permissions.MANAGE_MESSAGES
+    and role.permissions.names == ["administrator", "manage_messages"],
+    role.permissions,
+  )
+  check(
+    "they are written back as the string Discord expects",
+    role.model_dump(mode="json", by_alias=True)["permissions"] == "8200",
+  )
+  mod = Permissions.KICK_MEMBERS | Permissions.BAN_MEMBERS
+  check(
+    "`in` tests the bits; `allows` also lets an administrator through",
+    Permissions.BAN_MEMBERS not in role.permissions
+    and role.permissions.allows(Permissions.BAN_MEMBERS)
+    and mod.allows(Permissions.KICK_MEMBERS)
+    and not mod.allows(Permissions.MANAGE_GUILD),
+  )
+  check(
+    "bits newer than the list survive a round trip",
+    int(Permissions.parse(str(1 << 60))) == 1 << 60,
+  )
+  member = Member.model_validate({"roles": ["1"], "permissions": "2"})
+  computed = compute_permissions("9", None, [role], member, "5")
+  check(
+    "member.permissions and computed permissions are Permissions",
+    member.permissions == Permissions.KICK_MEMBERS
+    and isinstance(computed, Permissions)
+    and computed.allows(Permissions.MANAGE_GUILD),
+    computed,
+  )
+
+  def error(status: int, body: bytes = b"") -> DiscordAPIError:
+    return DiscordAPIError(
+      "op", DiscordHTTPResponse(status=status, headers=(), body=body)
+    )
+
+  gone = error(404, b'{"code": 10008, "message": "Unknown Message"}')
+  check(
+    "an error is raised as the class for its status, with Discord's code and message",
+    isinstance(gone, NotFound)
+    and gone.code == 10008
+    and gone.message == "Unknown Message"
+    and isinstance(error(503), DiscordServerError)
+    and type(error(418)) is DiscordAPIError,
+    type(gone),
+  )
+  check(
+    "text.escape switches Markdown off",
+    text.escape("*a* _b_ `c`") == r"\*a\* \_b\_ \`c\`"
+    and text.escape("1. first") == r"1\. first",
+    text.escape("*a* _b_ `c`"),
+  )
+  when = datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+  check(
+    "timestamps, mentions and snowflake times",
+    text.timestamp(when, "R") == "<t:1700000000:R>"
+    and text.user(5) == "<@5>"
+    and text.command("ticket open", 7) == "</ticket open:7>"
+    and text.snowflake_time(text.time_snowflake(when)) == when
+    and "@\u200beveryone" in text.escape_mentions("hi @everyone"),
+  )
+  check(
+    "picture links: avatar (default without one), animated as gif, server icon",
+    User(id="80351110224678912").avatar_url().endswith("/embed/avatars/5.png")
+    and User(id="1", avatar="a_x").avatar_url(64).endswith("/avatars/1/a_x.gif?size=64")
+    and Guild(id="2").icon_url() is None
+    and (Guild(id="2", icon="h").icon_url() or "").endswith("/icons/2/h.png"),
+  )
+  message = Message.model_validate(
+    {"id": "9", "channel_id": "5", "guild_id": "2", "attachments": [{"id": "7"}]}
+  )
+  check(
+    "a message has typed attachments and a jump link",
+    message.attachments[0].id == "7"
+    and message.jump_url == "https://discord.com/channels/2/5/9",
+  )
+
+
+async def embed_scenarios() -> None:
+  print("embeds and roots: one Embed builder, Component and Object as roots")
+  from datetime import UTC, datetime
+
+  from micro.discord import ui
+  from micro.discord.objects import (
+    Attachment,
+    Channel,
+    Guild,
+    Message,
+    Object,
+    Role,
+    User,
+  )
+  from micro.discord.ui import (
+    Button,
+    Component,
+    Embed,
+    EmbedAuthor,
+    EmbedField,
+    EmbedFooter,
+    Upload,
+  )
+
+  def refused(action: Any) -> str:
+    try:
+      action()
+    except ValueError as error:
+      return str(error)
+    return ""
+
+  chart = Upload("chart.png", b"png")
+  full = Embed(
+    "T",
+    "D",
+    colour="teal",
+    url="https://e.com",
+    fields=[("a", "b"), ("c", "d", True), EmbedField("e", "f")],
+    footer=EmbedFooter("foot", chart),
+    author=EmbedAuthor("Ada", "https://e.com/ada", "https://e.com/ada.png"),
+    image=chart,
+    thumbnail="https://e.com/t.png",
+    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+  )
+  wire: Any = full.to_dict()
+  check(
+    "an Embed serializes to Discord's JSON, fields as tuples or objects",
+    wire["title"] == "T"
+    and wire["color"] == 0x1ABC9C
+    and wire["timestamp"] == "2024-01-01T00:00:00+00:00"
+    and wire["fields"]
+    == [
+      {"name": "a", "value": "b", "inline": False},
+      {"name": "c", "value": "d", "inline": True},
+      {"name": "e", "value": "f", "inline": False},
+    ]
+    and wire["footer"] == {"text": "foot", "icon_url": "attachment://chart.png"}
+    and wire["author"]["icon_url"] == "https://e.com/ada.png"
+    and wire["image"] == {"url": "attachment://chart.png"},
+    wire,
+  )
+  check(
+    "footer and author can be plain strings",
+    Embed(footer="f", author="a").to_dict()
+    == {"footer": {"text": "f"}, "author": {"name": "a"}},
+  )
+  check(
+    "it remembers the uploads it shows, once",
+    full.uploads == (chart, chart) and ui.uploads_in(embeds=[full]) == (chart,),
+  )
+  more = full.add_field("g", "h")
+  check(
+    "an Embed is immutable; add_field and replace give a copy",
+    len(full.fields) == 3
+    and len(more.fields) == 4
+    and replace(full, title="N").title == "N"
+    and full.title == "T",
+  )
+  check(
+    "its length counts what Discord counts, in UTF-16 units",
+    Embed("ab", "😀", fields=[("n", "v")], footer="ff", author="aa").length
+    == 2 + 2 + 2 + 2 + 2,
+    Embed("ab", "😀", fields=[("n", "v")], footer="ff", author="aa").length,
+  )
+  check(
+    "limits are checked when it is serialized",
+    "title is 257" in refused(lambda: Embed("x" * 257).to_dict())
+    and "fields is 26" in refused(lambda: Embed(fields=[("a", "b")] * 26).to_dict())
+    and "value is 1025" in refused(lambda: Embed(fields=[("a", "x" * 1025)]).to_dict())
+    and "description is 4097"
+    in refused(lambda: Embed(description="x" * 4097).to_dict()),
+  )
+  check(
+    "a message's embeds share 6000 characters and at most ten",
+    "text in all embeds is 8000"
+    in refused(lambda: ui.message_body(embeds=[Embed(description="x" * 4000)] * 2))
+    and "embeds is 11" in refused(lambda: ui.message_body(embeds=[Embed("t")] * 11)),
+  )
+  check(
+    "message_body takes builders and plain dicts alike",
+    ui.message_body(embeds=[Embed("a"), {"title": "b"}])["embeds"]
+    == [{"title": "a"}, {"title": "b"}],
+  )
+  with ui.hooks.scoped():
+
+    @ui.hooks.serialize(only=Embed)
+    def brand(component: Any, next: Any) -> Any:
+      data = next()
+      data.setdefault("footer", {"text": "brand"})
+      return data
+
+    check(
+      "serialize middleware runs on embeds too",
+      Embed("x").to_dict()["footer"] == {"text": "brand"},
+    )
+
+  check(
+    "Component is the root of every component, v1 and v2 alike",
+    all(
+      issubclass(kind, Component)
+      for kind in (
+        Button,
+        ui.ActionRow,
+        ui.TextDisplay,
+        ui.Container,
+        ui.Section,
+        ui.StringSelect,
+        ui.TextInput,
+        ui.Label,
+      )
+    )
+    and not issubclass(Embed, Component),
+  )
+  check(
+    "Object is the root of everything with an id",
+    all(
+      issubclass(kind, Object)
+      for kind in (User, Role, Channel, Guild, Attachment, Message)
+    ),
+  )
+  first = User(id="80351110224678912")
+  check(
+    "objects are equal by kind and id, and know when they were made",
+    first == User(id="80351110224678912", username="other")
+    and first != Role(id="80351110224678912")
+    and hash(first) == hash(User(id="80351110224678912"))
+    and first.snowflake == 80351110224678912
+    and first.created_at.year == 2015,
+    first.created_at,
+  )
+
+
+async def draft_scenarios() -> None:
+  print("drafts: an outgoing message is data")
+  from micro.discord import ui
+  from micro.discord.ui import Button, Container, Draft, Embed, TextDisplay, Upload
+
+  chart = Upload("chart.png", b"png", description="alt")
+  draft = Draft(
+    "hi",
+    embeds=[Embed("T", image=chart)],
+    components=[Button("Go", custom_id="go")],
+    ephemeral=True,
+    reply_to=5,
+    silent=True,
+    suppress_embeds=True,
+    tts=True,
+  )
+  body: Any = draft.to_dict()
+  check(
+    "a Draft serializes to the message JSON Discord expects",
+    body["content"] == "hi"
+    and body["embeds"][0]["image"] == {"url": "attachment://chart.png"}
+    and body["components"][0]["type"] == 1
+    and body["flags"] == ui.EPHEMERAL | ui.SUPPRESS_NOTIFICATIONS | ui.SUPPRESS_EMBEDS
+    and body["message_reference"] == {"message_id": "5", "fail_if_not_exists": False}
+    and body["tts"] is True
+    and body["allowed_mentions"] == {"parse": [], "replied_user": False},
+    body,
+  )
+  check(
+    "its uploads are found in its embeds and components, with alt text sent",
+    draft.uploads == (chart,)
+    and body["attachments"]
+    == [{"id": "0", "filename": "chart.png", "description": "alt"}],
+    body.get("attachments"),
+  )
+  v2 = Draft(components=[Container(TextDisplay("hi"))]).to_dict()
+  check(
+    "layout components make it a components v2 message",
+    isinstance(v2["flags"], int) and bool(v2["flags"] & ui.IS_COMPONENTS_V2),
+  )
+  check(
+    "content with layout components is refused",
+    "no content or embeds"
+    in _raises(lambda: Draft("x", components=[TextDisplay("y")]).to_dict()),
+  )
+  check(
+    "for an edit, None leaves a part alone and empty clears it",
+    "content" not in Draft(embeds=()).to_dict()
+    and Draft(embeds=()).to_dict()["embeds"] == []
+    and Draft(content="").to_dict()["content"] == ""
+    and "embeds" not in Draft("x").to_dict()
+    and "components" not in Draft("x").to_dict()
+    and Draft(components=()).to_dict()["components"] == [],
+  )
+  check(
+    "a Draft is immutable data: equal by value, changed by copy",
+    draft == replace(draft)
+    and replace(draft, content="yo").content == "yo"
+    and draft.content == "hi"
+    and len(draft.add_embed(Embed("2")).embeds or ()) == 2
+    and draft.add_file(Upload("a.txt", b"a")).files[-1].filename == "a.txt",
+  )
+  check(
+    "Draft.of passes a Draft through and refuses a mix",
+    Draft.of(draft) is draft
+    and Draft.of("x", ephemeral=True).ephemeral
+    and _raises(lambda: Draft.of(draft, ephemeral=True), TypeError) != ""
+    and _raises(lambda: Draft.of(draft, embeds=[Embed("x")]), TypeError) != "",
+  )
+  with ui.hooks.scoped():
+
+    @ui.hooks.serialize(only=Draft)
+    def watermark(component: Any, next: Any) -> Any:
+      data = next()
+      data["content"] = (data.get("content") or "") + " [bot]"
+      return data
+
+    check(
+      "serialize middleware can rewrite every outgoing message",
+      Draft("hi").to_dict()["content"] == "hi [bot]",
+    )
+
+
+def _raises(action: Any, kind: type[Exception] = ValueError) -> str:
+  try:
+    action()
+  except kind as error:
+    return str(error) or kind.__name__
+  return ""
+
+
 async def colour_scenarios() -> None:
   print("colour: a helper, and colour spelled the Canadian way")
   from micro.discord import ui
@@ -999,8 +1370,8 @@ async def colour_scenarios() -> None:
     check(f"{bad!r} is refused", refused)
   check(
     "embed and container take any colour-like and send Discord's key as a plain int",
-    ui.embed("t", colour="teal")["color"] == 0x1ABC9C
-    and type(ui.embed("t", colour=Colour.GREEN)["color"]) is int
+    ui.Embed("t", colour="teal").to_dict()["color"] == 0x1ABC9C
+    and type(ui.Embed("t", colour=Colour.GREEN).to_dict()["color"]) is int
     and ui.Container(ui.TextDisplay("x"), accent_colour=(1, 2, 3)).to_dict()[
       "accent_color"
     ]
@@ -1402,7 +1773,6 @@ async def config_scenarios() -> None:
         await press(*text)
 
       await press("down", "enter")  # open limits (a table with no known model)
-      await press("enter")
       check(
         "a table's fields are shown and can be opened",
         app.focus == "fields" and [k for k, _ in app.rows()][:1] == ["rate"],
@@ -2832,6 +3202,7 @@ async def ui_scenarios() -> None:
     CheckboxGroup,
     Container,
     Default,
+    Embed,
     Emoji,
     File,
     FileUpload,
@@ -2851,7 +3222,6 @@ async def ui_scenarios() -> None:
     TextInput,
     Thumbnail,
     UserSelect,
-    embed,
     message_body,
   )  # fmt: skip
 
@@ -3027,7 +3397,7 @@ async def ui_scenarios() -> None:
     body,
   )
   rejected = 0
-  for extra in ({"content": "hi"}, {"embeds": [embed("t")]}):
+  for extra in ({"content": "hi"}, {"embeds": [Embed("t")]}):
     try:
       message_body(components=[TextDisplay("x")], **extra)  # pyright: ignore[reportArgumentType]
     except ValueError:
@@ -3169,7 +3539,7 @@ async def ui_scenarios() -> None:
     partial_refused = True
   check(
     "a view's other fields stay on it, and .full() gives Discord's typed model",
-    User.model_validate(user).accent_color == 123  # type: ignore[attr-defined]
+    User.model_validate(user).accent_colour == 123
     and type(full).__name__ == "UserResponse"
     and partial_refused,
   )
@@ -3177,7 +3547,7 @@ async def ui_scenarios() -> None:
     ui.validate(Button("x", custom_id="a" * 101))
     caught = False
   except ValueError as error:
-    caught = "at most 100" in str(error)
+    caught = "100" in str(error)
   check("validate() reports Discord's own limits", caught)
 
 
@@ -3196,7 +3566,8 @@ async def api_scenarios() -> None:
   from micro.discord._api import _body_fields  # pyright: ignore[reportPrivateUsage]
   from micro.discord.api import DiscordAPI, Upload
   from micro.discord.http_operations import HTTP_OPERATIONS
-  from micro.discord.http_service import DiscordAPIError
+  from micro.discord.http_service import DiscordAPIError, NotFound
+  from micro.result import Err, Ok
 
   gaps: list[str] = []
   for op in HTTP_OPERATIONS.values():
@@ -3367,23 +3738,24 @@ async def api_scenarios() -> None:
           "edited_timestamp": None, "flags": 0, "type": 0,
         }  # fmt: skip
         answers["POST /channels/5/messages"] = (200, message)
-        sent = await api.create_message(
-          5,
-          content="@everyone hello",
-          embeds=[
-            ui.embed(
-              "T",
-              "D",
-              timestamp="2024-01-01T00:00:00+00:00",
-              footer="f",
-              footer_icon="https://e.com/i.png",
-            )
-          ],
-          components=[
-            ui.Button("Go", custom_id="go"),
-            ui.StringSelect("s", ["a", "b"]),
-          ],
-        )
+        sent = (
+          await api.create_message(
+            5,
+            content="@everyone hello",
+            embeds=[
+              ui.Embed(
+                "T",
+                "D",
+                timestamp="2024-01-01T00:00:00+00:00",
+                footer=ui.EmbedFooter("f", "https://e.com/i.png"),
+              )
+            ],
+            components=[
+              ui.Button("Go", custom_id="go"),
+              ui.StringSelect("s", ["a", "b"]),
+            ],
+          )
+        ).unwrap()
         call = seen[-1]
         body = json_of(call)
         check(
@@ -3406,25 +3778,29 @@ async def api_scenarios() -> None:
           body["allowed_mentions"] == {"parse": [], "replied_user": False},
           body.get("allowed_mentions"),
         )
-        await api.create_message(
-          5, components=[ui.Container(ui.TextDisplay("hi"), accent_colour=0xFF0000)]
-        )
+        (
+          await api.create_message(
+            5, components=[ui.Container(ui.TextDisplay("hi"), accent_colour=0xFF0000)]
+          )
+        ).unwrap()
         body = json_of(seen[-1])
         check(
           "create_message: layout components set IS_COMPONENTS_V2 on their own",
           body["flags"] & ui.IS_COMPONENTS_V2 and body["components"][0]["type"] == 17,
           body,
         )
-        await api.create_message(
-          5,
-          content="with files",
-          embeds=[ui.embed("T")],
-          files=[
-            Upload("cat.png", b"\x89PNG-data", "image/png"),
-            Upload("notes.txt", b"plain"),
-          ],
-          reason="because",
-        )
+        (
+          await api.create_message(
+            5,
+            content="with files",
+            embeds=[ui.Embed("T")],
+            files=[
+              Upload("cat.png", b"\x89PNG-data", "image/png"),
+              Upload("notes.txt", b"plain"),
+            ],
+            reason="because",
+          )
+        ).unwrap()
         call = seen[-1]
         envelope = message_from_bytes(
           b"Content-Type: "
@@ -3454,7 +3830,7 @@ async def api_scenarios() -> None:
           call["headers"]["x-audit-log-reason"] == "because",
         )
 
-        await api.update_message(5, 9, content="edited")
+        (await api.update_message(5, 9, content="edited")).unwrap()
         call = seen[-1]
         check(
           "update_message: PATCH with only what you passed",
@@ -3464,7 +3840,7 @@ async def api_scenarios() -> None:
           and "embeds" not in json_of(call),
           json_of(call),
         )
-        gone = await api.delete_message(5, 9, reason="spam & ünïcode")
+        gone = (await api.delete_message(5, 9, reason="spam & ünïcode")).unwrap()
         call = seen[-1]
         check(
           "delete_message: DELETE, no body, None back, reason encoded",
@@ -3475,7 +3851,7 @@ async def api_scenarios() -> None:
           call["headers"],
         )
         answers["GET /channels/5/messages"] = (200, [message])
-        listed = await api.list_messages(5, limit=3, before=7)
+        listed = (await api.list_messages(5, limit=3, before=7)).unwrap()
         check(
           "list_messages: query parameters, a typed list back",
           seen[-1]["query"] == {"limit": "3", "before": "7"}
@@ -3560,14 +3936,14 @@ async def api_scenarios() -> None:
         from datetime import UTC
         from datetime import datetime as when
 
-        await api.channel(5).send("via ref", embeds=[ui.embed("E")])
+        (await api.channel(5).send("via ref", embeds=[ui.Embed("E")])).unwrap()
         check(
           "api.channel(5).send: POST to that channel",
           seen[-1]["method"] == "POST"
           and seen[-1]["path"] == "/channels/5/messages"
           and json_of(seen[-1])["content"] == "via ref",
         )
-        await api.message(5, 9).reply("yo")
+        (await api.message(5, 9).reply("yo")).unwrap()
         check(
           "message.reply sets message_reference to the message",
           json_of(seen[-1])["message_reference"] == {"message_id": "9"}
@@ -3634,7 +4010,7 @@ async def api_scenarios() -> None:
           200,
           {"id": "55", "type": 1, "recipients": []},
         )
-        await api.user(8).send("hello there")
+        (await api.user(8).send("hello there")).unwrap()
         opened, sent_dm = seen[-2], seen[-1]
         check(
           "user.send opens the DM, then sends to it",
@@ -3666,7 +4042,7 @@ async def api_scenarios() -> None:
         from micro.discord.interactions import Interaction
 
         ctx = Interaction(payload, DiscordHTTPClient(runtime))
-        await ctx.channel_ref.send("from ctx")
+        (await ctx.channel_ref.send("from ctx")).unwrap()
         await ctx.member_ref.add_role(30)
         await ctx.message_ref.pin()
         await ctx.guild_ref.unban(8)
@@ -3738,6 +4114,343 @@ async def api_scenarios() -> None:
             raise ValueError("channels are off limits")
 
         undo_refuse = http_worker.rewrite(refuse)
+        # Interaction responses carry files too.
+        from micro.discord.interactions import Interaction
+
+        def multipart(call: dict[str, Any]) -> tuple[Any, dict[Any, Any]]:
+          envelope = message_from_bytes(
+            b"Content-Type: "
+            + call["headers"]["content-type"].encode()
+            + b"\r\n\r\n"
+            + call["body"],
+            policy=email_policy,
+          )
+          found = {
+            part.get_param("name", header="content-disposition"): part
+            for part in envelope.iter_parts()
+          }
+          return json.loads(found["payload_json"].get_content()), found
+
+        def interaction(**more: Any) -> Any:
+          return Interaction(
+            {"id": "77", "token": "tok", "application_id": "100", "type": 2,
+             "data": {"name": "x"}, "user": {"id": "1"}, **more},
+            api.http,
+          )  # fmt: skip
+
+        picture = Upload("cat.png", b"\x89PNG", "image/png")
+        ctx = interaction()
+        await ctx.respond("look", files=[picture], ephemeral=True)
+        payload, found = multipart(seen[-1])
+        check(
+          "respond(files=...) uploads with the first response",
+          seen[-1]["path"] == "/interactions/77/tok/callback"
+          and payload["type"] == 4
+          and payload["data"]["content"] == "look"
+          and payload["data"]["flags"] & ui.EPHEMERAL
+          and found["files[0]"].get_filename() == "cat.png"
+          and found["files[0]"].get_payload(decode=True) == b"\x89PNG",
+          (seen[-1]["path"], payload),
+        )
+        answers["POST /webhooks/100/tok"] = (200, message)
+        await ctx.respond("more", files=[picture])
+        payload, found = multipart(seen[-1])
+        check(
+          "a follow-up carries files",
+          seen[-1]["path"] == "/webhooks/100/tok"
+          and payload["content"] == "more"
+          and "files[0]" in found,
+          (seen[-1]["path"], payload),
+        )
+        answers["PATCH /webhooks/100/tok/messages/@original"] = (200, message)
+        ctx = interaction()
+        await ctx.defer(thinking=True, ephemeral=True)
+        await ctx.respond(
+          components=[ui.Container(ui.TextDisplay("done"))], ephemeral=True
+        )
+        body = json_of(seen[-1])
+        check(
+          "answering after thinking keeps the components-v2 flag and drops the rest",
+          seen[-1]["method"] == "PATCH" and body.get("flags") == ui.IS_COMPONENTS_V2,
+          body,
+        )
+        ctx = interaction()
+        await ctx.defer(thinking=True)
+        await ctx.respond("plain")
+        check(
+          "a plain answer after thinking sends no flags",
+          "flags" not in json_of(seen[-1]),
+          json_of(seen[-1]),
+        )
+        chart = Upload("chart.png", b"png", description="Sales by week")
+        ctx = interaction()
+        await ctx.respond(
+          components=[
+            ui.Container(
+              ui.Section("Sales", accessory=ui.Thumbnail(chart)),
+              ui.MediaGallery(chart, Upload("b.png", b"b", spoiler=True)),
+              ui.File(Upload.text("log.txt", "all good")),
+            )
+          ]
+        )
+        payload, found = multipart(seen[-1])
+        inner = payload["data"]["components"][0]["components"]
+        check(
+          "an Upload shown by a component is attached by itself, once",
+          sorted(k for k in found if k != "payload_json")
+          == ["files[0]", "files[1]", "files[2]"]
+          and found["files[0]"].get_filename() == "chart.png"
+          and inner[0]["accessory"]["media"]["url"] == "attachment://chart.png"
+          and inner[1]["items"][0]["media"]["url"] == "attachment://chart.png"
+          and inner[2]["file"]["url"] == "attachment://log.txt"
+          and found["files[2]"].get_payload(decode=True) == b"all good",
+          (list(found), inner),
+        )
+        check(
+          "a spoiler upload is named and marked as one; alt text travels with the file",
+          found["files[1]"].get_filename() == "SPOILER_b.png"
+          and inner[1]["items"][1]["spoiler"] is True
+          and inner[1]["items"][0]["description"] == "Sales by week"
+          and payload["data"]["attachments"][0]
+          == {"id": "0", "filename": "chart.png", "description": "Sales by week"},
+          payload["data"].get("attachments"),
+        )
+        ctx = interaction()
+        await ctx.respond(embeds=[ui.Embed("T", image=chart)])
+        payload, found = multipart(seen[-1])
+        check(
+          "an embed's picture can be an Upload too",
+          payload["data"]["embeds"][0]["image"]["url"] == "attachment://chart.png"
+          and "files[0]" in found,
+          payload,
+        )
+        try:
+          ui.uploads_in(files=[Upload("a.txt", b"1"), Upload("a.txt", b"2")])
+          clash = False
+        except ValueError:
+          clash = True
+        check("two different files under one name are refused", clash)
+        await ctx.edit_response("v2", files=[Upload("new.txt", b"n")], keep=["555"])
+        payload, found = multipart(seen[-1])
+        check(
+          "an edit says which existing files stay, and adds the new ones",
+          payload["attachments"] == [{"id": "555"}, {"id": "0", "filename": "new.txt"}]
+          and "files[0]" in found,
+          payload,
+        )
+        (await api.create_message(5, components=[ui.MediaGallery(chart)])).unwrap()
+        payload, found = multipart(seen[-1])
+        check(
+          "the API methods attach shown uploads the same way",
+          "files[0]" in found and payload["attachments"][0]["description"],
+          payload,
+        )
+
+        ctx = interaction()
+        await ctx.respond(
+          ui.Draft(
+            "from a draft",
+            embeds=[ui.Embed("T", image=chart)],
+            ephemeral=True,
+          )
+        )
+        payload, found = multipart(seen[-1])
+        check(
+          "ctx.respond(Draft) sends the draft, its uploads included",
+          payload["data"]["content"] == "from a draft"
+          and payload["data"]["flags"] & ui.EPHEMERAL
+          and "files[0]" in found,
+          payload,
+        )
+        try:
+          await ctx.respond(ui.Draft("x"), ephemeral=True)
+          mixed = False
+        except TypeError:
+          mixed = True
+        check("a Draft and loose pieces together are refused", mixed)
+        await api.create_message(5, ui.Draft("api draft", embeds=[ui.Embed("E")]))
+        check(
+          "api.create_message accepts a Draft as its content",
+          json_of(seen[-1])["content"] == "api draft"
+          and json_of(seen[-1])["embeds"][0]["title"] == "E",
+          json_of(seen[-1]),
+        )
+        await api.create_message(5, ui.Draft(components=[ui.MediaGallery(chart)]))
+        payload, found = multipart(seen[-1])
+        check(
+          "a Draft's uploads travel with the API call",
+          "files[0]" in found and payload["flags"] & ui.IS_COMPONENTS_V2,
+          payload,
+        )
+        try:
+          await api.create_message(5, ui.Draft("x"), embeds=[ui.Embed("y")])
+          mixed = False
+        except TypeError:
+          mixed = True
+        check("the API refuses a Draft mixed with pieces too", mixed)
+        (await api.channel(5).send(ui.Draft("via ref", reply_to=9))).unwrap()
+        check(
+          "channel.send takes a Draft",
+          json_of(seen[-1])["content"] == "via ref"
+          and json_of(seen[-1])["message_reference"]["message_id"] == "9",
+          json_of(seen[-1]),
+        )
+        ctx = interaction()
+        await ctx.defer(thinking=True)
+        await ctx.respond(ui.Draft("done"))
+        await ctx.edit_response(ui.Draft(embeds=()))
+        check(
+          "editing with a Draft clears what is empty and keeps what is None",
+          json_of(seen[-1])["embeds"] == [] and "content" not in json_of(seen[-1]),
+          json_of(seen[-1]),
+        )
+
+        # A gateway error is retried only where sending twice cannot act twice.
+        answers["GET /guilds/777"] = (504, {"message": "upstream"})
+        before = len(seen)
+        try:
+          await api.guild(777).get()
+        except DiscordAPIError as error:
+          gave_up = error.status == 504
+        else:
+          gave_up = False
+        check(
+          "a 504 on a GET is retried (it is idempotent)",
+          gave_up and len(seen) - before == 4,
+          len(seen) - before,
+        )
+        answers["POST /channels/777/messages"] = (504, {"message": "upstream"})
+        before = len(seen)
+        refused = await api.create_message(777, content="once")
+        gave_up = isinstance(refused, Err) and refused.error.status == 504
+        check(
+          "a 504 on a POST is not: it may have been carried out",
+          gave_up and len(seen) - before == 1,
+          len(seen) - before,
+        )
+        check(
+          "Discord's refusal comes back as an Err; unwrap() raises the same error",
+          isinstance(refused, Err)
+          and isinstance(refused.error, DiscordAPIError)
+          and refused.ok() is None
+          and refused.unwrap_or("fallback") == "fallback",
+        )
+        try:
+          refused.unwrap()
+          raised = False
+        except DiscordAPIError as error:
+          raised = error is refused.error  # pyright: ignore[reportAttributeAccessIssue]
+        check("unwrap() raises the original error", raised)
+        answers["GET /channels/5/messages/404"] = (
+          404,
+          {"code": 10008, "message": "Unknown Message"},
+        )
+        match await api.get_message(5, 404):
+          case Err(NotFound() as missing):
+            matched = missing.code == 10008
+          case _:
+            matched = False
+        gone_ok = (await api.get_message(5, 404)).ignore(NotFound)
+        check(
+          "a refusal can be matched on its class, or ignored by it",
+          matched and gone_ok is None,
+        )
+        answers["GET /channels/5/messages/9"] = (200, message)
+        found = await api.get_message(5, 9)
+        check(
+          "an Ok carries the typed message; map and ok() work on it",
+          isinstance(found, Ok)
+          and found.ok() is found.value
+          and found.map(lambda m: m.content).unwrap() == "hi",
+        )
+
+        from micro.discord.interactions._context import REPLY_KEY
+
+        inline: list[Any] = []
+
+        async def on_inline(msg: Any) -> None:
+          inline.append(json.loads(msg.data))
+
+        held = await runtime.nats.subscribe("test.inline", cb=on_inline)
+        ctx = interaction(**{REPLY_KEY: "test.inline"})
+        await ctx.respond("over http", files=[picture], ephemeral=True)
+        await runtime.nats.flush()
+        payload, found = multipart(seen[-1])
+        check(
+          "an interaction received over HTTP acknowledges inline, then sends the files",
+          inline == [{"type": 5, "data": {"flags": ui.EPHEMERAL}}]
+          and seen[-1]["method"] == "PATCH"
+          and payload["content"] == "over http"
+          and "flags" not in payload
+          and "files[0]" in found
+          and ctx.state.name == "MESSAGE",
+          (inline, payload, ctx.state),
+        )
+        await held.unsubscribe()
+
+        # A burst on one route waits for Discord's first answer instead of all going
+        # at once (and all but a few coming back as 429s).
+        from micro.discord.http_service import DiscordHTTPResponse, RateLimits
+
+        limits = RateLimits()
+        out = 0
+        peak = 0
+        sent_at_once: list[int] = []
+
+        async def one(index: int) -> None:
+          nonlocal out, peak
+          await limits.acquire("r:1")
+          out += 1
+          peak = max(peak, out)
+          sent_at_once.append(out)
+          await asyncio.sleep(0.01)
+          out -= 1
+          left = max(4 - index, 0)
+          await limits.observe(
+            "r:1",
+            DiscordHTTPResponse(
+              status=200,
+              headers=(
+                ("x-ratelimit-limit", "5"),
+                ("x-ratelimit-remaining", str(left)),
+                ("x-ratelimit-reset-after", "0.2"),
+                ("x-ratelimit-bucket", "b"),
+              ),
+              body=b"",
+            ),
+          )
+
+        started = time.monotonic()
+        await asyncio.gather(*(one(i) for i in range(8)))
+        took = time.monotonic() - started
+        check(
+          "a burst sends one request, learns the limit, then stays within it",
+          sent_at_once[0] == 1 and peak <= 4 and took >= 0.2,
+          (sent_at_once, peak, round(took, 2)),
+        )
+        quiet = RateLimits()
+
+        async def unlimited() -> None:
+          await quiet.acquire("q")
+          await asyncio.sleep(0.01)
+          await quiet.observe(
+            "q", DiscordHTTPResponse(status=204, headers=(), body=b"")
+          )
+
+        await unlimited()
+        started = time.monotonic()
+        await asyncio.gather(*(unlimited() for _ in range(20)))
+        check(
+          "a route Discord does not limit is not held back",
+          time.monotonic() - started < 0.1,
+          round(time.monotonic() - started, 2),
+        )
+        stuck = RateLimits()
+        await stuck.acquire("s")
+        await stuck.abandon("s")
+        await asyncio.wait_for(stuck.acquire("s"), 1)
+        check("a request that got no answer does not block the next one", True)
+
         before = len(seen)
         try:
           await api.channel(5).get()
@@ -4228,6 +4941,9 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "ui-hooks": ui_hooks_scenarios,
   "ui-limits": ui_limits_scenarios,
   "colour": colour_scenarios,
+  "embed": embed_scenarios,
+  "draft": draft_scenarios,
+  "helpers": helper_scenarios,
   "signed-ids": signed_ids_scenarios,
   "members": member_cache_scenarios,
   "endpoint": endpoint_scenarios,

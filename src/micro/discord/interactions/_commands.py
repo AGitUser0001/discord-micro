@@ -82,6 +82,8 @@ class OptionSpec:
   required: bool
   option: Option
   autocomplete: bool = False
+  nullable: bool = False
+  """Optional by its type (`X | None`) with no default: None when not given."""
 
   def to_dict(self) -> dict[str, JsonValue]:
     value: dict[str, JsonValue] = {
@@ -154,6 +156,7 @@ def parse_options(handler: Handler) -> list[OptionSpec]:
         _TYPES[annotation],
         required,
         option,
+        nullable=not required and parameter.default is inspect.Parameter.empty,
       )
     )
   if any(not a.required and b.required for a, b in pairwise(specs)):
@@ -345,6 +348,8 @@ def convert_options(
     if spec.name not in given:
       if spec.required:
         raise CommandOutdated(f"Discord did not send required option {spec.name!r}.")
+      if spec.nullable:
+        arguments[spec.parameter] = None
       continue
     raw = given[spec.name]
     arguments[spec.parameter] = _convert(spec, raw, resolved)

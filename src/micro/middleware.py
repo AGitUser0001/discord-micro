@@ -14,7 +14,7 @@ under it (`.` or `:` separated).
 
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, overload
+from typing import Protocol, overload
 
 from micro.errors import MicroError
 
@@ -80,7 +80,9 @@ class Middlewares[ContextT: Scoped]:
   @overload
   def use(self, scope: str, /) -> Callable[[Middleware], Middleware]: ...
 
-  def use(self, scope: Middleware | str, function: Middleware | None = None, /) -> Any:
+  def use(
+    self, scope: Middleware | str, function: Middleware | None = None, /
+  ) -> Middleware | Callable[[Middleware], Middleware]:
     """Add middleware: `use(fn)`, `use("scope", fn)`, or as a decorator."""
     if not isinstance(scope, str):
       self._layers.append(_Layer(None, scope))

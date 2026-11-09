@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 from micro.discord._api import UNSET, Upload
 from micro.discord._refs import _MemberExtras, _UserExtras
+from micro.discord.http_service import DiscordAPIError
 from micro.discord.models import http as m
-from micro.discord.ui import AllowedMentions, Buildable, Emoji
+from micro.discord.ui import AllowedMentions, Buildable, Draft, Embed, Emoji
+from micro.result import Result
 
 if TYPE_CHECKING:
   from micro.discord.api import DiscordAPI
@@ -130,9 +132,9 @@ class ChannelRef:
 
   async def send(
     self,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
@@ -152,7 +154,7 @@ class ChannelRef:
     tts: bool | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages"""
     return await self.api.create_message(
       self.channel_id,
@@ -180,7 +182,7 @@ class ChannelRef:
     before: int | str | None = UNSET,
     after: int | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> list[m.MessageResponse]:
+  ) -> Result[list[m.MessageResponse], DiscordAPIError]:
     """GET /channels/{channel_id}/messages"""
     return await self.api.list_messages(
       self.channel_id, around=around, before=before, after=after, limit=limit
@@ -199,7 +201,7 @@ class ChannelRef:
     *,
     before: datetime | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> m.PinnedMessagesResponse:
+  ) -> Result[m.PinnedMessagesResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/messages/pins"""
     return await self.api.list_pins(self.channel_id, before=before, limit=limit)
 
@@ -208,7 +210,7 @@ class ChannelRef:
     message_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/messages/pins/{message_id}"""
     return await self.api.create_pin(self.channel_id, message_id, reason=reason)
 
@@ -217,7 +219,7 @@ class ChannelRef:
     message_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/pins/{message_id}"""
     return await self.api.delete_pin(self.channel_id, message_id, reason=reason)
 
@@ -226,7 +228,7 @@ class ChannelRef:
     *,
     messages: Sequence[int | str],
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """POST /channels/{channel_id}/messages/bulk-delete"""
     return await self.api.bulk_delete_messages(
       self.channel_id, messages=messages, reason=reason
@@ -535,15 +537,15 @@ class MessageRef:
 
   async def get(
     self,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/messages/{message_id}"""
     return await self.api.get_message(self.channel_id, self.message_id)
 
   async def edit(
     self,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     flags: int | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
@@ -555,7 +557,7 @@ class MessageRef:
     | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /channels/{channel_id}/messages/{message_id}"""
     return await self.api.update_message(
       self.channel_id,
@@ -575,7 +577,7 @@ class MessageRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}"""
     return await self.api.delete_message(
       self.channel_id, self.message_id, reason=reason
@@ -585,7 +587,7 @@ class MessageRef:
     self,
     *,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages/{message_id}/crosspost"""
     return await self.api.crosspost_message(
       self.channel_id, self.message_id, reason=reason
@@ -595,7 +597,7 @@ class MessageRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/messages/pins/{message_id}"""
     return await self.api.create_pin(self.channel_id, self.message_id, reason=reason)
 
@@ -603,7 +605,7 @@ class MessageRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/pins/{message_id}"""
     return await self.api.delete_pin(self.channel_id, self.message_id, reason=reason)
 
@@ -612,7 +614,7 @@ class MessageRef:
     emoji_name: str | Emoji,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}/@me"""
     return await self.api.add_my_message_reaction(
       self.channel_id, self.message_id, emoji_name, reason=reason
@@ -623,7 +625,7 @@ class MessageRef:
     emoji_name: str | Emoji,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}/@me"""
     return await self.api.delete_my_message_reaction(
       self.channel_id, self.message_id, emoji_name, reason=reason
@@ -635,7 +637,7 @@ class MessageRef:
     user_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}/{user_id}"""
     return await self.api.delete_user_message_reaction(
       self.channel_id, self.message_id, emoji_name, user_id, reason=reason
@@ -645,7 +647,7 @@ class MessageRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}/reactions"""
     return await self.api.delete_all_message_reactions(
       self.channel_id, self.message_id, reason=reason
@@ -656,7 +658,7 @@ class MessageRef:
     emoji_name: str | Emoji,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}"""
     return await self.api.delete_all_message_reactions_by_emoji(
       self.channel_id, self.message_id, emoji_name, reason=reason
@@ -669,7 +671,7 @@ class MessageRef:
     after: int | str | None = UNSET,
     limit: int | None = UNSET,
     type: m.ReactionTypes | int | None = UNSET,
-  ) -> list[m.UserResponse]:
+  ) -> Result[list[m.UserResponse], DiscordAPIError]:
     """GET /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}"""
     return await self.api.list_message_reactions_by_emoji(
       self.channel_id, self.message_id, emoji_name, after=after, limit=limit, type=type
@@ -682,7 +684,7 @@ class MessageRef:
     auto_archive_duration: m.ThreadAutoArchiveDuration | int | None = UNSET,
     rate_limit_per_user: int | None = UNSET,
     reason: str | None = None,
-  ) -> m.ThreadResponse:
+  ) -> Result[m.ThreadResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages/{message_id}/threads"""
     return await self.api.create_thread_from_message(
       self.channel_id,
@@ -715,9 +717,9 @@ class MessageRef:
 
   async def reply(
     self,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
@@ -736,7 +738,7 @@ class MessageRef:
     tts: bool | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages"""
     return await self.api.create_message(
       self.channel_id,
@@ -2159,12 +2161,12 @@ class WebhookTokenRef:
 
   async def execute(
     self,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
     wait: bool | None = UNSET,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
@@ -2219,11 +2221,11 @@ class WebhookTokenRef:
   async def edit_message(
     self,
     message_id: int | str,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
@@ -2282,11 +2284,11 @@ class WebhookTokenRef:
 
   async def edit_original_message(
     self,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]

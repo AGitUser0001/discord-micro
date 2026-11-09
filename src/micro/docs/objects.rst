@@ -17,6 +17,11 @@ which is stricter and complete (``UserResponse``, ``GuildMemberResponse``, ``Gui
 ``GetChannelResponse200``, ``GuildResponse``, ``MessageAttachmentResponse``, ``MessageResponse``).
 Use it when you want every field typed; use the view when you just need a few.
 
+``Object`` is the root of every view that has an id (``User``, ``Role``, ``Channel``,
+``Guild``, ``Attachment``, ``Message``): ``id``, ``snowflake`` (the id as a number),
+``created_at`` (read from the id), and equality by kind and id. ``isinstance(x, Object)``
+says "Discord gave this an id".
+
 Where views come from
 ---------------------
 
@@ -33,10 +38,59 @@ Discord sent no user). The views are **frozen**: read them, do not assign to the
 ``full()`` raises ``ValidationError`` when the payload was partial: a member resolved from
 an interaction, for instance, has no ``user`` of its own.
 
+``user.avatar_url()`` is the user's avatar (the default one Discord shows if they set
+none), ``guild.icon_url()`` the server's icon or ``None``; both take ``size=``. ``created_at``
+on a ``User`` or ``Guild`` is read from its id. ``member.display_name`` is the server
+nickname, else the user's display name.
+
+Permissions
+-----------
+
+Discord sends permissions as a decimal string. On the views they are
+:class:`Permissions`, a set of named flags: ``role.permissions``, an overwrite's ``allow``
+and ``deny``, and ``member.permissions`` (on interactions: what the member may do in that
+channel).
+
+.. code-block:: python
+
+   from micro.discord.permissions import Permissions
+
+   if not ctx.member.permissions.allows(Permissions.MANAGE_MESSAGES):
+     await ctx.respond("You need Manage Messages.", ephemeral=True)
+
+   needed = Permissions.KICK_MEMBERS | Permissions.BAN_MEMBERS
+   needed in role.permissions            # exactly these bits
+   role.permissions.names                # ["kick_members", "ban_members", ...]
+
+   @commands.slash("purge", default_member_permissions=Permissions.MANAGE_MESSAGES)
+   async def purge(ctx): ...
+
+``allows`` is true for an administrator whatever else is set; ``in`` tests the bits
+themselves. A ``Permissions`` is an ``int``, so it goes anywhere a number is wanted, and
+it is written back to Discord as the string it expects. ``DiscordState.permissions``
+(:doc:`cache`) computes a member's effective permissions in a channel.
+
+Text helpers
+------------
+
+``micro.discord.text`` has the small things message text needs:
+
+.. code-block:: python
+
+   from micro.discord import text
+
+   text.escape(member.display_name)        # Markdown switched off: shown as typed
+   text.escape_mentions(untrusted)         # @everyone and <@id> made inert
+   text.timestamp(when, "R")               # "<t:1700000000:R>": "in 3 hours", per reader
+   text.user(id), text.role(id), text.channel(id), text.command("ticket open", id)
+   text.snowflake_time(message.id)         # when any Discord id was created
+   text.time_snowflake(when)               # an id for before= / after= paging
+
 Reference
 ---------
 
 .. api::
+   micro.discord.objects.Object
    micro.discord.objects.User
    micro.discord.objects.Member
    micro.discord.objects.Role
@@ -45,3 +99,15 @@ Reference
    micro.discord.objects.Guild
    micro.discord.objects.Attachment
    micro.discord.objects.Message
+   micro.discord.permissions.Permissions
+   micro.discord.text.escape
+   micro.discord.text.escape_mentions
+   micro.discord.text.timestamp
+   micro.discord.text.TimestampStyle
+   micro.discord.text.user
+   micro.discord.text.role
+   micro.discord.text.channel
+   micro.discord.text.command
+   micro.discord.text.snowflake_time
+   micro.discord.text.time_snowflake
+   micro.discord.text.DISCORD_EPOCH_MS

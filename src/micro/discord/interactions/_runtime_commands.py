@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from micro import subjects
 from micro.coordination import Table
 from micro.discord.routes import AUTOCOMPLETE, SLASH, command_route
-from micro.runtime import StreamConsumer
+from micro.runtime import StreamConsumer, default_backoff
 
 from ._commands import Handler, _validate_name
 from ._context import Interaction
@@ -262,16 +262,36 @@ class RuntimeCommands(InteractionTemplate):
     await asyncio.gather(*(consumer.stop() for consumer in running.values()))
 
   async def _watch(self, table: Table[_Stored]) -> None:
-    async for change in table.watch(PREFIX + ">"):
-      if change is None:
-        continue
+    failures = 0
+    while True:
+      # Each watch replays the table; what it no longer holds was removed meanwhile.
+      replayed: set[str] | None = set()
       try:
-        if change.value is None:
-          await self._unserve(change.key)
-        else:
-          await self._serve(change.key)
+        async for change in table.watch(PREFIX + ">", lenient=True):
+          failures = 0
+          try:
+            if change is None:
+              if replayed is not None:
+                for kind, name in self._names - {self._parse(k) for k in replayed}:
+                  await self._unserve(f"{PREFIX}{kind}.{name}")
+                replayed = None
+            elif change.error is not None:
+              if replayed is not None:
+                replayed.add(change.key)  # unreadable, not removed: leave it be
+            elif change.value is None:
+              await self._unserve(change.key)
+            else:
+              if replayed is not None:
+                replayed.add(change.key)
+              await self._serve(change.key)
+          except Exception:
+            logger.exception("Could not update runtime commands")
+      except asyncio.CancelledError:
+        raise
       except Exception:
-        logger.exception("Could not update runtime command %s", change.key)
+        logger.warning("The watch on runtime commands failed", exc_info=True)
+      failures += 1
+      await asyncio.sleep(default_backoff(failures))
 
   def _parse(self, key: str) -> tuple[int, str]:
     kind, _, name = key.removeprefix(PREFIX).partition(".")

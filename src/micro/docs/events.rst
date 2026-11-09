@@ -22,6 +22,15 @@ run.
 Discord's documentation and created the first time you touch it. The handler receives the
 event as the schema's typed model, or as a plain dict if you annotate it that way.
 
+When an event does not match its schema
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Events are validated strictly. One that does not fit its model is **not delivered**: it is
+logged as an error naming the event and the field, and dropped (while replicas run
+different versions of a schema it is left for a replica that can read it). The models are
+generated from Discord's published types, so if Discord sends something they do not
+describe, that log line is the cue to regenerate or correct the model.
+
 Delivery
 --------
 

@@ -7,7 +7,7 @@ import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic, time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 from urllib.parse import quote, urlencode
 
 from nats.aio.msg import Msg
@@ -19,7 +19,7 @@ from pydantic_core import from_json, to_json
 
 from micro import subjects
 from micro.errors import MicroError, RemoteError, RequestTimeoutError, RoutingError
-from micro.runtime import Component, Presence, Registration, Runtime
+from micro.runtime import Component, Presence, Registration, Runtime, default_backoff
 
 from .http_operations import (
   HTTP_OPERATIONS,
@@ -36,6 +36,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger("micro")
 
 WORKER_KIND = "discord.http"
+_NOT_CARRIED_OUT = frozenset((502, 503))
+"""Discord's edge could not hand the request to Discord: sending it again is safe."""
+_UNKNOWN_OUTCOME = frozenset((504,))
+"""Discord's edge gave up waiting: the request may have been carried out."""
+_IDEMPOTENT = frozenset(("GET", "HEAD", "PUT", "DELETE"))
+"""Methods that do the same thing however often they are sent, so an attempt whose
+outcome is unknown can be sent again. POST creates something each time, and a PATCH
+that adds files adds them each time: those are sent again only when the first
+attempt certainly did nothing."""
+
+
+def _never_sent(error: BaseException) -> bool:
+  """Whether a transport error happened before the request left (no connection)."""
+  import httpx2
+
+  return isinstance(
+    error, httpx2.ConnectError | httpx2.ConnectTimeout | httpx2.PoolTimeout
+  )
+
+
+def _transport_error(error: BaseException) -> bool:
+  import httpx2
+
+  return isinstance(error, httpx2.TransportError)
+
+
 _STATUS_HEADER = "Micro-Status"
 
 
@@ -82,10 +108,15 @@ class _GlobalLimit(BaseModel):
   until: float
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _Bucket:
   remaining: int = 1
   reset_at: float = 0.0
+  limit: int | None = None
+  """Requests per window, once Discord has said (None until the first answer)."""
+  unlimited: bool = False
+  """Discord sent no rate-limit headers for this route: nothing to wait for."""
+  in_flight: int = 0
 
 
 class RateLimits:
@@ -94,49 +125,94 @@ class RateLimits:
   Requests are partitioned so every request sharing a bucket reaches the same
   worker, so this state never needs to be shared. Only the global limit is
   announced to the other workers.
+
+  A bucket lets through only what Discord said remains. Until Discord has
+  answered once (so the limit is unknown) and whenever a window is used up with
+  no reset time known, one request goes ahead and the rest wait for its answer,
+  so a burst does not turn into a burst of 429s.
   """
 
   def __init__(self) -> None:
     self._buckets: dict[str, _Bucket] = {}
     self._global_reset = 0.0
-    self._lock = asyncio.Lock()
+    self._changed = asyncio.Condition()
     self._completed: dict[str, DiscordHTTPResponse] = {}
 
   async def acquire(self, route: str) -> None:
-    """Wait until the route's bucket and the global limit allow another request."""
+    """Wait until the route's bucket and the global limit allow another request.
+
+    Follow every `acquire` with `observe` (the answer) or `abandon` (no answer).
+    """
     while True:
-      async with self._lock:
+      async with self._changed:
         now = monotonic()
         bucket = self._buckets.setdefault(route, _Bucket())
         delay = max(self._global_reset, bucket.reset_at) - now
         if delay <= 0:
-          if bucket.remaining > 0:
-            bucket.remaining -= 1
-          return
+          if bucket.remaining == 0 and bucket.reset_at and bucket.limit:
+            # The window Discord named is over: its allowance is back.
+            bucket.remaining, bucket.reset_at = bucket.limit, 0.0
+          if bucket.unlimited or bucket.remaining > 0 or bucket.in_flight == 0:
+            bucket.remaining = max(bucket.remaining - 1, 0)
+            bucket.in_flight += 1
+            return
+          # Used up, and a request is out: its answer says when there is more.
+          await self._changed.wait()
+          continue
       await asyncio.sleep(delay)
+
+  async def abandon(self, route: str) -> None:
+    """A request let through by `acquire` got no answer: let the next one go."""
+    async with self._changed:
+      bucket = self._buckets.get(route)
+      if bucket is not None:
+        bucket.in_flight = max(bucket.in_flight - 1, 0)
+      self._changed.notify_all()
 
   async def observe(self, route: str, response: DiscordHTTPResponse) -> float | None:
     """Record a response; returns the wall-clock end of a global limit, if any."""
     headers = {name.lower(): value for name, value in response.headers}
-    async with self._lock:
-      bucket_name = headers.get("x-ratelimit-bucket", route)
-      major = route.partition(":")[2]
-      bucket = self._buckets.setdefault(f"{bucket_name}:{major}", _Bucket())
+    async with self._changed:
+      try:
+        return self._observe(route, response, headers)
+      finally:
+        self._changed.notify_all()
+
+  def _observe(
+    self, route: str, response: DiscordHTTPResponse, headers: Mapping[str, str]
+  ) -> float | None:
+    previous = self._buckets.setdefault(route, _Bucket())
+    previous.in_flight = max(previous.in_flight - 1, 0)
+    bucket_name = headers.get("x-ratelimit-bucket", route)
+    major = route.partition(":")[2]
+    bucket = self._buckets.setdefault(f"{bucket_name}:{major}", _Bucket())
+    if bucket is not previous:
+      # Discord named the bucket this route shares: requests still out move to it.
+      bucket.in_flight += previous.in_flight
+      previous.in_flight = 0
       self._buckets[route] = bucket
-      if (remaining := headers.get("x-ratelimit-remaining")) is not None:
-        bucket.remaining = max(0, int(float(remaining)))
-      if (reset_after := headers.get("x-ratelimit-reset-after")) is not None and (
-        bucket.remaining == 0
-      ):
-        bucket.reset_at = max(bucket.reset_at, monotonic() + float(reset_after))
-      delay = _retry_after(response, headers)
-      if delay <= 0:
-        return None
-      if _is_global_rate_limit(response, headers):
-        self._global_reset = max(self._global_reset, monotonic() + delay)
-        return time() + delay
-      bucket.reset_at = max(bucket.reset_at, monotonic() + delay)
+    remaining = headers.get("x-ratelimit-remaining")
+    if remaining is not None:
+      bucket.unlimited = False
+      # Discord's count after this request; the ones still out will each take one.
+      bucket.remaining = max(0, int(float(remaining)) - bucket.in_flight)
+      if (limit := headers.get("x-ratelimit-limit")) is not None:
+        bucket.limit = max(1, int(float(limit)))
+    elif response.status < 500 and response.status != 429 and bucket.limit is None:
+      bucket.unlimited = True
+    if (reset_after := headers.get("x-ratelimit-reset-after")) is not None and (
+      bucket.remaining == 0
+    ):
+      bucket.reset_at = max(bucket.reset_at, monotonic() + float(reset_after))
+    delay = _retry_after(response, headers)
+    if delay <= 0:
       return None
+    if _is_global_rate_limit(response, headers):
+      self._global_reset = max(self._global_reset, monotonic() + delay)
+      return time() + delay
+    bucket.remaining = 0
+    bucket.reset_at = max(bucket.reset_at, monotonic() + delay)
+    return None
 
   def block_globally_until(self, wall_clock: float) -> None:
     """Pause every route until the given wall-clock time."""
@@ -356,6 +432,7 @@ class DiscordHTTPWorker(Component):
       )
     data = operation.request_model.model_validate_json(to_json(request.data))
     route = route_key(operation, data)
+    idempotent = operation.method.upper() in _IDEMPOTENT
     for attempt in range(self._max_attempts):
       await self.rate_limits.acquire(route)
       started = monotonic()
@@ -363,13 +440,22 @@ class DiscordHTTPWorker(Component):
         response = await self._execute_operation(
           operation, data, request.files, request.reason
         )
-      except Exception as exc:
-        if self._hooks:
+      except BaseException as exc:
+        await asyncio.shield(self.rate_limits.abandon(route))
+        if self._hooks and isinstance(exc, Exception):
           await self._notify(
             HTTPEvent(
               operation.id, route, attempt + 1, None, monotonic() - started, exc
             )
           )
+        # No answer. Send it again if it never left, or if twice is the same as once.
+        if (
+          attempt + 1 < self._max_attempts
+          and _transport_error(exc)
+          and (_never_sent(exc) or idempotent)
+        ):
+          await asyncio.sleep(default_backoff(attempt + 1))
+          continue
         raise
       result = DiscordHTTPResponse(
         status=response.status_code,
@@ -394,7 +480,14 @@ class DiscordHTTPWorker(Component):
           subjects.HTTP_GLOBAL_LIMIT,
           _GlobalLimit(until=blocked_until).model_dump_json().encode(),
         )
-      if not _is_discord_rate_limit(result) or attempt + 1 == self._max_attempts:
+      last = attempt + 1 == self._max_attempts
+      if not last and (
+        result.status in _NOT_CARRIED_OUT
+        or (result.status in _UNKNOWN_OUTCOME and idempotent)
+      ):
+        await asyncio.sleep(default_backoff(attempt + 1))
+        continue
+      if not _is_discord_rate_limit(result) or last:
         if request.idempotency_key is not None:
           self.rate_limits.complete(request.idempotency_key, result)
         return result
@@ -482,7 +575,33 @@ class DiscordHTTPWorker(Component):
 
 
 class DiscordAPIError(MicroError):
-  """Discord answered an operation with an error status."""
+  """Discord answered an operation with an error status.
+
+  Raised as the subclass for its status where there is one (`Forbidden`, `NotFound`,
+  `RateLimited`, `DiscordServerError`), so `except NotFound:` works; `code` is
+  Discord's own error number (10008 "Unknown Message", 50013 "Missing Permissions").
+  """
+
+  def __new__(cls, operation: str, response: DiscordHTTPResponse) -> Self:
+    if cls is DiscordAPIError:
+      chosen = _BY_STATUS.get(response.status)
+      if chosen is None and response.status >= 500:
+        chosen = DiscordServerError
+      if chosen is not None:
+        return cast(Self, Exception.__new__(chosen, operation, response))
+    return super().__new__(cls)
+
+  @property
+  def code(self) -> int | None:
+    """Discord's JSON error code, if the body carries one."""
+    found = self.body.get("code") if isinstance(self.body, dict) else None
+    return found if isinstance(found, int) else None
+
+  @property
+  def message(self) -> str:
+    """Discord's own description of what went wrong."""
+    found = self.body.get("message") if isinstance(self.body, dict) else None
+    return found if isinstance(found, str) else str(self.body or "")
 
   def __init__(self, operation: str, response: DiscordHTTPResponse) -> None:
     self.operation = operation
@@ -497,6 +616,39 @@ class DiscordAPIError(MicroError):
     super().__init__(
       f"Discord rejected {operation} with HTTP {response.status}: {self.body}"
     )
+
+
+class BadRequest(DiscordAPIError):
+  """400: Discord refused the request as malformed (see `body` for the fields)."""
+
+
+class Unauthorized(DiscordAPIError):
+  """401: the token is missing or wrong."""
+
+
+class Forbidden(DiscordAPIError):
+  """403: the bot is not allowed to do this here."""
+
+
+class NotFound(DiscordAPIError):
+  """404: the thing does not exist (any more), or the bot cannot see it."""
+
+
+class RateLimited(DiscordAPIError):
+  """429: still rate limited after every retry."""
+
+
+class DiscordServerError(DiscordAPIError):
+  """5xx: Discord itself failed."""
+
+
+_BY_STATUS: dict[int, type[DiscordAPIError]] = {
+  400: BadRequest,
+  401: Unauthorized,
+  403: Forbidden,
+  404: NotFound,
+  429: RateLimited,
+}
 
 
 class DiscordHTTPClient(GeneratedDiscordHTTPClient):
@@ -555,11 +707,14 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
     path: dict[str, JsonValue] | None = None,
     query: dict[str, JsonValue] | None = None,
     body: JsonValue = None,
+    files: Sequence[DiscordHTTPFile] = (),
+    reason: str | None = None,
   ) -> Any:
     """Run an operation from plain JSON parts; return the decoded body.
 
     Raises `DiscordAPIError` for error statuses. The worker validates the parts
-    against the generated request model.
+    against the generated request model. `files` are uploaded with the request
+    (fields `files[0]`, `files[1]`, ...); `reason` is the audit log reason.
     """
     data: dict[str, JsonValue] = {}
     if path is not None:
@@ -568,7 +723,11 @@ class DiscordHTTPClient(GeneratedDiscordHTTPClient):
       data["query"] = query
     if body is not None:
       data["body"] = body
-    response = await self.request(DiscordHTTPRequest(operation=operation, data=data))
+    response = await self.request(
+      DiscordHTTPRequest(
+        operation=operation, data=data, files=tuple(files), reason=reason
+      )
+    )
     if response.status >= 400:
       raise DiscordAPIError(operation, response)
     return from_json(response.body) if response.body else None
@@ -732,12 +891,18 @@ def _is_global_rate_limit(
 
 
 __all__ = (
+  "BadRequest",
   "DiscordAPIError",
   "DiscordHTTPClient",
   "DiscordHTTPRequest",
   "DiscordHTTPResponse",
   "DiscordHTTPWorker",
+  "DiscordServerError",
+  "Forbidden",
+  "NotFound",
+  "RateLimited",
   "RateLimits",
+  "Unauthorized",
   "partition_key",
   "rank_workers",
   "route_key",

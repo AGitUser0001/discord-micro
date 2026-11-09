@@ -52,8 +52,20 @@ class InteractionRouter(Service):
   `unroutable` to change routing (by guild, A/B, allowlists, auditing).
   """
 
-  def __init__(self, name: str = "interaction-router", **settings: Any) -> None:
-    super().__init__(name, **settings)
+  def __init__(
+    self,
+    name: str = "interaction-router",
+    *,
+    version: str = "0",
+    concurrency: int = 64,
+    ordered_by_guild: bool = False,
+  ) -> None:
+    super().__init__(
+      name,
+      version=version,
+      concurrency=concurrency,
+      ordered_by_guild=ordered_by_guild,
+    )
     self._middleware: Middlewares[Flow] = Middlewares()
     self._http: DiscordHTTPClient | None = None
     self._tables: dict[str, RouteTable] | None = None

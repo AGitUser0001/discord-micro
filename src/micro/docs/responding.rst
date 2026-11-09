@@ -49,6 +49,61 @@ for the user with "The application did not respond". ``defer()`` first when the 
 (or use ``defers()`` middleware, :doc:`middleware`). After 15 minutes the token expires and
 calls raise :class:`InteractionExpired`.
 
+A message as a value
+--------------------
+
+Anything that takes ``content, embeds, components, ...`` also takes a :class:`Draft` in the
+place of ``content``: ``await ctx.respond(Draft("hi", embeds=[...], ephemeral=True))``. It is the
+same message held as data, so you can build it away from the handler, test it, and reuse
+it (:doc:`ui`). Not both: a ``Draft`` plus loose pieces is a ``TypeError``.
+
+Files
+-----
+
+A file is an :class:`Upload`: a name and its bytes. Put it **where it is shown** and the
+message attaches it; there is no second list to keep in step and no ``attachment://`` URL
+to spell.
+
+.. code-block:: python
+
+   from micro.discord.ui import Embed, File, MediaGallery, Section, Thumbnail, Upload
+
+   chart = Upload("chart.png", png_bytes, description="Sales by week")
+
+   await ctx.respond(components=[MediaGallery(chart)])                  # a picture
+   await ctx.respond(components=[Section("Sales", accessory=Thumbnail(chart))])
+   await ctx.respond(components=[File(Upload.text("log.txt", log))])    # a download
+   await ctx.respond(embeds=[Embed("Sales", image=chart)])              # in an embed
+
+A file that is only attached, not shown, goes in ``files=``:
+
+.. code-block:: python
+
+   await ctx.respond("Here you go.", files=[Upload.from_path("report.pdf")])
+
+``Upload.text(name, string)``, ``Upload.json(name, value)`` and ``Upload.from_path(path)``
+build one from what you have. ``description=`` is its alt text, ``spoiler=True`` hides it
+behind a click. The same ``Upload`` used in several places is sent once; two different
+files under one name are refused, before anything is sent.
+
+Files work on the first response, the answer to a deferral, follow-ups and edits. On an
+edit (``edit_response``, ``update_message``) new files are **added** and the ones already
+there stay; ``keep=`` says otherwise:
+
+.. code-block:: python
+
+   await ctx.update_message(components=[MediaGallery(new_chart)], keep=[])   # replace all
+   await ctx.edit_response("trimmed", keep=[ctx.message.attachments[0]])     # keep one
+
+(Alt text on a file added by an edit is sent only together with ``keep=``, because naming
+the files is what tells Discord which ones the message has.)
+
+An interaction received over HTTP (:doc:`endpoint`) is answered in a JSON reply that
+cannot carry files, so there ``respond`` acknowledges in that reply and sends the message
+with its files straight after; nothing changes in your code. ``micro.discord.messages.send``
+and every message method of the API (``channel.send``, ``create_message``, ...) attach
+shown uploads the same way.
+
 Low-level calls
 ---------------
 

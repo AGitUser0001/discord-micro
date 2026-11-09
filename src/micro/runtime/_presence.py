@@ -142,15 +142,21 @@ class Directory:
 
   async def _watch(self) -> None:
     while True:
+      # Each watch replays the table, so entries are rebuilt from it: anything that
+      # left while a previous watch was down is dropped once the replay catches up.
+      fresh: dict[str, Registration] | None = {}
       try:
-        async for change in self._table.watch():
+        async for change in self._table.watch(lenient=True):
+          target = self._entries if fresh is None else fresh
           if change is None:
+            if fresh is not None:
+              self._entries, fresh = fresh, None
             self._synced.set()
           elif change.value is None:
-            self._entries.pop(change.key, None)
+            target.pop(change.key, None)
           else:
-            self._entries[change.key] = change.value
-          if self._synced.is_set():
+            target[change.key] = change.value
+          if fresh is None:
             await self._notify()
       except asyncio.CancelledError:
         raise

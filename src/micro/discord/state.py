@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import JsonValue
 
 from micro.discord.objects import Channel, Guild, Member, Role
+from micro.discord.permissions import Permissions
 from micro.errors import MicroError
 
 if TYPE_CHECKING:
@@ -16,8 +17,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("micro")
 
-ADMINISTRATOR = 1 << 3
-ALL_PERMISSIONS = (1 << 53) - 1
+ADMINISTRATOR = Permissions.ADMINISTRATOR
+ALL_PERMISSIONS = Permissions((1 << 53) - 1)
 """Every permission bit Discord can define (JSON-safe integer range)."""
 
 type Source = Literal["projection", "http"]
@@ -100,8 +101,8 @@ class DiscordState:
     guild_id: int | str,
     user_id: int | str,
     channel_id: int | str | None = None,
-  ) -> StateRead[int]:
-    """A member's effective permission bits, in a channel if given."""
+  ) -> StateRead[Permissions]:
+    """A member's effective permissions, in a channel if given."""
     guild = await self.guild(guild_id)
     member = await self.member(guild_id, user_id)
     roles = (
@@ -151,8 +152,19 @@ def compute_permissions(
   member: Member,
   user_id: str,
   channel: Channel | None = None,
-) -> int:
+) -> Permissions:
   """Discord's permission algorithm: roles, administrator, then overwrites."""
+  return Permissions(_compute(guild_id, owner_id, roles, member, user_id, channel))
+
+
+def _compute(
+  guild_id: str,
+  owner_id: str | None,
+  roles: list[Role],
+  member: Member,
+  user_id: str,
+  channel: Channel | None,
+) -> int:
   if owner_id is not None and owner_id == user_id:
     return ALL_PERMISSIONS
   by_id = {role.id: role for role in roles}

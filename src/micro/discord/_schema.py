@@ -219,11 +219,30 @@ def _add_discriminators(schema: dict[str, Any]) -> int:
   return added
 
 
+# Discord forwards a partial copy of the original message; its docs list these as
+# "a subset", and real snapshots omit fields (for example `mention_roles`) that the
+# type definitions mark required.
+_PARTIAL = ("APIMessageSnapshotFields",)
+
+
+def _make_partial(schema: dict[str, Any]) -> int:
+  changed = 0
+  definitions = _definitions(schema)
+  for name in _PARTIAL:
+    definition = definitions.get(name)
+    if isinstance(definition, dict) and definition.get("required"):
+      changed += len(definition["required"])
+      del definition["required"]
+  return changed
+
+
 def normalize(schema: dict[str, Any]) -> dict[str, int]:
+  partial = _make_partial(schema)
   removed = _prune_unreachable(schema)
   tuples = _normalize_homogeneous_tuples(schema)
   discriminators = _add_discriminators(schema)
   return {
+    "partial": partial,
     "removed": removed,
     "tuples": tuples,
     "discriminators": discriminators,
@@ -239,6 +258,7 @@ def main() -> None:
   arguments.schema.write_text(json.dumps(schema, separators=(",", ":")))
   print(
     "Normalized Gateway schema: "
+    f"made {stats['partial']} snapshot fields optional, "
     f"removed {stats['removed']} unreachable definitions, "
     f"normalized {stats['tuples']} homogeneous tuple schemas, "
     f"added {stats['discriminators']} discriminators."

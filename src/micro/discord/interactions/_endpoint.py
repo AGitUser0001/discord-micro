@@ -76,12 +76,22 @@ class InteractionEndpoint(Component):
     )
     self._server = uvicorn.Server(config)
     self._server.install_signal_handlers = lambda: None
-    self.spawn(self._server.serve(), name="server")
+    serving = self.spawn(self._serve(), name="server")
     while not self._server.started:
+      if serving.done():  # the port is taken, say: uvicorn gave up
+        raise RuntimeError(
+          f"The interaction endpoint could not listen on {self.host}:{self.port}."
+        )
       await asyncio.sleep(0.01)
     await self.runtime.register(
       self, metadata={"url": f"http://{self.host}:{self.port}{self.path}"}
     )
+
+  async def _serve(self) -> None:
+    try:
+      await self._server.serve()
+    except SystemExit:  # uvicorn exits the process when it cannot bind
+      pass
 
   async def on_close(self) -> None:
     """Stop the web server."""
@@ -134,9 +144,30 @@ class InteractionEndpoint(Component):
           json.dumps({**payload, REPLY_KEY: subject}, separators=(",", ":")).encode(),
           stream=subjects.EVENTS_STREAM,
         )
-        # No timeout of our own: Discord abandons the request after its 3 seconds
-        # and the disconnect cancels this handler.
-        return Response(await answers.get(), media_type="application/json")
+        # No timeout of our own: Discord abandons the request after its 3 seconds,
+        # and we stop waiting when it hangs up.
+        answer = asyncio.ensure_future(answers.get())
+        gone = asyncio.ensure_future(_disconnected(request))
+        try:
+          await asyncio.wait({answer, gone}, return_when=asyncio.FIRST_COMPLETED)
+          if answer.done():
+            return Response(answer.result(), media_type="application/json")
+          logger.warning(
+            "Discord gave up on interaction %s before anything answered it",
+            payload.get("id"),
+          )
+          return Response(status_code=504)
+        finally:
+          for task in (answer, gone):
+            task.cancel()
       finally:
         with suppress(Exception):
           await subscription.unsubscribe()
+
+
+async def _disconnected(request: Any) -> None:
+  """Return once the client has hung up (the body has been read by now)."""
+  while True:
+    message = await request.receive()
+    if message["type"] == "http.disconnect":
+      return

@@ -9,11 +9,11 @@ accepts them, and anything a builder lacks can be passed as a plain dict instead
 
 .. code-block:: python
 
-   from micro.discord.ui import ActionRow, AllowedMentions, Button, Colour, StringSelect, embed
+   from micro.discord.ui import ActionRow, AllowedMentions, Button, Colour, Embed, StringSelect
 
    await channel.send(
      "Report ready",
-     embeds=[embed("Title", "Body", colour=Colour.BLURPLE, fields=[("a", "b", True)])],
+     embeds=[Embed("Title", "Body", colour=Colour.BLURPLE, fields=[("a", "b", True)])],
      components=[Button("Open", custom_id="report.open"), Button("Docs", url="https://...")],
      allowed_mentions=AllowedMentions.only(users=[1]),
    )
@@ -24,11 +24,83 @@ accepts them, and anything a builder lacks can be passed as a plain dict instead
 Embeds
 ------
 
-:func:`embed` builds the dictionary Discord wants: ``title``, ``description``, ``url``,
-``colour``, ``timestamp`` (a ``datetime`` or ISO string), ``fields`` (``(name, value,
-inline)`` tuples), ``footer`` / ``footer_icon``, ``author`` / ``author_icon`` /
-``author_url``, ``image``, ``thumbnail``. Discord's size limits are checked by
-:func:`validate` below.
+:class:`Embed` is a builder like the components: ``title``, ``description``, ``url``,
+``colour``, ``timestamp`` (a ``datetime`` or ISO string), ``fields``, ``footer``, ``author``,
+``image`` and ``thumbnail``. A field is an :class:`EmbedField` or the tuple ``(name, value)``
+/ ``(name, value, inline)``; ``footer`` and ``author`` are a string or an
+:class:`EmbedFooter` / :class:`EmbedAuthor` when they need an icon or a link; a picture is a
+URL or an :class:`Upload`.
+
+.. code-block:: python
+
+   Embed(
+     "Sales", "This week", colour=Colour.GREEN, image=chart,
+     fields=[("North", "12"), ("South", "9", True)],
+     footer=EmbedFooter("updated", icon=avatar_url),
+     author="Ada",
+   )
+
+Embeds are immutable; ``add_field`` and ``dataclasses.replace`` give a changed copy. Like components they
+carry their limits (``embed.measures``, ``embed.length``): 256 title, 4096 description, 25
+fields, 6000 characters between all of a message's embeds, ten embeds a message. They are
+checked when the embed is serialized, with the same middleware (`hooks`) as the
+components, and before anything is sent.
+
+Messages are data
+-----------------
+
+An outgoing message is a :class:`Draft`: the text, embeds, components, files, mention rules
+and flags that make it, held as a value. Nothing is sent until you hand it to something.
+
+.. code-block:: python
+
+   from micro.discord.ui import Button, Draft, Embed
+
+   report = Draft(
+     "Report ready",
+     embeds=[Embed("Sales", image=chart)],
+     components=[Button("Open", custom_id="report.open")],
+     ephemeral=True,
+   )
+
+   await ctx.respond(report)                       # an interaction
+   await ctx.edit_response(replace(report, content="Updated"))   # dataclasses.replace
+   await channel.send(report)                      # a channel, a message edit, the API:
+   await api.create_message(channel_id, report)    # every message method takes a Draft
+   await messages.send(http, channel_id, report)
+
+A ``Draft`` is immutable and compares by value, so build it in a helper, keep it in a
+table, return it from a function, assert on it in a test. ``dataclasses.replace``, ``add_embed``
+and ``add_file`` give a changed copy; ``draft.to_dict()`` is the JSON Discord receives and
+``draft.uploads`` the files that travel with it. It also takes ``reply_to`` (reply to a
+message), ``silent`` (no notification), ``suppress_embeds`` and ``tts``.
+
+Everything still works without it: ``ctx.respond("hi", embeds=[...])``. A ``Draft`` and loose
+pieces together are a ``TypeError``, because there would be two answers to "which text?".
+Use ``dataclasses.replace(draft, ...)`` to change one.
+
+**Editing.** A part left as ``None`` stays as it is on the message and an empty one clears
+it: ``Draft(embeds=())`` removes the embeds, ``Draft(content="")`` the text,
+``Draft(components=())`` the components.
+
+A ``Draft`` runs the serialize hooks like everything else, so one rule can touch every
+outgoing message:
+
+.. code-block:: python
+
+   @hooks.serialize(only=Draft)
+   def watermark(draft, next):
+     data = next()
+     data["content"] = (data.get("content") or "") + " [bot]"
+     return data
+
+The root classes
+----------------
+
+Everything in the UI is one of four kinds, each with a root you can ``isinstance`` against:
+:class:`Component` (every message and modal component, version 1 and 2), :class:`Embed`,
+:class:`Draft` (a whole message), and (in :doc:`objects`) :class:`Object`, the root of
+everything Discord gives an id.
 
 Colours
 -------
@@ -40,8 +112,8 @@ wants a colour.
 
 .. code-block:: python
 
-   embed("Done", colour=Colour.GREEN)
-   embed("Done", colour="#57f287")
+   Embed("Done", colour=Colour.GREEN)
+   Embed("Done", colour="#57f287")
    Container(TextDisplay("hi"), accent_colour=(88, 101, 242))
 
    c = Colour.from_hex("#5865f2")      # also from_rgb(88, 101, 242), from_hsv(235, 0.64, 0.95)
@@ -303,7 +375,21 @@ Reference
 
 .. api::
    micro.discord.ui.AllowedMentions
-   micro.discord.ui.embed
+   micro.discord.ui.Upload
+   micro.discord.ui.Media
+   micro.discord.ui.Draft
+   micro.discord.ui.Component
+   micro.discord.ui.Interactive
+   micro.discord.ui.Embed
+   micro.discord.ui.EmbedField
+   micro.discord.ui.EmbedFooter
+   micro.discord.ui.EmbedAuthor
+   micro.discord.ui.FieldLike
+   micro.discord.ui.embed_length
+   micro.discord.ui.MAX_EMBEDS
+   micro.discord.ui.MAX_EMBED_TEXT
+   micro.discord.ui.uploads_in
+   micro.discord.ui.attachments
    micro.discord.ui.Emoji
    micro.discord.ui.Button
    micro.discord.ui.SelectOption

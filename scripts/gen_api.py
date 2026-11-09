@@ -28,6 +28,18 @@ OUT = Path(__file__).resolve().parent.parent / "src/micro/discord/api.py"
 REFS_OUT = OUT.with_name("refs.py")
 RESERVED = {"self", "files", "reason", "body"}
 ERRORS = {"RatelimitedResponse", "ErrorResponse"}
+RESULTS = ("/channels/{channel_id}/messages",)
+"""Operations (by path prefix) whose methods return a `Result` instead of raising when
+Discord refuses: the message operations, as a trial of the style."""
+
+
+def returns_result(op: Any) -> bool:
+  return op.path.startswith(RESULTS)
+
+
+def returned(op: Any, written: str) -> str:
+  """The annotation a method returns: `Result[...]` for those that give a Result."""
+  return f"Result[{written}, DiscordAPIError]" if returns_result(op) else written
 
 
 def exported(cls: type) -> bool:
@@ -200,6 +212,7 @@ def shape(op: Any) -> Shape:
   query_items: list[str] = []
   body_items: list[str] = []
   has_upload_slot = False
+  message_like = {"embeds", "components"} <= {raw for raw, _, _ in body}
   for source, collected in ((query, query_items), (body, body_items)):
     for raw, wire, info in source:
       if wire.startswith("files["):
@@ -215,8 +228,12 @@ def shape(op: Any) -> Shape:
           if "None" in ann
           else "Sequence[Buildable | Mapping[str, Any]]"
         )
+      if raw == "content" and message_like:
+        ann = "Draft | " + ann
       if wire == "allowed_mentions":
         ann = "AllowedMentions | " + ann
+      if wire == "embeds" and "Sequence" in ann:
+        ann = ann.replace("Sequence[", "Sequence[Embed | ", 1)
       if raw == "content" and (not info.is_required() or union):
         lead.append((name, ann))
       else:
@@ -271,10 +288,11 @@ def method(op: Any) -> str:
     call.append("files=files")
   if op.method != "GET":
     call.append("reason=reason")
+  caller = "_try" if returns_result(op) else "_call"
   return (
-    f"  async def {op.id}(\n    {signature},\n  ) -> {sh.returns}:\n"
+    f"  async def {op.id}(\n    {signature},\n  ) -> {returned(op, sh.returns)}:\n"
     f'    """{op.method} {op.path}"""\n'
-    f"    return await self._call({', '.join(call)})\n"
+    f"    return await self.{caller}({', '.join(call)})\n"
   )
 
 
@@ -558,7 +576,7 @@ def ref_method(
   call = ", ".join([*args, *kwargs])
   doc = f"{sh.op.method} {sh.op.path}"
   return (
-    f"  async def {name}(\n    {signature},\n  ) -> {sh.returns}:\n"
+    f"  async def {name}(\n    {signature},\n  ) -> {returned(sh.op, sh.returns)}:\n"
     f'    """{doc}"""\n'
     f"    return await self.api.{op_id}({call})\n"
   )
@@ -608,7 +626,9 @@ def refs_module() -> str:
     "from micro.discord._api import UNSET, Upload",
     "from micro.discord._refs import _MemberExtras, _UserExtras",
     "from micro.discord.models import http as m",
-    "from micro.discord.ui import AllowedMentions, Buildable, Emoji",
+    "from micro.discord.http_service import DiscordAPIError",
+    "from micro.discord.ui import AllowedMentions, Buildable, Draft, Embed, Emoji",
+    "from micro.result import Result",
     "",
     "if TYPE_CHECKING:",
     "  from micro.discord.api import DiscordAPI",
@@ -632,8 +652,10 @@ def main() -> None:
     "from typing import Any, Literal",
     "",
     "from micro.discord._api import UNSET, ApiBase, Upload",
+    "from micro.discord.http_service import DiscordAPIError",
+    "from micro.result import Result",
     "from micro.discord.models import http as m",
-    "from micro.discord.ui import AllowedMentions, Buildable, Emoji",
+    "from micro.discord.ui import AllowedMentions, Buildable, Draft, Embed, Emoji",
     "",
     "",
     "class DiscordAPI(ApiBase):",

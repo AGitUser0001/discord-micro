@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 from micro import subjects
 from micro.coordination import Declarations
 from micro.errors import MicroError
-from micro.runtime import Component
+from micro.runtime import Component, default_backoff
 
 from ._runtime_commands import PREFIX, _Stored, runtime_definitions
 
@@ -77,12 +77,23 @@ class CommandSync(Component):
   async def _watch_runtime_commands(self) -> None:
     """Sync again whenever a runtime command is added, changed, or removed."""
     table = await self.runtime.table(subjects.STATE_BUCKET, _Stored)
-    caught_up = False
-    async for change in table.watch(PREFIX + ">"):
-      if change is None:
-        caught_up = True
-      elif caught_up:
-        self._changed.set()
+    failures = 0
+    while True:
+      caught_up = False
+      try:
+        async for change in table.watch(PREFIX + ">", lenient=True):
+          failures = 0
+          if change is None:
+            caught_up = True
+          elif caught_up:
+            self._changed.set()
+      except asyncio.CancelledError:
+        raise
+      except Exception:
+        logger.warning("The watch on runtime commands failed", exc_info=True)
+      failures += 1
+      await asyncio.sleep(default_backoff(failures))
+      self._changed.set()  # whatever changed meanwhile is picked up by a pass
 
   async def on_close(self) -> None:
     """Stop watching."""

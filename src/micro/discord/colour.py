@@ -1,7 +1,7 @@
 """Colours as Discord wants them: one integer, `0xRRGGBB`, with helpers.
 
-embed("Done", colour=Colour.GREEN)
-embed("Done", colour="#57f287")             # a string, a tuple, a name or an int all work
+Embed("Done", colour=Colour.GREEN)
+Embed("Done", colour="#57f287")             # a string, a tuple, a name or an int all work
 Colour.from_rgb(88, 101, 242).lighten(0.2)
 """
 

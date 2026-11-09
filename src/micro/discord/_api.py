@@ -8,7 +8,6 @@ success body, or raises `DiscordAPIError`.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from types import UnionType
@@ -32,6 +31,8 @@ from micro.discord.http_service import (
   DiscordHTTPFile,
   DiscordHTTPResponse,
 )
+from micro.discord.ui import Upload
+from micro.result import Err, Ok
 
 if TYPE_CHECKING:
   from micro.discord.http_service import DiscordHTTPClient
@@ -62,15 +63,6 @@ class _Unset:
 
 UNSET: Any = _Unset()
 """The default of every optional argument: not passed, as opposed to None (a value)."""
-
-
-@dataclass(frozen=True, slots=True)
-class Upload:
-  """A file to send: `Upload("cat.png", data)`. Its name is what Discord shows."""
-
-  filename: str
-  data: bytes
-  content_type: str | None = None
 
 
 def _plain(value: Any) -> Any:
@@ -209,6 +201,17 @@ def _message_rules(body: dict[str, Any], fields: Mapping[str, Any]) -> None:
     body["allowed_mentions"] = ui.AllowedMentions.none().to_dict()
 
 
+def _shown(body: Mapping[str, Any]) -> tuple[Upload, ...]:
+  """The uploads a message body's embeds and components show."""
+  embeds, components = body.get("embeds"), body.get("components")
+  return ui.uploads_in(
+    embeds=embeds if isinstance(embeds, Sequence) else (),
+    components=components
+    if isinstance(components, Sequence) and not isinstance(components, str)
+    else None,
+  )
+
+
 def _path_value(value: Any) -> Any:
   """A path argument: an Emoji is written `name` or `name:id`, as Discord reads it."""
   if isinstance(value, ui.Emoji):
@@ -289,6 +292,25 @@ class ApiBase:
 
     return CommandRef(self, str(application_id), str(command_id))  # type: ignore[arg-type]
 
+  async def _try(
+    self,
+    operation: DiscordOperationId,
+    path: Mapping[str, Any],
+    query: Mapping[str, Any],
+    body: Any = UNSET,
+    *,
+    files: Sequence[Upload] | None = None,
+    reason: str | None = None,
+  ) -> Any:
+    """`_call`, with Discord's refusal as an `Err` value; a mistake in the call itself
+    (a bad argument, no worker running) still raises."""
+    try:
+      return Ok(
+        await self._call(operation, path, query, body, files=files, reason=reason)
+      )
+    except DiscordAPIError as error:
+      return Err(error)
+
   async def _call(
     self,
     operation: DiscordOperationId,
@@ -324,6 +346,31 @@ class ApiBase:
             payload[name] = (
               b""  # the model wants bytes; the real ones travel in `files`
             )
+        draft = payload.get("content")
+        if isinstance(draft, ui.Draft):
+          payload.pop("content")
+          clash = sorted(
+            name
+            for name in ("embeds", "components", "allowed_mentions", "tts")
+            if name in payload
+          )
+          if clash or files:
+            raise TypeError(
+              "Pass a Draft, or content/embeds/components/files/..., not both "
+              f"({', '.join(clash + (['files'] if files else []))} given with it)."
+            )
+          files = list(draft.uploads)
+          payload.update(draft.to_dict())
+        shown = _shown(payload)
+        if shown or files:
+          files = ui.uploads_in(files=[*(files or ()), *shown])
+          if (
+            definition.method.upper() == "POST"
+            and "attachments" in known
+            and "attachments" not in payload
+            and any(file.description for file in files)
+          ):
+            payload["attachments"] = ui.attachments(files)
         _message_rules(payload, known)
         data["body"] = _plain(payload)
       else:
@@ -332,7 +379,7 @@ class ApiBase:
       uploads.append(
         DiscordHTTPFile(
           field=f"files[{index}]",
-          filename=upload.filename,
+          filename=upload.name,
           data=upload.data,
           content_type=upload.content_type,
         )

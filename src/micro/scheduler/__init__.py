@@ -18,6 +18,7 @@ wait and are delivered when one starts. A key names a timer: scheduling a key ag
 replaces it, and `cancel(key)` removes it. Times in the past fire at once.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -30,12 +31,14 @@ from pydantic import JsonValue
 from pydantic_core import from_json, to_json
 
 from micro import subjects
-from micro.runtime import Component, Retry, StreamConsumer
+from micro.runtime import Component, Reject, Retry, StreamConsumer
 
 if TYPE_CHECKING:
   from micro.queue import WorkQueue
   from micro.runtime import Runtime
   from micro.service import EventSchema
+
+logger = logging.getLogger("micro")
 
 SCHEDULE_HEADER = "Nats-Schedule"
 TARGET_HEADER = "Nats-Schedule-Target"
@@ -237,15 +240,21 @@ class Scheduler(Component):
   async def _deliver(self, message: Msg) -> None:
     js = self.runtime.jetstream
     sequence = message.metadata.sequence.stream
-    body = from_json(message.data)
-    payload = to_json(body["payload"])
-    if body["kind"] == "event":
-      subject, stream = subjects.event(body["target"]), subjects.EVENTS_STREAM
-    elif body["kind"] == "job":
-      subject = subjects.work(body["target"])
-      stream = subjects.work_stream(body["target"])
-    else:
-      raise ValueError(f"Unknown timer kind {body['kind']!r}.")
+    try:
+      body = from_json(message.data)
+      payload = to_json(body["payload"])
+      kind, target = body["kind"], body["target"]
+      if kind == "event":
+        subject, stream = subjects.event(target), subjects.EVENTS_STREAM
+      elif kind == "job":
+        subject, stream = subjects.work(target), subjects.work_stream(target)
+      else:
+        raise ValueError(f"unknown timer kind {kind!r}")
+    except (ValueError, KeyError, TypeError) as error:
+      # Not a timer this version can deliver, now or after any retry.
+      logger.error("Dropping a timer that cannot be read: %s", error)
+      await js.delete_msg(subjects.SCHEDULE_STREAM, sequence)
+      raise Reject from error
     try:
       # The stream sequence makes a redelivery publish the same message once.
       await js.publish(

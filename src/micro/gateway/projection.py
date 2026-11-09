@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -93,6 +94,13 @@ class GatewayProjection(Service):
         messages: list[Msg] = await subscription.fetch(self._batch_size, timeout=5)
       except NatsTimeoutError:
         continue
+      except asyncio.CancelledError:
+        raise
+      except Exception:
+        # NATS trouble: keep projecting once it is back, do not stop for good.
+        logger.warning("The projection could not fetch dispatches", exc_info=True)
+        await asyncio.sleep(1)
+        continue
       async with self.tracked():
         try:
           await self.project_messages(messages)
@@ -123,7 +131,10 @@ class GatewayProjection(Service):
         continue
       connection_id = (message.headers or {}).get(CONNECTION_HEADER)
       name = message.subject.split(".")[3]
-      payload = from_json(message.data)
+      try:
+        payload = from_json(message.data)
+      except ValueError:
+        continue  # not JSON: retrying the batch would never get past it
       if connection_id is None or not isinstance(payload, dict):
         continue
       pending.append((connection_id, name, cast(dict[str, JsonValue], payload)))

@@ -6,8 +6,10 @@ from datetime import datetime
 from typing import Any
 
 from micro.discord._api import UNSET, ApiBase, Upload
+from micro.discord.http_service import DiscordAPIError
 from micro.discord.models import http as m
-from micro.discord.ui import AllowedMentions, Buildable, Emoji
+from micro.discord.ui import AllowedMentions, Buildable, Draft, Embed, Emoji
+from micro.result import Result
 
 
 class DiscordAPI(ApiBase):
@@ -910,9 +912,9 @@ class DiscordAPI(ApiBase):
     before: int | str | None = UNSET,
     after: int | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> list[m.MessageResponse]:
+  ) -> Result[list[m.MessageResponse], DiscordAPIError]:
     """GET /channels/{channel_id}/messages"""
-    return await self._call(
+    return await self._try(
       "list_messages",
       {"channel_id": channel_id},
       {"around": around, "before": before, "after": after, "limit": limit},
@@ -921,9 +923,9 @@ class DiscordAPI(ApiBase):
   async def create_message(
     self,
     channel_id: int | str,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
@@ -943,9 +945,9 @@ class DiscordAPI(ApiBase):
     tts: bool | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages"""
-    return await self._call(
+    return await self._try(
       "create_message",
       {"channel_id": channel_id},
       {},
@@ -974,9 +976,9 @@ class DiscordAPI(ApiBase):
     *,
     messages: Sequence[int | str],
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """POST /channels/{channel_id}/messages/bulk-delete"""
-    return await self._call(
+    return await self._try(
       "bulk_delete_messages",
       {"channel_id": channel_id},
       {},
@@ -990,9 +992,9 @@ class DiscordAPI(ApiBase):
     *,
     before: datetime | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> m.PinnedMessagesResponse:
+  ) -> Result[m.PinnedMessagesResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/messages/pins"""
-    return await self._call(
+    return await self._try(
       "list_pins", {"channel_id": channel_id}, {"before": before, "limit": limit}
     )
 
@@ -1002,9 +1004,9 @@ class DiscordAPI(ApiBase):
     message_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/pins/{message_id}"""
-    return await self._call(
+    return await self._try(
       "delete_pin",
       {"channel_id": channel_id, "message_id": message_id},
       {},
@@ -1017,9 +1019,9 @@ class DiscordAPI(ApiBase):
     message_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/messages/pins/{message_id}"""
-    return await self._call(
+    return await self._try(
       "create_pin",
       {"channel_id": channel_id, "message_id": message_id},
       {},
@@ -1032,9 +1034,9 @@ class DiscordAPI(ApiBase):
     message_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}"""
-    return await self._call(
+    return await self._try(
       "delete_message",
       {"channel_id": channel_id, "message_id": message_id},
       {},
@@ -1045,9 +1047,9 @@ class DiscordAPI(ApiBase):
     self,
     channel_id: int | str,
     message_id: int | str,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/messages/{message_id}"""
-    return await self._call(
+    return await self._try(
       "get_message", {"channel_id": channel_id, "message_id": message_id}, {}
     )
 
@@ -1055,9 +1057,9 @@ class DiscordAPI(ApiBase):
     self,
     channel_id: int | str,
     message_id: int | str,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     flags: int | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
@@ -1069,9 +1071,9 @@ class DiscordAPI(ApiBase):
     | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /channels/{channel_id}/messages/{message_id}"""
-    return await self._call(
+    return await self._try(
       "update_message",
       {"channel_id": channel_id, "message_id": message_id},
       {},
@@ -1094,9 +1096,9 @@ class DiscordAPI(ApiBase):
     message_id: int | str,
     *,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages/{message_id}/crosspost"""
-    return await self._call(
+    return await self._try(
       "crosspost_message",
       {"channel_id": channel_id, "message_id": message_id},
       {},
@@ -1109,9 +1111,9 @@ class DiscordAPI(ApiBase):
     message_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}/reactions"""
-    return await self._call(
+    return await self._try(
       "delete_all_message_reactions",
       {"channel_id": channel_id, "message_id": message_id},
       {},
@@ -1125,9 +1127,9 @@ class DiscordAPI(ApiBase):
     emoji_name: str | Emoji,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}"""
-    return await self._call(
+    return await self._try(
       "delete_all_message_reactions_by_emoji",
       {"channel_id": channel_id, "message_id": message_id, "emoji_name": emoji_name},
       {},
@@ -1143,9 +1145,9 @@ class DiscordAPI(ApiBase):
     after: int | str | None = UNSET,
     limit: int | None = UNSET,
     type: m.ReactionTypes | int | None = UNSET,
-  ) -> list[m.UserResponse]:
+  ) -> Result[list[m.UserResponse], DiscordAPIError]:
     """GET /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}"""
-    return await self._call(
+    return await self._try(
       "list_message_reactions_by_emoji",
       {"channel_id": channel_id, "message_id": message_id, "emoji_name": emoji_name},
       {"after": after, "limit": limit, "type": type},
@@ -1158,9 +1160,9 @@ class DiscordAPI(ApiBase):
     emoji_name: str | Emoji,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}/@me"""
-    return await self._call(
+    return await self._try(
       "delete_my_message_reaction",
       {"channel_id": channel_id, "message_id": message_id, "emoji_name": emoji_name},
       {},
@@ -1174,9 +1176,9 @@ class DiscordAPI(ApiBase):
     emoji_name: str | Emoji,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}/@me"""
-    return await self._call(
+    return await self._try(
       "add_my_message_reaction",
       {"channel_id": channel_id, "message_id": message_id, "emoji_name": emoji_name},
       {},
@@ -1191,9 +1193,9 @@ class DiscordAPI(ApiBase):
     user_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}/reactions/{emoji_name}/{user_id}"""
-    return await self._call(
+    return await self._try(
       "delete_user_message_reaction",
       {
         "channel_id": channel_id,
@@ -1214,9 +1216,9 @@ class DiscordAPI(ApiBase):
     auto_archive_duration: m.ThreadAutoArchiveDuration | int | None = UNSET,
     rate_limit_per_user: int | None = UNSET,
     reason: str | None = None,
-  ) -> m.ThreadResponse:
+  ) -> Result[m.ThreadResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages/{message_id}/threads"""
-    return await self._call(
+    return await self._try(
       "create_thread_from_message",
       {"channel_id": channel_id, "message_id": message_id},
       {},
@@ -3555,9 +3557,9 @@ class DiscordAPI(ApiBase):
   async def create_lobby_message(
     self,
     lobby_id: int | str,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
@@ -4113,12 +4115,12 @@ class DiscordAPI(ApiBase):
     self,
     webhook_id: int | str,
     webhook_token: str,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
     wait: bool | None = UNSET,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
@@ -4252,11 +4254,11 @@ class DiscordAPI(ApiBase):
     self,
     webhook_id: int | str,
     webhook_token: str,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
@@ -4332,11 +4334,11 @@ class DiscordAPI(ApiBase):
     webhook_id: int | str,
     webhook_token: str,
     message_id: int | str,
-    content: str | None = UNSET,
+    content: Draft | str | None = UNSET,
     *,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[m.RichEmbed | Mapping[str, Any]] | None = UNSET,
+    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
     allowed_mentions: AllowedMentions
     | m.MessageAllowedMentionsRequest
     | Mapping[str, Any]
