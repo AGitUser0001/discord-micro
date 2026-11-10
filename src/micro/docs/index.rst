@@ -53,7 +53,7 @@ like :class:`Service` or :meth:`Service.listen` link to their reference entries.
    api
    objects
    ui
-   cache
+   state
 
 .. toctree::
    :maxdepth: 1

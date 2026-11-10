@@ -58,7 +58,7 @@ Limits
 ------
 
 Without the Gateway there are **no events** (``service.listen`` for messages, members and so
-on) and no :doc:`cache`. An HTTP-only bot answers commands, components and modals, and that
+on) and no :doc:`state`. An HTTP-only bot answers commands, components and modals, and that
 is all.
 
 Reference

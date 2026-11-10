@@ -32,7 +32,7 @@ class InteractionEndpoint(Component):
 
   `public_key` defaults to `DISCORD_PUBLIC_KEY` (hex, from the developer portal).
   Any number of replicas can run behind one URL. Without the Gateway there are
-  no events (messages, members, ...), so no member cache; commands, components
+  no events (messages, members, ...), so no member state; commands, components
   and modals are all there is. Needs `micro[http]` (a web server).
   """
 

@@ -21,4 +21,4 @@ Design decisions
   local distribution (no server, no port); true scale plugs in as an executor.
 * **Examples ship in the wheel** with the templates, so nothing needs the repo.
 * Out of scope: authentication, secret distribution, orchestration, voice
-  audio, a discord.py shim, an in-process cache.
+  audio, a discord.py shim, an in-process cache of Discord objects.

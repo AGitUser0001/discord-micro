@@ -463,11 +463,13 @@ async def runtime_command_scenarios() -> None:
     )
 
 
-async def member_cache_scenarios() -> None:
-  print("member cache: every member, from every shard, without REST")
+async def state_scenarios() -> None:
+  print("state: what every shard sees, aggregated by guild, read without REST")
+  from micro.discord.permissions import Permissions
   from micro.discord.state import DiscordState
+  from micro.gateway._events import ConnectionEvent, ConnectionEventKind
   from micro.gateway.projection import GatewayProjection
-  from micro.store import Store
+  from micro.store import Store, StoreClient
   from micro.store.sqlite import SQLiteGraph
 
   def member(user_id: str, name: str, roles: list[str]) -> dict[str, Any]:
@@ -480,23 +482,38 @@ async def member_cache_scenarios() -> None:
       "flags": 0,
     }
 
+  def role(role_id: str, name: str, permissions: str = "0") -> dict[str, Any]:
+    return {
+      "id": role_id, "name": name, "permissions": permissions, "position": 1,
+      "color": 0, "hoist": False, "managed": False, "mentionable": False,
+    }  # fmt: skip
+
+  def channel(
+    channel_id: str, name: str, overwrites: list[Any] | None = None
+  ) -> dict[str, Any]:
+    return {
+      "id": channel_id, "type": 0, "name": name,
+      "permission_overwrites": overwrites or [],
+    }  # fmt: skip
+
   intents = (
     hikari.Intents.ALL_UNPRIVILEGED
     | hikari.Intents.MESSAGE_CONTENT
     | hikari.Intents.GUILD_MEMBERS
   )
-  cache_dir = tempfile.TemporaryDirectory()
+  state_dir = tempfile.TemporaryDirectory()
   fake_members = {
     "500": [member("1", "ann", ["10"]), member("2", "bob", ["11"])],
     "600": [member("1", "ann", ["20"])],
   }
+  projection = GatewayProjection()
   async with Stack(
     App(),
     guilds=("500", "600"),
     intents=intents,
     first=[
-      Store(SQLiteGraph(os.path.join(cache_dir.name, "cache.db"))),
-      GatewayProjection(),
+      Store(SQLiteGraph(os.path.join(state_dir.name, "state.db"))),
+      projection,
     ],
     members=fake_members,
   ) as s:
@@ -504,14 +521,11 @@ async def member_cache_scenarios() -> None:
     await f.until(lambda: len(f.member_requests) >= 2, 15)
     state = DiscordState(s.runtime)
 
-    async def cached() -> bool:
-      try:
-        return await state._projected(600, "member", "600:1") is not None
-      except Exception:
-        return False
+    async def held() -> bool:
+      return await state.member(600, 1) is not None
 
     for _ in range(40):
-      if await cached():
+      if await held():
         break
       await asyncio.sleep(0.5)
     rest = len(f.where("GET", r"/members/"))
@@ -525,36 +539,178 @@ async def member_cache_scenarios() -> None:
       (f.member_requests, f.identifies, [e.get("kind") for e in s.connection_events]),
     )
     check(
-      "members are answered from the cache, not REST",
-      {ann_500.source, ann_600.source, bob.source} == {"projection"}
+      "members are read from the aggregated state, not REST",
+      ann_500 is not None
+      and ann_600 is not None
+      and bob is not None
       and len(f.where("GET", r"/members/")) == rest,
-      (ann_500.source, ann_600.source, bob.source),
     )
     check(
       "one user keeps a different member record in each guild",
-      ann_500.value.roles == ["10"] and ann_600.value.roles == ["20"],
-      (ann_500.value.roles, ann_600.value.roles),
+      ann_500 is not None
+      and ann_600 is not None
+      and ann_500.roles == ["10"]
+      and ann_600.roles == ["20"],
     )
     await f.dispatch(
       "GUILD_MEMBER_UPDATE", {"guild_id": "500", **member("2", "bob", ["11", "12"])}
     )
     await f.dispatch("GUILD_MEMBER_ADD", {"guild_id": "600", **member("3", "cy", [])})
     await asyncio.sleep(1.5)
+    updated = await state.member(500, 2)
     check(
-      "member updates and joins reach the cache",
-      (await state.member(500, 2)).value.roles == ["11", "12"]
-      and (await state.member(600, 3)).source == "projection",
+      "member updates and joins reach it",
+      updated is not None
+      and updated.roles == ["11", "12"]
+      and await state.member(600, 3) is not None,
     )
     await f.dispatch(
       "GUILD_MEMBER_REMOVE", {"guild_id": "500", "user": member("2", "bob", [])["user"]}
     )
     await asyncio.sleep(1.5)
     check(
-      "a member who left leaves the cache",
-      (await state._projected(500, "member", "500:2")) is None
-      and (await state._projected(600, "member", "600:1")) is not None,
+      "a member who left is gone, and only from that guild",
+      await state.member(500, 2) is None and await state.member(600, 1) is not None,
     )
-  cache_dir.cleanup()
+
+    # Roles and channels: by guild or by id, and always current.
+    everyone = role("500", "@everyone", str(int(Permissions.VIEW_CHANNEL)))
+    mods = role("90", "mods", str(int(Permissions.MANAGE_MESSAGES)))
+    await f.dispatch(
+      "GUILD_CREATE",
+      {
+        "id": "500", "name": "five", "owner_id": "99", "unavailable": False,
+        "roles": [everyone, mods],
+        "channels": [channel("7", "general"), channel("8", "staff")],
+        "members": [member("1", "ann", ["90"])],
+      },
+    )  # fmt: skip
+    await asyncio.sleep(1.5)
+    roles = await state.roles(500)
+    channels = await state.channels(500)
+    check(
+      "roles and channels are listed by guild",
+      roles is not None
+      and sorted(r.id for r in roles) == ["500", "90"]
+      and channels is not None
+      and sorted(c.id for c in channels) == ["7", "8"],
+      (roles, channels),
+    )
+    found_role = await state.role(90)
+    found_channel = await state.channel(8)
+    check(
+      "and by id alone, without saying which guild",
+      found_role is not None
+      and found_role.name == "mods"
+      and found_channel is not None
+      and found_channel.guild_id == "500"
+      and found_channel.name == "staff",
+    )
+    check(
+      "a guild's own object has its settings but not its lists",
+      (guild := await state.guild(500)) is not None
+      and guild.name == "five"
+      and guild.roles == [],
+    )
+    await f.dispatch(
+      "GUILD_ROLE_UPDATE",
+      {
+        "guild_id": "500",
+        "role": role("90", "moderators", str(int(Permissions.MANAGE_MESSAGES))),
+      },
+    )
+    await f.dispatch(
+      "GUILD_ROLE_CREATE", {"guild_id": "500", "role": role("91", "vip")}
+    )
+    await f.dispatch("CHANNEL_UPDATE", {"guild_id": "500", **channel("7", "lobby")})
+    await f.dispatch("GUILD_ROLE_DELETE", {"guild_id": "500", "role_id": "999"})
+    await asyncio.sleep(1.5)
+    roles = await state.roles(500)
+    check(
+      "a role edit is seen at once, in the list and by id (it was stale before)",
+      roles is not None
+      and sorted(r.id for r in roles) == ["500", "90", "91"]
+      and {r.id: r.name for r in roles}["90"] == "moderators"
+      and (await state.role(91)) is not None
+      and (await state.channel(7)).name == "lobby",  # type: ignore[union-attr]
+      roles,
+    )
+    await f.dispatch("GUILD_ROLE_DELETE", {"guild_id": "500", "role_id": "91"})
+    await f.dispatch("CHANNEL_DELETE", {"guild_id": "500", **channel("8", "staff")})
+    await asyncio.sleep(1.5)
+    check(
+      "a deleted role or channel is gone from the list and from lookup by id",
+      await state.role(91) is None
+      and await state.channel(8) is None
+      and sorted(c.id for c in (await state.channels(500)) or []) == ["7"],
+    )
+    allowed = await state.permissions(500, 1, 7)
+    check(
+      "permissions come from the same aggregate",
+      allowed is not None
+      and allowed.allows(Permissions.MANAGE_MESSAGES)
+      and not allowed.allows(Permissions.BAN_MEMBERS),
+      allowed,
+    )
+    await f.dispatch(
+      "GUILD_CREATE",
+      {"id": "500", "name": "five", "owner_id": "99", "unavailable": False,
+       "roles": [everyone], "channels": [channel("7", "lobby")], "members": []},
+    )  # fmt: skip
+    await asyncio.sleep(1.5)
+    check(
+      "a GUILD_CREATE replaces the guild's state: what it no longer lists is gone",
+      await state.role(90) is None
+      and await state.member(500, 1) is None
+      and [r.id for r in (await state.roles(500)) or []] == ["500"],
+    )
+    await f.dispatch(
+      "MESSAGE_CREATE",
+      {"id": "4242", "guild_id": "500", "channel_id": "7", "content": "hi", "type": 0,
+       "author": member("1", "ann", [])["user"], "timestamp": "2024-01-01T00:00:00+00:00"},
+    )  # fmt: skip
+    await asyncio.sleep(1.0)
+    store = StoreClient(s.runtime)
+    stored = (
+      await store.execute(
+        '{ m: discordObject(guildId: "500", kind: "message", id: "4242") { id } }'
+      )
+    )["data"]["m"]
+    check("events that are not state (messages) are not kept", stored is None)
+
+    # A gap makes the guild not current; a resume makes it current again.
+    owner = (await store.execute('{ g: gatewayGuild(id: "600") { connectionId } }'))[
+      "data"
+    ]["g"]["connectionId"]
+    await projection.project_connection(
+      ConnectionEvent(
+        kind=ConnectionEventKind.DISCONNECTED,
+        shard_id=0,
+        generation=1,
+        connection_id=owner,
+        worker="test",
+      )
+    )
+    check(
+      "while its connection has a gap, a guild holds nothing (and nothing falls back)",
+      await state.member(600, 1) is None
+      and await state.roles(600) is None
+      and len(f.where("GET", r"/members/")) == rest,
+    )
+    await projection.project_connection(
+      ConnectionEvent(
+        kind=ConnectionEventKind.RESUMED,
+        shard_id=0,
+        generation=1,
+        connection_id=owner,
+        worker="test",
+      )
+    )
+    check(
+      "a resume, which replays what was missed, makes it current again",
+      await state.member(600, 1) is not None,
+    )
+  state_dir.cleanup()
 
 
 async def custom_package_scenarios() -> None:
@@ -5367,7 +5523,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "draft": draft_scenarios,
   "helpers": helper_scenarios,
   "signed-ids": signed_ids_scenarios,
-  "members": member_cache_scenarios,
+  "state": state_scenarios,
   "endpoint": endpoint_scenarios,
   "custom": custom_package_scenarios,
   "cli": cli_scenarios,

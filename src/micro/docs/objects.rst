@@ -27,7 +27,7 @@ Where views come from
 
 * event payloads annotated with a view, and ``ctx.user``, ``ctx.member``, ``ctx.message``;
 * command options (``user: User``, ``role: Role``, ``channel: Channel``, ``file: Attachment``);
-* ``DiscordState`` reads (:doc:`cache`);
+* ``DiscordState`` reads (:doc:`state`);
 * resolved entities of a component or modal (``ctx.users()``, ``ctx.roles(...)``, see
   :doc:`responding`).
 
@@ -68,7 +68,7 @@ channel).
 ``allows`` is true for an administrator whatever else is set; ``in`` tests the bits
 themselves. A ``Permissions`` is an ``int``, so it goes anywhere a number is wanted, and
 it is written back to Discord as the string it expects. ``DiscordState.permissions``
-(:doc:`cache`) computes a member's effective permissions in a channel.
+(:doc:`state`) computes a member's effective permissions in a channel.
 
 Text helpers
 ------------

@@ -23,7 +23,7 @@ any of them can be restarted, scaled or replaced independently.
    * - call any Discord API operation, or send a message
      - :doc:`api`, :doc:`ui`, run by the :doc:`http-worker`
    * - look up members, roles and channels without a REST call
-     - :doc:`cache`
+     - :doc:`state`
    * - add commands while the bot runs
      - :doc:`runtime-commands`
    * - run without a Gateway connection

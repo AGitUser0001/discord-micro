@@ -63,7 +63,7 @@ class ShardSession(Protocol):
 
 
 class HikariShard:
-  """A shard session backed by a cache-free Hikari Gateway bot."""
+  """A shard session backed by a Hikari Gateway bot with no cache of its own."""
 
   def __init__(
     self, host: ShardHost, generation: int, shard_id: int, shard_count: int
@@ -78,7 +78,7 @@ class HikariShard:
     self._chunked: set[str] = set()
 
   async def start(self) -> None:
-    """Start a cache-free hikari bot for this shard."""
+    """Start a hikari bot with no cache of its own for this shard."""
     import hikari
 
     async with self._lock:
@@ -208,7 +208,7 @@ class HikariShard:
     guild_id: object,
   ) -> None:
     """Ask Discord for every member of a guild once per connection, so the
-    member cache is complete and no lookup needs a rate-limited REST call."""
+    aggregated state holds every member and no lookup needs a rate-limited REST call."""
     import hikari
 
     if (

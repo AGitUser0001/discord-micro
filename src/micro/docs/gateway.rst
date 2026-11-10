@@ -115,7 +115,7 @@ Intents Discord refuses (a privileged one not switched on in the developer porta
 bot offline: the new generation never gets READY, so the old one keeps serving, and setting the
 previous intents again replaces the stuck one. Three intents need switching on under **Bot >
 Privileged Gateway Intents** as well: ``message_content`` (message text, for ``!ping``-style
-commands), ``guild_members`` (the member list, :doc:`cache`) and ``guild_presences``.
+commands), ``guild_members`` (the member list, :doc:`state`) and ``guild_presences``.
 
 
 How shards are shared
@@ -189,7 +189,7 @@ What it publishes
 
 Both go to the ``MICRO_EVENTS`` stream with ``Micro-Shard``, ``Micro-Generation`` and
 ``Micro-Connection`` headers. A connection id changes on every READY (a new session) and
-stays across resumes, which is what lets the :doc:`cache` know when to start clean.
+stays across resumes, which is what lets the :doc:`state` tell a gap in the stream from a continuation.
 Use ``service.listen(...)`` rather than these subjects directly (see :doc:`events`).
 
 When a connection gets READY and has the ``guild_members`` intent it asks Discord for the

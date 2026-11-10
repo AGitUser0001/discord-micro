@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from nats.aio.msg import Msg
@@ -30,7 +30,7 @@ PROJECTION_SUBJECTS = (
 
 @dataclass(frozen=True, slots=True)
 class ProjectedObject:
-  """One object to write to (or delete from) the cache."""
+  """One object to write to (or delete from) the aggregated state."""
 
   kind: str
   id: str
@@ -40,11 +40,13 @@ class ProjectedObject:
 
 
 class GatewayProjection(Service):
-  """Optional service keeping connection-owned Discord state in the store.
+  """Optional service that aggregates what every shard sees into one view of Discord.
 
-  It consumes every connection's dispatches (publishing and standby) plus
-  connection lifecycle events, in stream order, and batches adjacent dispatches
-  into one atomic mutation. Run one replica: projection order matters.
+  It consumes every connection's dispatches (publishing and standby) plus connection
+  lifecycle events, in stream order, and folds them into the store: a guild's roles,
+  channels, members and the rest, kept by guild whichever shard or connection delivered
+  them. A guild is marked not current while the connection that delivered it has a gap.
+  Adjacent dispatches become one atomic mutation. Run one replica: order matters.
   """
 
   def __init__(
@@ -60,7 +62,7 @@ class GatewayProjection(Service):
 
   @property
   def store(self) -> StoreClient:
-    """The `StoreClient` used to write the cache (raises before start)."""
+    """The `StoreClient` used to write the aggregated state (raises before start)."""
     if self._store is None:
       raise RuntimeError("Gateway projection has not started.")
     return self._store
@@ -143,11 +145,10 @@ class GatewayProjection(Service):
       await self.project_events(pending)
 
   async def _ensure_connections(self, shards: Mapping[str, int]) -> None:
-    """Create connections whose READY this projection never saw.
+    """Record connections this projection never saw start.
 
     A projection started (or restarted) after a connection's READY would
-    otherwise drop everything that connection publishes until it reconnects.
-    Dispatches only flow from a live connection, so it is created active.
+    otherwise have nowhere to attach the guilds that connection delivers.
     """
     for connection_id, shard_id in shards.items():
       if connection_id in self._known:
@@ -160,7 +161,7 @@ class GatewayProjection(Service):
         await self._execute(
           """
           mutation Adopt($id: ID!, $shard: Int!) {
-            createGatewayConnection(id: $id, shardId: $shard, active: true, state: "adopted") { id }
+            createGatewayConnection(id: $id, shardId: $shard) { id }
           }
           """,
           {"id": connection_id, "shard": shard_id},
@@ -170,172 +171,206 @@ class GatewayProjection(Service):
   async def project_events(
     self, items: Sequence[tuple[str, str, dict[str, JsonValue]]]
   ) -> None:
-    """Project `(connection_id, dispatch_name, payload)` items as one mutation."""
-    projected_by_key: dict[tuple[str, str, str], ProjectedObject] = {}
-    for connection_id, name, payload in items:
-      for projected in _project_dispatch(name, payload):
-        key = (connection_id, projected.kind, projected.id)
-        previous = projected_by_key.get(key)
-        if previous is not None and not previous.deleted and not projected.deleted:
-          projected = ProjectedObject(
-            projected.kind,
-            projected.id,
-            projected.guild_id or previous.guild_id,
-            _merge_json(previous.payload, projected.payload),
-          )
-        projected_by_key[key] = projected
-    if not projected_by_key:
+    """Fold `(connection_id, dispatch_name, payload)` items into the guilds' state.
+
+    What a guild holds does not depend on which connection delivered it. A
+    `GUILD_CREATE` is the guild's whole state: it replaces what was there. Every other
+    dispatch changes the objects it names. All of it is one mutation.
+    """
+    work = _fold(items)
+    if not work:
       return
+    guild_ids = list(work)
 
-    keys = tuple(projected_by_key)
-    query_declarations: list[str] = []
-    query_fields: list[str] = []
-    query_variables: dict[str, JsonValue] = {}
-    for index, (connection_id, kind, object_id) in enumerate(keys):
-      query_declarations.extend(
-        (f"$connection{index}: ID!", f"$kind{index}: String!", f"$id{index}: ID!")
-      )
-      query_fields.append(
-        f"object{index}: projectionDiscordObject(connectionId: $connection{index}, "
-        f"kind: $kind{index}, id: $id{index}) {{ payload }}"
-      )
-      query_variables.update(
-        {
-          f"connection{index}": connection_id,
-          f"kind{index}": kind,
-          f"id{index}": object_id,
-        }
-      )
-    existing = await self._execute(
-      f"query Existing({', '.join(query_declarations)}) {{ {' '.join(query_fields)} }}",
-      query_variables,
-    )
-
-    declarations = list(query_declarations)
-    variables = dict(query_variables)
+    declarations: list[str] = []
     fields: list[str] = []
-    for index, key in enumerate(keys):
-      projected = projected_by_key[key]
-      if projected.deleted:
-        fields.append(
-          f"delete{index}: deleteDiscordObject(connectionId: $connection{index}, "
-          f"kind: $kind{index}, id: $id{index})"
-        )
-        continue
-      current = existing.get(f"object{index}")
-      payload = projected.payload
-      if isinstance(current, dict) and isinstance(current.get("payload"), dict):
-        payload = _merge_json(
-          cast(dict[str, JsonValue], current["payload"]), projected.payload
-        )
-      declarations.extend((f"$guild{index}: ID", f"$payload{index}: JSON!"))
-      variables[f"guild{index}"] = projected.guild_id
-      variables[f"payload{index}"] = payload
-      operation = (
-        "updateDiscordObject" if isinstance(current, dict) else "createDiscordObject"
+    variables: dict[str, JsonValue] = {}
+    reads: list[tuple[str, str, str]] = []
+    for index, guild_id in enumerate(guild_ids):
+      guild = work[guild_id]
+      listing = " data { kind id }" if guild.resync or guild.purge else ""
+      declarations.append(f"$g{index}: ID!")
+      variables[f"g{index}"] = guild_id
+      fields.append(
+        f"guild{index}: gatewayGuild(id: $g{index}) "
+        f"{{ connectionId fresh synced{listing} }}"
+      )
+      if guild.purge or guild.resync:
+        continue  # purged, or replaced whole: nothing to merge with
+      for (kind, object_id), projected in guild.objects.items():
+        if not projected.deleted:
+          reads.append((guild_id, kind, object_id))
+    for index, (guild_id, kind, object_id) in enumerate(reads):
+      declarations.extend(
+        (f"$rg{index}: ID!", f"$rk{index}: String!", f"$ri{index}: ID!")
+      )
+      variables.update(
+        {f"rg{index}": guild_id, f"rk{index}": kind, f"ri{index}": object_id}
       )
       fields.append(
-        f"write{index}: {operation}(connectionId: $connection{index}, "
-        f"kind: $kind{index}, id: $id{index}, guildId: $guild{index}, "
-        f"payload: $payload{index}) {{ id }}"
+        f"object{index}: discordObject(guildId: $rg{index}, kind: $rk{index}, "
+        f"id: $ri{index}) {{ payload }}"
       )
-      if not isinstance(current, dict):
-        fields.append(
-          f"attach{index}: attachDiscordObject(connectionId: $connection{index}, "
-          f"kind: $kind{index}, id: $id{index})"
-        )
-    await self._execute(
-      f"mutation Project({', '.join(declarations)}) {{ {' '.join(fields)} }}",
-      variables,
+    held = await self._execute(
+      f"query State({', '.join(declarations)}) {{ {' '.join(fields)} }}", variables
     )
+    current: dict[tuple[str, str, str], dict[str, JsonValue]] = {}
+    for index, key in enumerate(reads):
+      found = held.get(f"object{index}")
+      if isinstance(found, dict) and isinstance(found.get("payload"), dict):
+        current[key] = cast(dict[str, JsonValue], found["payload"])
+
+    batch = _Batch()
+    for index, guild_id in enumerate(guild_ids):
+      guild = work[guild_id]
+      state = held.get(f"guild{index}")
+      listed = {
+        (item["kind"], item["id"])
+        for item in (state.get("data") or [] if isinstance(state, dict) else [])
+        if isinstance(item, dict)
+      }
+      if guild.purge:
+        for kind, object_id in listed:
+          batch.delete(guild_id, kind, object_id)
+        batch.add("deleteGatewayGuild", {"id": ("ID!", guild_id)})
+        continue
+      self._write_guild(
+        batch, guild_id, guild, state if isinstance(state, dict) else None
+      )
+      if guild.resync:
+        kept = {key for key, item in guild.objects.items() if not item.deleted}
+        for kind, object_id in listed - kept:
+          batch.delete(guild_id, kind, object_id)
+      for (kind, object_id), projected in guild.objects.items():
+        if projected.deleted:
+          if not guild.resync:
+            batch.delete(guild_id, kind, object_id)
+          continue
+        if guild.resync:
+          exists = (kind, object_id) in listed
+          payload = projected.payload
+        else:
+          before = current.get((guild_id, kind, object_id))
+          exists = before is not None
+          payload = (
+            projected.payload
+            if before is None
+            else _merge_json(before, projected.payload)
+          )
+        batch.write(guild_id, kind, object_id, payload, exists=exists)
+    if batch.fields:
+      await self._execute(batch.mutation(), batch.variables)
+
+  def _write_guild(
+    self,
+    batch: _Batch,
+    guild_id: str,
+    guild: _GuildWork,
+    state: dict[str, JsonValue] | None,
+  ) -> None:
+    """Create or update the guild's own row: who delivered it, and whether it is current."""
+    if state is None:
+      batch.add(
+        "createGatewayGuild",
+        {
+          "id": ("ID!", guild_id),
+          "connectionId": ("ID!", guild.connection),
+          "fresh": ("Boolean!", not guild.stale),
+          "synced": ("Boolean!", guild.resync),
+        },
+      )
+      batch.add(
+        "attachGuildToConnection",
+        {"connectionId": ("ID!", guild.connection), "guildId": ("ID!", guild_id)},
+      )
+      return
+    connection = str(state["connectionId"])
+    fresh = bool(state["fresh"])
+    synced = bool(state["synced"])
+    if guild.resync:
+      if connection != guild.connection:
+        connection = guild.connection
+        batch.add(
+          "attachGuildToConnection",
+          {"connectionId": ("ID!", connection), "guildId": ("ID!", guild_id)},
+        )
+      fresh, synced = True, True
+    if guild.stale:
+      fresh = False
+    if (connection, fresh, synced) != (
+      str(state["connectionId"]),
+      bool(state["fresh"]),
+      bool(state["synced"]),
+    ):
+      batch.add(
+        "updateGatewayGuild",
+        {
+          "id": ("ID!", guild_id),
+          "connectionId": ("ID!", connection),
+          "fresh": ("Boolean!", fresh),
+          "synced": ("Boolean!", synced),
+        },
+      )
 
   async def project_connection(self, event: ConnectionEvent) -> None:
-    """Apply a connection lifecycle event (ready, resumed, disconnected, invalidated)."""
+    """Apply a connection lifecycle event to the guilds it delivered.
+
+    A gap (disconnected, or lost for good) makes its guilds not current; a resume,
+    which replays what was missed, makes them current again. Nothing is deleted:
+    the next `GUILD_CREATE` from a new connection replaces the state in place.
+    """
     kind = event.kind
-    shard_id = event.shard_id
     connection_id = event.connection_id
     if connection_id is None:
       return
     if kind is ConnectionEventKind.READY:
-      existing = await self._execute(
-        "query Connection($id: ID!) { gatewayConnection(id: $id) { id } }",
-        {"id": connection_id},
-      )
-      if existing.get("gatewayConnection") is None:
-        await self._execute(
-          """
-          mutation Ready($id: ID!, $shard: Int!, $state: String!) {
-            createGatewayConnection(id: $id, shardId: $shard, active: true, state: $state) { id }
-          }
-          """,
-          {"id": connection_id, "shard": shard_id, "state": kind.value},
-        )
-      else:
-        await self._execute(
-          """
-          mutation ReadyAgain($id: ID!, $state: String!) {
-            updateGatewayConnection(id: $id, active: true, state: $state) { id }
-          }
-          """,
-          {"id": connection_id, "state": kind.value},
-        )
-    elif kind is ConnectionEventKind.CONNECTED:
-      # The socket opened; READY or RESUMED (which can arrive on either side
-      # of this) decide whether the connection serves.
-      return
-    elif kind in {ConnectionEventKind.DISCONNECTED, ConnectionEventKind.RESUMED}:
-      await self._execute(
-        """
-        mutation State($id: ID!, $active: Boolean!, $state: String!) {
-          updateGatewayConnection(id: $id, active: $active, state: $state) { id }
-        }
-        """,
-        {
-          "id": connection_id,
-          "active": kind is ConnectionEventKind.RESUMED,
-          "state": kind.value,
-        },
-      )
-    else:
-      await self.purge_connection(connection_id)
+      await self._ensure_connections({connection_id: event.shard_id})
+    elif kind is ConnectionEventKind.RESUMED:
+      await self._mark_current(connection_id, True)
+    elif kind is ConnectionEventKind.DISCONNECTED:
+      await self._mark_current(connection_id, False)
+    elif kind is not ConnectionEventKind.CONNECTED:
+      await self.forget_connection(connection_id)
 
-  async def purge_connection(self, connection_id: str) -> None:
-    """Delete a connection and every object it owned."""
+  async def forget_connection(self, connection_id: str) -> None:
+    """A connection is gone for good: its guilds are not current until a new one syncs."""
     self._known.discard(connection_id)
+    await self._mark_current(connection_id, False)
+    await self._execute(
+      "mutation Forget($id: ID!) { gone: deleteGatewayConnection(id: $id) }",
+      {"id": connection_id},
+    )
+
+  async def _mark_current(self, connection_id: str, fresh: bool) -> None:
     result = await self._execute(
       """
-      query Owned($id: ID!) {
-        gatewayConnection(id: $id) { data { connectionId kind id } }
+      query Guilds($id: ID!) {
+        gatewayConnection(id: $id) { guilds { id connectionId fresh synced } }
       }
       """,
       {"id": connection_id},
     )
     connection = result.get("gatewayConnection")
-    variables: dict[str, JsonValue] = {"connectionId": connection_id}
-    declarations = ["$connectionId: ID!"]
-    fields: list[str] = []
-    if isinstance(connection, dict) and isinstance(connection.get("data"), list):
-      for index, item in enumerate(connection["data"]):
-        if isinstance(item, dict):
-          kind = item.get("kind")
-          object_id = item.get("id")
-          if not isinstance(kind, str) or not isinstance(object_id, str):
-            continue
-          kind_variable = f"kind{index}"
-          id_variable = f"id{index}"
-          declarations.extend((f"${kind_variable}: String!", f"${id_variable}: ID!"))
-          variables[kind_variable] = kind
-          variables[id_variable] = object_id
-          fields.append(
-            f"object{index}: deleteDiscordObject("
-            f"connectionId: $connectionId, kind: ${kind_variable}, "
-            f"id: ${id_variable})"
-          )
-    fields.append("connection: deleteGatewayConnection(id: $connectionId)")
-    await self._execute(
-      f"mutation Purge({', '.join(declarations)}) {{ {' '.join(fields)} }}",
-      variables,
-    )
+    if not isinstance(connection, dict):
+      return
+    batch = _Batch()
+    for item in connection.get("guilds") or []:
+      if (
+        isinstance(item, dict)
+        and item.get("connectionId") == connection_id  # not one a newer connection took
+        and item.get("fresh") is not fresh
+      ):
+        batch.add(
+          "updateGatewayGuild",
+          {
+            "id": ("ID!", str(item["id"])),
+            "connectionId": ("ID!", connection_id),
+            "fresh": ("Boolean!", fresh),
+            "synced": ("Boolean!", bool(item["synced"])),
+          },
+        )
+    if batch.fields:
+      await self._execute(batch.mutation(), batch.variables)
 
   async def _execute(
     self, query: str, variables: Mapping[str, JsonValue]
@@ -349,6 +384,161 @@ class GatewayProjection(Service):
     if not isinstance(data, dict):
       raise TypeError("Gateway projection store omitted GraphQL data.")
     return data
+
+
+_STATE_KINDS = frozenset(
+  (
+    "guild",
+    "channel",
+    "thread",
+    "role",
+    "member",
+    "emoji",
+    "voice_state",
+    "presence",
+    "stage_instance",
+    "sticker",
+    "scheduled_event",
+  )
+)
+"""What is aggregated: the state of a guild. Messages, typing, reactions and the like are
+events, not state, and are not kept."""
+
+_INDEXED = frozenset(("channel", "thread", "role"))
+"""Kinds whose ids are unique across Discord, so they can be found without their guild."""
+
+
+@dataclass(slots=True)
+class _GuildWork:
+  """What a batch of dispatches does to one guild."""
+
+  connection: str
+  objects: dict[tuple[str, str], ProjectedObject] = field(default_factory=dict)
+  resync: bool = False
+  purge: bool = False
+  stale: bool = False
+
+
+def _fold(
+  items: Sequence[tuple[str, str, dict[str, JsonValue]]],
+) -> dict[str, _GuildWork]:
+  """Group dispatches by guild, in order: a `GUILD_CREATE` starts the guild afresh."""
+  work: dict[str, _GuildWork] = {}
+  for connection_id, name, payload in items:
+    if name == "GUILD_DELETE":
+      guild_id = _string_id(payload.get("id"))
+      if guild_id is None:
+        continue
+      guild = work.setdefault(guild_id, _GuildWork(connection_id))
+      if payload.get("unavailable") is True:
+        guild.stale = True  # an outage, not a removal: keep what is held, not current
+      else:
+        guild.objects.clear()
+        guild.resync, guild.purge = False, True
+      continue
+    if name == "GUILD_CREATE":
+      guild_id = _string_id(payload.get("id"))
+      if guild_id is not None:
+        guild = work.setdefault(guild_id, _GuildWork(connection_id))
+        guild.objects.clear()
+        guild.connection = connection_id
+        guild.resync, guild.purge, guild.stale = True, False, False
+    for projected in _project_dispatch(name, payload):
+      if projected.guild_id is None:
+        continue  # not about a guild (a DM, a user): there is nowhere to keep it
+      guild = work.setdefault(projected.guild_id, _GuildWork(connection_id))
+      if guild.purge:
+        continue
+      key = (projected.kind, projected.id)
+      previous = guild.objects.get(key)
+      if previous is not None and not previous.deleted and not projected.deleted:
+        projected = ProjectedObject(
+          projected.kind,
+          projected.id,
+          projected.guild_id,
+          _merge_json(previous.payload, projected.payload),
+        )
+      guild.objects[key] = projected
+  return work
+
+
+class _Batch:
+  """The pieces of one GraphQL mutation, each with variables of its own."""
+
+  def __init__(self) -> None:
+    self.declarations: list[str] = []
+    self.variables: dict[str, JsonValue] = {}
+    self.fields: list[str] = []
+
+  def add(
+    self,
+    operation: str,
+    arguments: Mapping[str, tuple[str, JsonValue]],
+    selection: str = "",
+  ) -> None:
+    index = len(self.fields)
+    if (
+      not selection
+      and operation.startswith(("create", "update"))
+      and (operation != "updateDiscordObject")
+    ):
+      selection = " { id }"  # an operation that returns an entity needs a selection
+    passed: list[str] = []
+    for name, (graphql_type, value) in arguments.items():
+      variable = f"v{index}_{name}"
+      self.declarations.append(f"${variable}: {graphql_type}")
+      self.variables[variable] = value
+      passed.append(f"{name}: ${variable}")
+    self.fields.append(f"m{index}: {operation}({', '.join(passed)}){selection}")
+
+  def delete(self, guild_id: str, kind: str, object_id: str) -> None:
+    self.add(
+      "deleteDiscordObject",
+      {
+        "guildId": ("ID!", guild_id),
+        "kind": ("String!", kind),
+        "id": ("ID!", object_id),
+      },
+    )
+    if kind in _INDEXED:
+      self.add(
+        "deleteDiscordIndex", {"kind": ("String!", kind), "id": ("ID!", object_id)}
+      )
+
+  def write(
+    self, guild_id: str, kind: str, object_id: str, payload: JsonValue, *, exists: bool
+  ) -> None:
+    key = {
+      "guildId": ("ID!", guild_id),
+      "kind": ("String!", kind),
+      "id": ("ID!", object_id),
+    }
+    self.add(
+      "updateDiscordObject" if exists else "createDiscordObject",
+      {**key, "payload": ("JSON!", payload)},
+      " { id }",
+    )
+    if exists:
+      return
+    self.add("attachDiscordObject", key)
+    if kind == "channel":
+      self.add("attachChannel", key)
+    elif kind == "role":
+      self.add("attachRole", key)
+    if kind in _INDEXED:
+      self.add(
+        "createDiscordIndex",
+        {
+          "kind": ("String!", kind),
+          "id": ("ID!", object_id),
+          "guildId": ("ID!", guild_id),
+        },
+      )
+
+  def mutation(self) -> str:
+    return (
+      f"mutation Project({', '.join(self.declarations)}) {{ {' '.join(self.fields)} }}"
+    )
 
 
 def _project_dispatch(
@@ -365,7 +555,7 @@ def _project_dispatch(
   objects: list[ProjectedObject] = []
 
   def add(kind: str, value: JsonValue, *, is_deleted: bool = False) -> None:
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or kind not in _STATE_KINDS:
       return
     object_guild = _string_id(value.get("guild_id")) or guild_id
     object_id = _object_id(kind, value, object_guild)
@@ -373,9 +563,6 @@ def _project_dispatch(
       return
     objects.append(ProjectedObject(kind, object_id, object_guild, value, is_deleted))
 
-  root_kind = _dispatch_kind(name)
-  root = payload.get("role") if root_kind == "role" and "role" in payload else payload
-  add(root_kind, root, is_deleted=deleted)
   collections = {
     "guilds": "guild",
     "channels": "channel",
@@ -389,8 +576,17 @@ def _project_dispatch(
     "stickers": "sticker",
     "guild_scheduled_events": "scheduled_event",
   }
-  for field, kind in collections.items():
-    values = payload.get(field)
+  root_kind = _dispatch_kind(name)
+  root = payload.get("role") if root_kind == "role" and "role" in payload else payload
+  if name == "GUILD_ROLE_DELETE":
+    root = {"id": payload.get("role_id"), "guild_id": payload.get("guild_id")}
+  if root_kind == "guild" and isinstance(root, dict):
+    # The lists are objects of their own, kept current one by one; left in the guild
+    # they would only go stale.
+    root = {key: value for key, value in root.items() if key not in collections}
+  add(root_kind, root, is_deleted=deleted)
+  for collection, kind in collections.items():
+    values = payload.get(collection)
     if isinstance(values, list):
       for value in values:
         add(kind, value)
@@ -402,6 +598,8 @@ def _dispatch_kind(name: str) -> str:
     return "member"
   if name.startswith("GUILD_ROLE"):
     return "role"
+  if name.startswith("GUILD_SCHEDULED_EVENT"):
+    return "scheduled_event"
   if name.startswith("GUILD_EMOJIS"):
     return "guild"
   return (
