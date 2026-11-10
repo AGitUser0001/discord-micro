@@ -20,7 +20,7 @@ one of those, or raise**.
    @components.use
    async def staff_only(ctx, next, end):
      if not is_staff(ctx.interaction):
-       await ctx.interaction.respond("Staff only.", ephemeral=True)
+       await ctx.interaction.respond(Draft("Staff only.", ephemeral=True))
        return await end()
      await next()
 
@@ -76,6 +76,7 @@ place you sign when sending.
 
    # myapp/router.py: the router, with the check as middleware
    from micro.discord.interactions import InteractionRouter
+   from micro.discord.ui import Draft
 
    from .signing import verify
 
@@ -88,7 +89,7 @@ place you sign when sending.
      if signed is not None:                      # a component or a modal submit
        custom_id = verify(signed)
        if custom_id is None:
-         await ctx.interaction.respond("That button is no longer valid.", ephemeral=True)
+         await ctx.interaction.respond(Draft("That button is no longer valid.", ephemeral=True))
          return await end()                      # never routed, no handler runs
        data["custom_id"] = custom_id             # routed (and delivered) as the real id
      await next()
@@ -118,9 +119,9 @@ call site changes. Services keep writing the plain id, and the handlers keep mat
 
 .. code-block:: python
 
-   await ctx.respond("Close it?", components=[
+   await ctx.respond(Draft("Close it?", components=[
      Button("Close", custom_id=CLOSE.encode(Ticket(id=42))),     # sent as ...~<mac>
-   ])
+   ]))
 
    @components.match(CLOSE)                      # still matches plain "ticket.close:[42]"
    async def close(ctx: Interaction, ticket: Ticket) -> None: ...

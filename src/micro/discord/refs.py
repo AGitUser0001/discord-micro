@@ -11,10 +11,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from micro.discord._api import UNSET, Upload
-from micro.discord._refs import _MemberExtras, _UserExtras
+from micro.discord._refs import _MemberExtras, _MessageExtras, _UserExtras
 from micro.discord.http_service import DiscordAPIError
 from micro.discord.models import http as m
-from micro.discord.ui import AllowedMentions, Buildable, Draft, Embed, Emoji
+from micro.discord.ui import Draft, Emoji
 from micro.result import Result
 
 if TYPE_CHECKING:
@@ -34,12 +34,13 @@ class ChannelRef:
 
   async def get(
     self,
-  ) -> (
+  ) -> Result[
     m.GuildChannelResponse
     | m.PrivateChannelResponse
     | m.PrivateGroupChannelResponse
-    | m.ThreadResponse
-  ):
+    | m.ThreadResponse,
+    DiscordAPIError,
+  ]:
     """GET /channels/{channel_id}"""
     return await self.api.get_channel(self.channel_id)
 
@@ -79,12 +80,13 @@ class ChannelRef:
     auto_archive_duration: m.ThreadAutoArchiveDuration | int | None = UNSET,
     applied_tags: Sequence[int | str] | None = UNSET,
     reason: str | None = None,
-  ) -> (
+  ) -> Result[
     m.GuildChannelResponse
     | m.PrivateChannelResponse
     | m.PrivateGroupChannelResponse
-    | m.ThreadResponse
-  ):
+    | m.ThreadResponse,
+    DiscordAPIError,
+  ]:
     """PATCH /channels/{channel_id}"""
     return await self.api.update_channel(
       self.channel_id,
@@ -121,57 +123,38 @@ class ChannelRef:
     self,
     *,
     reason: str | None = None,
-  ) -> (
+  ) -> Result[
     m.GuildChannelResponse
     | m.PrivateChannelResponse
     | m.PrivateGroupChannelResponse
-    | m.ThreadResponse
-  ):
+    | m.ThreadResponse,
+    DiscordAPIError,
+  ]:
     """DELETE /channels/{channel_id}"""
     return await self.api.delete_channel(self.channel_id, reason=reason)
 
   async def send(
     self,
-    content: Draft | str | None = UNSET,
+    message: Draft | str | None = UNSET,
     *,
-    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
-    allowed_mentions: AllowedMentions
-    | m.MessageAllowedMentionsRequest
-    | Mapping[str, Any]
-    | None = UNSET,
     sticker_ids: Sequence[int | str] | None = UNSET,
-    components: Sequence[Buildable | Mapping[str, Any]] | None = UNSET,
-    flags: int | None = UNSET,
-    attachments: Sequence[m.MessageAttachmentRequest | Mapping[str, Any]]
-    | None = UNSET,
     poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
     shared_client_theme: m.CustomClientThemeShareRequest
     | Mapping[str, Any]
     | None = UNSET,
-    message_reference: m.MessageReferenceRequest | Mapping[str, Any] | None = UNSET,
     nonce: int | str | None = UNSET,
     enforce_nonce: bool | None = UNSET,
-    tts: bool | None = UNSET,
-    files: Sequence[Upload] | None = None,
     reason: str | None = None,
   ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages"""
     return await self.api.create_message(
       self.channel_id,
-      embeds=embeds,
-      allowed_mentions=allowed_mentions,
       sticker_ids=sticker_ids,
-      components=components,
-      flags=flags,
-      attachments=attachments,
       poll=poll,
       shared_client_theme=shared_client_theme,
-      message_reference=message_reference,
       nonce=nonce,
       enforce_nonce=enforce_nonce,
-      tts=tts,
-      content=content,
-      files=files,
+      message=message,
       reason=reason,
     )
 
@@ -192,7 +175,7 @@ class ChannelRef:
     self,
     *,
     reason: str | None = None,
-  ) -> m.TypingIndicatorResponse:
+  ) -> Result[m.TypingIndicatorResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/typing"""
     return await self.api.trigger_typing_indicator(self.channel_id, reason=reason)
 
@@ -236,8 +219,11 @@ class ChannelRef:
 
   async def invites(
     self,
-  ) -> list[
-    m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse | None
+  ) -> Result[
+    list[
+      m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse | None
+    ],
+    DiscordAPIError,
   ]:
     """GET /channels/{channel_id}/invites"""
     return await self.api.list_channel_invites(self.channel_id)
@@ -255,7 +241,10 @@ class ChannelRef:
     role_ids: str | Sequence[int | str] | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse:
+  ) -> Result[
+    m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse,
+    DiscordAPIError,
+  ]:
     """POST /channels/{channel_id}/invites"""
     return await self.api.create_channel_invite(
       self.channel_id,
@@ -273,10 +262,13 @@ class ChannelRef:
 
   async def webhooks(
     self,
-  ) -> list[
-    m.ApplicationIncomingWebhookResponse
-    | m.ChannelFollowerWebhookResponse
-    | m.GuildIncomingWebhookResponse
+  ) -> Result[
+    list[
+      m.ApplicationIncomingWebhookResponse
+      | m.ChannelFollowerWebhookResponse
+      | m.GuildIncomingWebhookResponse
+    ],
+    DiscordAPIError,
   ]:
     """GET /channels/{channel_id}/webhooks"""
     return await self.api.list_channel_webhooks(self.channel_id)
@@ -287,7 +279,7 @@ class ChannelRef:
     name: str,
     avatar: str | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildIncomingWebhookResponse:
+  ) -> Result[m.GuildIncomingWebhookResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/webhooks"""
     return await self.api.create_webhook(
       self.channel_id, name=name, avatar=avatar, reason=reason
@@ -298,7 +290,7 @@ class ChannelRef:
     *,
     webhook_channel_id: int | str,
     reason: str | None = None,
-  ) -> m.ChannelFollowerResponse:
+  ) -> Result[m.ChannelFollowerResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/followers"""
     return await self.api.follow_channel(
       self.channel_id, webhook_channel_id=webhook_channel_id, reason=reason
@@ -316,7 +308,7 @@ class ChannelRef:
     invitable: bool | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.CreatedThreadResponse:
+  ) -> Result[m.CreatedThreadResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/threads"""
     return await self.api.create_thread(
       self.channel_id,
@@ -335,7 +327,7 @@ class ChannelRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/thread-members/@me"""
     return await self.api.join_thread(self.channel_id, reason=reason)
 
@@ -343,7 +335,7 @@ class ChannelRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/thread-members/@me"""
     return await self.api.leave_thread(self.channel_id, reason=reason)
 
@@ -353,7 +345,7 @@ class ChannelRef:
     with_member: bool | None = UNSET,
     limit: int | None = UNSET,
     after: int | str | None = UNSET,
-  ) -> list[m.ThreadMemberResponse]:
+  ) -> Result[list[m.ThreadMemberResponse], DiscordAPIError]:
     """GET /channels/{channel_id}/thread-members"""
     return await self.api.list_thread_members(
       self.channel_id, with_member=with_member, limit=limit, after=after
@@ -364,7 +356,7 @@ class ChannelRef:
     user_id: int | str,
     *,
     with_member: bool | None = UNSET,
-  ) -> m.ThreadMemberResponse:
+  ) -> Result[m.ThreadMemberResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/thread-members/{user_id}"""
     return await self.api.get_thread_member(
       self.channel_id, user_id, with_member=with_member
@@ -375,7 +367,7 @@ class ChannelRef:
     user_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/thread-members/{user_id}"""
     return await self.api.add_thread_member(self.channel_id, user_id, reason=reason)
 
@@ -384,7 +376,7 @@ class ChannelRef:
     user_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/thread-members/{user_id}"""
     return await self.api.delete_thread_member(self.channel_id, user_id, reason=reason)
 
@@ -393,7 +385,7 @@ class ChannelRef:
     *,
     before: datetime | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> m.ThreadsResponse:
+  ) -> Result[m.ThreadsResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/threads/archived/public"""
     return await self.api.list_public_archived_threads(
       self.channel_id, before=before, limit=limit
@@ -404,7 +396,7 @@ class ChannelRef:
     *,
     before: datetime | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> m.ThreadsResponse:
+  ) -> Result[m.ThreadsResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/threads/archived/private"""
     return await self.api.list_private_archived_threads(
       self.channel_id, before=before, limit=limit
@@ -415,7 +407,7 @@ class ChannelRef:
     *,
     before: int | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> m.ThreadsResponse:
+  ) -> Result[m.ThreadsResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/users/@me/threads/archived/private"""
     return await self.api.list_my_private_archived_threads(
       self.channel_id, before=before, limit=limit
@@ -435,7 +427,7 @@ class ChannelRef:
     sort_order: m.SortingOrder | str | None = UNSET,
     limit: int | None = UNSET,
     offset: int | None = UNSET,
-  ) -> m.ThreadSearchResponse | m.SearchIndexNotReadyResponse:
+  ) -> Result[m.ThreadSearchResponse | m.SearchIndexNotReadyResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/threads/search"""
     return await self.api.thread_search(
       self.channel_id,
@@ -460,7 +452,7 @@ class ChannelRef:
     allow: int | None = UNSET,
     deny: int | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/permissions/{overwrite_id}"""
     return await self.api.set_channel_permission_overwrite(
       self.channel_id, overwrite_id, type=type, allow=allow, deny=deny, reason=reason
@@ -471,7 +463,7 @@ class ChannelRef:
     overwrite_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/permissions/{overwrite_id}"""
     return await self.api.delete_channel_permission_overwrite(
       self.channel_id, overwrite_id, reason=reason
@@ -479,7 +471,7 @@ class ChannelRef:
 
   async def stage_instance(
     self,
-  ) -> m.StageInstanceResponse:
+  ) -> Result[m.StageInstanceResponse, DiscordAPIError]:
     """GET /stage-instances/{channel_id}"""
     return await self.api.get_stage_instance(self.channel_id)
 
@@ -487,7 +479,7 @@ class ChannelRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /stage-instances/{channel_id}"""
     return await self.api.delete_stage_instance(self.channel_id, reason=reason)
 
@@ -497,7 +489,7 @@ class ChannelRef:
     topic: str | None = UNSET,
     privacy_level: m.StageInstancesPrivacyLevels | int | None = UNSET,
     reason: str | None = None,
-  ) -> m.StageInstanceResponse:
+  ) -> Result[m.StageInstanceResponse, DiscordAPIError]:
     """PATCH /stage-instances/{channel_id}"""
     return await self.api.update_stage_instance(
       self.channel_id, topic=topic, privacy_level=privacy_level, reason=reason
@@ -508,7 +500,7 @@ class ChannelRef:
     *,
     status: str | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /channels/{channel_id}/voice-status"""
     return await self.api.update_voice_channel_status(
       self.channel_id, status=status, reason=reason
@@ -520,7 +512,7 @@ class ChannelRef:
     sound_id: int | str,
     source_guild_id: int | str | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """POST /channels/{channel_id}/send-soundboard-sound"""
     return await self.api.send_soundboard_sound(
       self.channel_id, sound_id=sound_id, source_guild_id=source_guild_id, reason=reason
@@ -528,7 +520,7 @@ class ChannelRef:
 
 
 @dataclass(frozen=True, slots=True)
-class MessageRef:
+class MessageRef(_MessageExtras):
   """A message by channel and id."""
 
   api: DiscordAPI
@@ -543,33 +535,17 @@ class MessageRef:
 
   async def edit(
     self,
-    content: Draft | str | None = UNSET,
+    message: Draft | str | None = UNSET,
     *,
-    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
-    flags: int | None = UNSET,
-    allowed_mentions: AllowedMentions
-    | m.MessageAllowedMentionsRequest
-    | Mapping[str, Any]
-    | None = UNSET,
     sticker_ids: Sequence[int | str] | None = UNSET,
-    components: Sequence[Buildable | Mapping[str, Any]] | None = UNSET,
-    attachments: Sequence[m.MessageAttachmentRequest | Mapping[str, Any]]
-    | None = UNSET,
-    files: Sequence[Upload] | None = None,
     reason: str | None = None,
   ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /channels/{channel_id}/messages/{message_id}"""
     return await self.api.update_message(
       self.channel_id,
       self.message_id,
-      embeds=embeds,
-      flags=flags,
-      allowed_mentions=allowed_mentions,
       sticker_ids=sticker_ids,
-      components=components,
-      attachments=attachments,
-      content=content,
-      files=files,
+      message=message,
       reason=reason,
     )
 
@@ -701,7 +677,7 @@ class MessageRef:
     *,
     after: int | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> m.PollAnswerDetailsResponse:
+  ) -> Result[m.PollAnswerDetailsResponse, DiscordAPIError]:
     """GET /channels/{channel_id}/polls/{message_id}/answers/{answer_id}"""
     return await self.api.get_answer_voters(
       self.channel_id, self.message_id, answer_id, after=after, limit=limit
@@ -711,53 +687,9 @@ class MessageRef:
     self,
     *,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/polls/{message_id}/expire"""
     return await self.api.poll_expire(self.channel_id, self.message_id, reason=reason)
-
-  async def reply(
-    self,
-    content: Draft | str | None = UNSET,
-    *,
-    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
-    allowed_mentions: AllowedMentions
-    | m.MessageAllowedMentionsRequest
-    | Mapping[str, Any]
-    | None = UNSET,
-    sticker_ids: Sequence[int | str] | None = UNSET,
-    components: Sequence[Buildable | Mapping[str, Any]] | None = UNSET,
-    flags: int | None = UNSET,
-    attachments: Sequence[m.MessageAttachmentRequest | Mapping[str, Any]]
-    | None = UNSET,
-    poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
-    shared_client_theme: m.CustomClientThemeShareRequest
-    | Mapping[str, Any]
-    | None = UNSET,
-    nonce: int | str | None = UNSET,
-    enforce_nonce: bool | None = UNSET,
-    tts: bool | None = UNSET,
-    files: Sequence[Upload] | None = None,
-    reason: str | None = None,
-  ) -> Result[m.MessageResponse, DiscordAPIError]:
-    """POST /channels/{channel_id}/messages"""
-    return await self.api.create_message(
-      self.channel_id,
-      embeds=embeds,
-      allowed_mentions=allowed_mentions,
-      sticker_ids=sticker_ids,
-      components=components,
-      flags=flags,
-      attachments=attachments,
-      poll=poll,
-      shared_client_theme=shared_client_theme,
-      message_reference={"message_id": self.message_id},
-      nonce=nonce,
-      enforce_nonce=enforce_nonce,
-      tts=tts,
-      content=content,
-      files=files,
-      reason=reason,
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -791,7 +723,7 @@ class GuildRef:
     self,
     *,
     with_counts: bool | None = UNSET,
-  ) -> m.GuildWithCountsResponse:
+  ) -> Result[m.GuildWithCountsResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}"""
     return await self.api.get_guild(self.guild_id, with_counts=with_counts)
 
@@ -820,7 +752,7 @@ class GuildRef:
     public_updates_channel_id: int | str | None = UNSET,
     premium_progress_bar_enabled: bool | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildResponse:
+  ) -> Result[m.GuildResponse, DiscordAPIError]:
     """PATCH /guilds/{guild_id}"""
     return await self.api.update_guild(
       self.guild_id,
@@ -852,23 +784,26 @@ class GuildRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /users/@me/guilds/{guild_id}"""
     return await self.api.leave_guild(self.guild_id, reason=reason)
 
   async def preview(
     self,
-  ) -> m.GuildPreviewResponse:
+  ) -> Result[m.GuildPreviewResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/preview"""
     return await self.api.get_guild_preview(self.guild_id)
 
   async def channels(
     self,
-  ) -> list[
-    m.GuildChannelResponse
-    | m.PrivateChannelResponse
-    | m.PrivateGroupChannelResponse
-    | m.ThreadResponse
+  ) -> Result[
+    list[
+      m.GuildChannelResponse
+      | m.PrivateChannelResponse
+      | m.PrivateGroupChannelResponse
+      | m.ThreadResponse
+    ],
+    DiscordAPIError,
   ]:
     """GET /guilds/{guild_id}/channels"""
     return await self.api.list_guild_channels(self.guild_id)
@@ -904,7 +839,7 @@ class GuildRef:
     ]
     | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildChannelResponse:
+  ) -> Result[m.GuildChannelResponse, DiscordAPIError]:
     """POST /guilds/{guild_id}/channels"""
     return await self.api.create_guild_channel(
       self.guild_id,
@@ -938,7 +873,7 @@ class GuildRef:
     parent_id: int | str | None = UNSET,
     lock_permissions: bool | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PATCH /guilds/{guild_id}/channels"""
     return await self.api.bulk_update_guild_channels(
       self.guild_id,
@@ -954,7 +889,7 @@ class GuildRef:
     *,
     limit: int | None = UNSET,
     after: int | None = UNSET,
-  ) -> list[m.GuildMemberResponse]:
+  ) -> Result[list[m.GuildMemberResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/members"""
     return await self.api.list_guild_members(self.guild_id, limit=limit, after=after)
 
@@ -963,7 +898,7 @@ class GuildRef:
     *,
     query: str,
     limit: int | None = UNSET,
-  ) -> list[m.GuildMemberResponse]:
+  ) -> Result[list[m.GuildMemberResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/members/search"""
     return await self.api.search_guild_members(self.guild_id, query=query, limit=limit)
 
@@ -973,7 +908,7 @@ class GuildRef:
     limit: int | None = UNSET,
     before: int | str | None = UNSET,
     after: int | str | None = UNSET,
-  ) -> list[m.GuildBanResponse]:
+  ) -> Result[list[m.GuildBanResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/bans"""
     return await self.api.list_guild_bans(
       self.guild_id, limit=limit, before=before, after=after
@@ -986,7 +921,7 @@ class GuildRef:
     delete_message_seconds: int | None = UNSET,
     delete_message_days: int | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /guilds/{guild_id}/bans/{user_id}"""
     return await self.api.ban_user_from_guild(
       self.guild_id,
@@ -1001,14 +936,14 @@ class GuildRef:
     user_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/bans/{user_id}"""
     return await self.api.unban_user_from_guild(self.guild_id, user_id, reason=reason)
 
   async def get_ban(
     self,
     user_id: int | str,
-  ) -> m.GuildBanResponse:
+  ) -> Result[m.GuildBanResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/bans/{user_id}"""
     return await self.api.get_guild_ban(self.guild_id, user_id)
 
@@ -1018,7 +953,7 @@ class GuildRef:
     user_ids: Sequence[int | str],
     delete_message_seconds: int | None = UNSET,
     reason: str | None = None,
-  ) -> m.BulkBanUsersResponse:
+  ) -> Result[m.BulkBanUsersResponse, DiscordAPIError]:
     """POST /guilds/{guild_id}/bulk-ban"""
     return await self.api.bulk_ban_users_from_guild(
       self.guild_id,
@@ -1029,7 +964,7 @@ class GuildRef:
 
   async def roles(
     self,
-  ) -> list[m.GuildRoleResponse]:
+  ) -> Result[list[m.GuildRoleResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/roles"""
     return await self.api.list_guild_roles(self.guild_id)
 
@@ -1045,7 +980,7 @@ class GuildRef:
     icon: str | None = UNSET,
     unicode_emoji: str | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildRoleResponse:
+  ) -> Result[m.GuildRoleResponse, DiscordAPIError]:
     """POST /guilds/{guild_id}/roles"""
     return await self.api.create_guild_role(
       self.guild_id,
@@ -1066,7 +1001,7 @@ class GuildRef:
     id: int | str | None = UNSET,
     position: int | None = UNSET,
     reason: str | None = None,
-  ) -> list[m.GuildRoleResponse]:
+  ) -> Result[list[m.GuildRoleResponse], DiscordAPIError]:
     """PATCH /guilds/{guild_id}/roles"""
     return await self.api.bulk_update_guild_roles(
       self.guild_id, id=id, position=position, reason=reason
@@ -1074,13 +1009,13 @@ class GuildRef:
 
   async def role_member_counts(
     self,
-  ) -> dict[str, int]:
+  ) -> Result[dict[str, int], DiscordAPIError]:
     """GET /guilds/{guild_id}/roles/member-counts"""
     return await self.api.guild_role_member_counts(self.guild_id)
 
   async def emojis(
     self,
-  ) -> list[m.EmojiResponse]:
+  ) -> Result[list[m.EmojiResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/emojis"""
     return await self.api.list_guild_emojis(self.guild_id)
 
@@ -1091,7 +1026,7 @@ class GuildRef:
     image: str,
     roles: Sequence[int | str | None] | None = UNSET,
     reason: str | None = None,
-  ) -> m.EmojiResponse:
+  ) -> Result[m.EmojiResponse, DiscordAPIError]:
     """POST /guilds/{guild_id}/emojis"""
     return await self.api.create_guild_emoji(
       self.guild_id, name=name, image=image, roles=roles, reason=reason
@@ -1099,7 +1034,7 @@ class GuildRef:
 
   async def stickers(
     self,
-  ) -> list[m.GuildStickerResponse]:
+  ) -> Result[list[m.GuildStickerResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/stickers"""
     return await self.api.list_guild_stickers(self.guild_id)
 
@@ -1111,7 +1046,7 @@ class GuildRef:
     file: Upload,
     description: str | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildStickerResponse:
+  ) -> Result[m.GuildStickerResponse, DiscordAPIError]:
     """POST /guilds/{guild_id}/stickers"""
     return await self.api.create_guild_sticker(
       self.guild_id,
@@ -1126,10 +1061,13 @@ class GuildRef:
     self,
     *,
     with_user_count: bool | None = UNSET,
-  ) -> list[
-    m.ExternalScheduledEventResponse
-    | m.StageScheduledEventResponse
-    | m.VoiceScheduledEventResponse
+  ) -> Result[
+    list[
+      m.ExternalScheduledEventResponse
+      | m.StageScheduledEventResponse
+      | m.VoiceScheduledEventResponse
+    ],
+    DiscordAPIError,
   ]:
     """GET /guilds/{guild_id}/scheduled-events"""
     return await self.api.list_guild_scheduled_events(
@@ -1150,11 +1088,12 @@ class GuildRef:
     recurrence_rule: m.RecurrenceRule | Mapping[str, Any] | None = UNSET,
     entity_metadata: m.EntityMetadataExternal | Mapping[str, Any] = UNSET,
     reason: str | None = None,
-  ) -> (
+  ) -> Result[
     m.ExternalScheduledEventResponse
     | m.StageScheduledEventResponse
-    | m.VoiceScheduledEventResponse
-  ):
+    | m.VoiceScheduledEventResponse,
+    DiscordAPIError,
+  ]:
     """POST /guilds/{guild_id}/scheduled-events"""
     return await self.api.create_guild_scheduled_event(
       self.guild_id,
@@ -1173,18 +1112,24 @@ class GuildRef:
 
   async def invites(
     self,
-  ) -> list[
-    m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse | None
+  ) -> Result[
+    list[
+      m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse | None
+    ],
+    DiscordAPIError,
   ]:
     """GET /guilds/{guild_id}/invites"""
     return await self.api.list_guild_invites(self.guild_id)
 
   async def webhooks(
     self,
-  ) -> list[
-    m.ApplicationIncomingWebhookResponse
-    | m.ChannelFollowerWebhookResponse
-    | m.GuildIncomingWebhookResponse
+  ) -> Result[
+    list[
+      m.ApplicationIncomingWebhookResponse
+      | m.ChannelFollowerWebhookResponse
+      | m.GuildIncomingWebhookResponse
+    ],
+    DiscordAPIError,
   ]:
     """GET /guilds/{guild_id}/webhooks"""
     return await self.api.get_guild_webhooks(self.guild_id)
@@ -1198,7 +1143,7 @@ class GuildRef:
     before: int | str | None = UNSET,
     after: int | str | None = UNSET,
     limit: int | None = UNSET,
-  ) -> m.GuildAuditLogResponse:
+  ) -> Result[m.GuildAuditLogResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/audit-logs"""
     return await self.api.list_guild_audit_log_entries(
       self.guild_id,
@@ -1215,7 +1160,7 @@ class GuildRef:
     *,
     days: int | None = UNSET,
     include_roles: str | Sequence[int | None] | None = UNSET,
-  ) -> m.GuildPruneResponse:
+  ) -> Result[m.GuildPruneResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/prune"""
     return await self.api.preview_prune_guild(
       self.guild_id, days=days, include_roles=include_roles
@@ -1228,7 +1173,7 @@ class GuildRef:
     compute_prune_count: bool | None = UNSET,
     include_roles: str | Sequence[int | str] | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildPruneResponse:
+  ) -> Result[m.GuildPruneResponse, DiscordAPIError]:
     """POST /guilds/{guild_id}/prune"""
     return await self.api.prune_guild(
       self.guild_id,
@@ -1240,25 +1185,25 @@ class GuildRef:
 
   async def active_threads(
     self,
-  ) -> m.ThreadsResponse:
+  ) -> Result[m.ThreadsResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/threads/active"""
     return await self.api.get_active_guild_threads(self.guild_id)
 
   async def voice_regions(
     self,
-  ) -> list[m.VoiceRegionResponse]:
+  ) -> Result[list[m.VoiceRegionResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/regions"""
     return await self.api.list_guild_voice_regions(self.guild_id)
 
   async def vanity_url(
     self,
-  ) -> m.VanityURLResponse:
+  ) -> Result[m.VanityURLResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/vanity-url"""
     return await self.api.get_guild_vanity_url(self.guild_id)
 
   async def welcome_screen(
     self,
-  ) -> m.GuildWelcomeScreenResponse:
+  ) -> Result[m.GuildWelcomeScreenResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/welcome-screen"""
     return await self.api.get_guild_welcome_screen(self.guild_id)
 
@@ -1270,7 +1215,7 @@ class GuildRef:
     | None = UNSET,
     enabled: bool | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildWelcomeScreenResponse:
+  ) -> Result[m.GuildWelcomeScreenResponse, DiscordAPIError]:
     """PATCH /guilds/{guild_id}/welcome-screen"""
     return await self.api.update_guild_welcome_screen(
       self.guild_id,
@@ -1282,7 +1227,7 @@ class GuildRef:
 
   async def widget_settings(
     self,
-  ) -> m.WidgetSettingsResponse:
+  ) -> Result[m.WidgetSettingsResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/widget"""
     return await self.api.get_guild_widget_settings(self.guild_id)
 
@@ -1292,7 +1237,7 @@ class GuildRef:
     channel_id: int | str | None = UNSET,
     enabled: bool | None = UNSET,
     reason: str | None = None,
-  ) -> m.WidgetSettingsResponse:
+  ) -> Result[m.WidgetSettingsResponse, DiscordAPIError]:
     """PATCH /guilds/{guild_id}/widget"""
     return await self.api.update_guild_widget_settings(
       self.guild_id, channel_id=channel_id, enabled=enabled, reason=reason
@@ -1300,13 +1245,13 @@ class GuildRef:
 
   async def widget(
     self,
-  ) -> m.WidgetResponse:
+  ) -> Result[m.WidgetResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/widget.json"""
     return await self.api.get_guild_widget(self.guild_id)
 
   async def onboarding(
     self,
-  ) -> m.UserGuildOnboardingResponse:
+  ) -> Result[m.UserGuildOnboardingResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/onboarding"""
     return await self.api.get_guilds_onboarding(self.guild_id)
 
@@ -1319,7 +1264,7 @@ class GuildRef:
     default_channel_ids: Sequence[int | str] | None = UNSET,
     mode: m.GuildOnboardingMode | int | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildOnboardingResponse:
+  ) -> Result[m.GuildOnboardingResponse, DiscordAPIError]:
     """PUT /guilds/{guild_id}/onboarding"""
     return await self.api.put_guilds_onboarding(
       self.guild_id,
@@ -1332,13 +1277,16 @@ class GuildRef:
 
   async def automod_rules(
     self,
-  ) -> list[
-    m.DefaultKeywordRuleResponse
-    | m.KeywordRuleResponse
-    | m.MLSpamRuleResponse
-    | m.MentionSpamRuleResponse
-    | m.UserProfileRuleResponse
-    | None
+  ) -> Result[
+    list[
+      m.DefaultKeywordRuleResponse
+      | m.KeywordRuleResponse
+      | m.MLSpamRuleResponse
+      | m.MentionSpamRuleResponse
+      | m.UserProfileRuleResponse
+      | None
+    ],
+    DiscordAPIError,
   ]:
     """GET /guilds/{guild_id}/auto-moderation/rules"""
     return await self.api.list_auto_moderation_rules(self.guild_id)
@@ -1362,13 +1310,14 @@ class GuildRef:
     trigger_type: m.AutomodTriggerType | int = UNSET,
     trigger_metadata: m.DefaultKeywordListTriggerMetadata | Mapping[str, Any] = UNSET,
     reason: str | None = None,
-  ) -> (
+  ) -> Result[
     m.DefaultKeywordRuleResponse
     | m.KeywordRuleResponse
     | m.MLSpamRuleResponse
     | m.MentionSpamRuleResponse
-    | m.UserProfileRuleResponse
-  ):
+    | m.UserProfileRuleResponse,
+    DiscordAPIError,
+  ]:
     """POST /guilds/{guild_id}/auto-moderation/rules"""
     return await self.api.create_auto_moderation_rule(
       self.guild_id,
@@ -1386,13 +1335,14 @@ class GuildRef:
   async def automod_rule(
     self,
     rule_id: int | str,
-  ) -> (
+  ) -> Result[
     m.DefaultKeywordRuleResponse
     | m.KeywordRuleResponse
     | m.MLSpamRuleResponse
     | m.MentionSpamRuleResponse
-    | m.UserProfileRuleResponse
-  ):
+    | m.UserProfileRuleResponse,
+    DiscordAPIError,
+  ]:
     """GET /guilds/{guild_id}/auto-moderation/rules/{rule_id}"""
     return await self.api.get_auto_moderation_rule(self.guild_id, rule_id)
 
@@ -1418,13 +1368,14 @@ class GuildRef:
     | Mapping[str, Any]
     | None = UNSET,
     reason: str | None = None,
-  ) -> (
+  ) -> Result[
     m.DefaultKeywordRuleResponse
     | m.KeywordRuleResponse
     | m.MLSpamRuleResponse
     | m.MentionSpamRuleResponse
-    | m.UserProfileRuleResponse
-  ):
+    | m.UserProfileRuleResponse,
+    DiscordAPIError,
+  ]:
     """PATCH /guilds/{guild_id}/auto-moderation/rules/{rule_id}"""
     return await self.api.update_auto_moderation_rule(
       self.guild_id,
@@ -1445,7 +1396,7 @@ class GuildRef:
     rule_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/auto-moderation/rules/{rule_id}"""
     return await self.api.delete_auto_moderation_rule(
       self.guild_id, rule_id, reason=reason
@@ -1453,7 +1404,7 @@ class GuildRef:
 
   async def soundboard_sounds(
     self,
-  ) -> m.ListGuildSoundboardSoundsResponse:
+  ) -> Result[m.ListGuildSoundboardSoundsResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/soundboard-sounds"""
     return await self.api.list_guild_soundboard_sounds(self.guild_id)
 
@@ -1466,7 +1417,7 @@ class GuildRef:
     emoji_id: int | str | None = UNSET,
     emoji_name: str | None = UNSET,
     reason: str | None = None,
-  ) -> m.SoundboardSoundResponse:
+  ) -> Result[m.SoundboardSoundResponse, DiscordAPIError]:
     """POST /guilds/{guild_id}/soundboard-sounds"""
     return await self.api.create_guild_soundboard_sound(
       self.guild_id,
@@ -1480,7 +1431,7 @@ class GuildRef:
 
   async def templates(
     self,
-  ) -> list[m.GuildTemplateResponse]:
+  ) -> Result[list[m.GuildTemplateResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/templates"""
     return await self.api.list_guild_templates(self.guild_id)
 
@@ -1490,7 +1441,7 @@ class GuildRef:
     name: str,
     description: str | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildTemplateResponse:
+  ) -> Result[m.GuildTemplateResponse, DiscordAPIError]:
     """POST /guilds/{guild_id}/templates"""
     return await self.api.create_guild_template(
       self.guild_id, name=name, description=description, reason=reason
@@ -1498,10 +1449,13 @@ class GuildRef:
 
   async def integrations(
     self,
-  ) -> list[
-    m.DiscordIntegrationResponse
-    | m.ExternalConnectionIntegrationResponse
-    | m.GuildSubscriptionIntegrationResponse
+  ) -> Result[
+    list[
+      m.DiscordIntegrationResponse
+      | m.ExternalConnectionIntegrationResponse
+      | m.GuildSubscriptionIntegrationResponse
+    ],
+    DiscordAPIError,
   ]:
     """GET /guilds/{guild_id}/integrations"""
     return await self.api.list_guild_integrations(self.guild_id)
@@ -1511,7 +1465,7 @@ class GuildRef:
     integration_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/integrations/{integration_id}"""
     return await self.api.delete_guild_integration(
       self.guild_id, integration_id, reason=reason
@@ -1522,7 +1476,7 @@ class GuildRef:
     application_id: int | str,
     *,
     with_localizations: bool | None = UNSET,
-  ) -> list[m.ApplicationCommandResponse]:
+  ) -> Result[list[m.ApplicationCommandResponse], DiscordAPIError]:
     """GET /applications/{application_id}/guilds/{guild_id}/commands"""
     return await self.api.list_guild_application_commands(
       application_id, self.guild_id, with_localizations=with_localizations
@@ -1558,7 +1512,7 @@ class GuildRef:
     handler: m.ApplicationCommandHandler | int | None = UNSET,
     type: m.ApplicationCommandType | int | None = UNSET,
     reason: str | None = None,
-  ) -> m.ApplicationCommandResponse:
+  ) -> Result[m.ApplicationCommandResponse, DiscordAPIError]:
     """POST /applications/{application_id}/guilds/{guild_id}/commands"""
     return await self.api.create_guild_application_command(
       application_id,
@@ -1583,7 +1537,7 @@ class GuildRef:
     body: Sequence[m.ApplicationCommandUpdateRequest | Mapping[str, Any]] | None,
     *,
     reason: str | None = None,
-  ) -> list[m.ApplicationCommandResponse]:
+  ) -> Result[list[m.ApplicationCommandResponse], DiscordAPIError]:
     """PUT /applications/{application_id}/guilds/{guild_id}/commands"""
     return await self.api.bulk_set_guild_application_commands(
       application_id, self.guild_id, body, reason=reason
@@ -1592,7 +1546,7 @@ class GuildRef:
   async def command_permissions(
     self,
     application_id: int | str,
-  ) -> list[m.CommandPermissionsResponse]:
+  ) -> Result[list[m.CommandPermissionsResponse], DiscordAPIError]:
     """GET /applications/{application_id}/guilds/{guild_id}/commands/permissions"""
     return await self.api.list_guild_application_command_permissions(
       application_id, self.guild_id
@@ -1604,7 +1558,7 @@ class GuildRef:
     invites_disabled_until: datetime | str | None = UNSET,
     dms_disabled_until: datetime | str | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildIncidentsDataResponse:
+  ) -> Result[m.GuildIncidentsDataResponse, DiscordAPIError]:
     """PUT /guilds/{guild_id}/incident-actions"""
     return await self.api.update_guild_incident_actions(
       self.guild_id,
@@ -1640,7 +1594,7 @@ class GuildRef:
     pinned: bool | None = UNSET,
     include_nsfw: bool | None = UNSET,
     channel_id: Sequence[int | str] | None = UNSET,
-  ) -> m.GuildSearchResponse | m.SearchIndexNotReadyResponse:
+  ) -> Result[m.GuildSearchResponse | m.SearchIndexNotReadyResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/messages/search"""
     return await self.api.guild_search(
       self.guild_id,
@@ -1677,7 +1631,7 @@ class GuildRef:
     limit: int | None = UNSET,
     before: int | str | None = UNSET,
     after: int | str | None = UNSET,
-  ) -> m.GuildJoinRequestsListResponse:
+  ) -> Result[m.GuildJoinRequestsListResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/requests"""
     return await self.api.get_guild_join_requests(
       self.guild_id, status=status, limit=limit, before=before, after=after
@@ -1694,7 +1648,7 @@ class MemberRef(_MemberExtras):
 
   async def get(
     self,
-  ) -> m.GuildMemberResponse:
+  ) -> Result[m.GuildMemberResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/members/{user_id}"""
     return await self.api.get_guild_member(self.guild_id, self.user_id)
 
@@ -1709,7 +1663,7 @@ class MemberRef(_MemberExtras):
     communication_disabled_until: datetime | str | None = UNSET,
     flags: int | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildMemberResponse:
+  ) -> Result[m.GuildMemberResponse, DiscordAPIError]:
     """PATCH /guilds/{guild_id}/members/{user_id}"""
     return await self.api.update_guild_member(
       self.guild_id,
@@ -1728,7 +1682,7 @@ class MemberRef(_MemberExtras):
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/members/{user_id}"""
     return await self.api.delete_guild_member(
       self.guild_id, self.user_id, reason=reason
@@ -1740,7 +1694,7 @@ class MemberRef(_MemberExtras):
     delete_message_seconds: int | None = UNSET,
     delete_message_days: int | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /guilds/{guild_id}/bans/{user_id}"""
     return await self.api.ban_user_from_guild(
       self.guild_id,
@@ -1754,7 +1708,7 @@ class MemberRef(_MemberExtras):
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/bans/{user_id}"""
     return await self.api.unban_user_from_guild(
       self.guild_id, self.user_id, reason=reason
@@ -1765,7 +1719,7 @@ class MemberRef(_MemberExtras):
     role_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PUT /guilds/{guild_id}/members/{user_id}/roles/{role_id}"""
     return await self.api.add_guild_member_role(
       self.guild_id, self.user_id, role_id, reason=reason
@@ -1776,7 +1730,7 @@ class MemberRef(_MemberExtras):
     role_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/members/{user_id}/roles/{role_id}"""
     return await self.api.delete_guild_member_role(
       self.guild_id, self.user_id, role_id, reason=reason
@@ -1784,7 +1738,7 @@ class MemberRef(_MemberExtras):
 
   async def voice_state(
     self,
-  ) -> m.VoiceStateResponse:
+  ) -> Result[m.VoiceStateResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/voice-states/{user_id}"""
     return await self.api.get_voice_state(self.guild_id, self.user_id)
 
@@ -1794,7 +1748,7 @@ class MemberRef(_MemberExtras):
     suppress: bool | None = UNSET,
     channel_id: int | str | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """PATCH /guilds/{guild_id}/voice-states/{user_id}"""
     return await self.api.update_voice_state(
       self.guild_id,
@@ -1815,7 +1769,7 @@ class RoleRef:
 
   async def get(
     self,
-  ) -> m.GuildRoleResponse:
+  ) -> Result[m.GuildRoleResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/roles/{role_id}"""
     return await self.api.get_guild_role(self.guild_id, self.role_id)
 
@@ -1831,7 +1785,7 @@ class RoleRef:
     icon: str | None = UNSET,
     unicode_emoji: str | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildRoleResponse:
+  ) -> Result[m.GuildRoleResponse, DiscordAPIError]:
     """PATCH /guilds/{guild_id}/roles/{role_id}"""
     return await self.api.update_guild_role(
       self.guild_id,
@@ -1851,7 +1805,7 @@ class RoleRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/roles/{role_id}"""
     return await self.api.delete_guild_role(self.guild_id, self.role_id, reason=reason)
 
@@ -1865,7 +1819,7 @@ class UserRef(_UserExtras):
 
   async def get(
     self,
-  ) -> m.UserResponse:
+  ) -> Result[m.UserResponse, DiscordAPIError]:
     """GET /users/{user_id}"""
     return await self.api.get_user(self.user_id)
 
@@ -1875,7 +1829,9 @@ class UserRef(_UserExtras):
     access_tokens: Sequence[str] | None = UNSET,
     nicks: Mapping[str, Any] | None = UNSET,
     reason: str | None = None,
-  ) -> m.PrivateChannelResponse | m.PrivateGroupChannelResponse:
+  ) -> Result[
+    m.PrivateChannelResponse | m.PrivateGroupChannelResponse, DiscordAPIError
+  ]:
     """POST /users/@me/channels"""
     return await self.api.create_dm(
       recipient_id=self.user_id, access_tokens=access_tokens, nicks=nicks, reason=reason
@@ -1892,7 +1848,7 @@ class EmojiRef:
 
   async def get(
     self,
-  ) -> m.EmojiResponse:
+  ) -> Result[m.EmojiResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/emojis/{emoji_id}"""
     return await self.api.get_guild_emoji(self.guild_id, self.emoji_id)
 
@@ -1902,7 +1858,7 @@ class EmojiRef:
     name: str | None = UNSET,
     roles: Sequence[int | str | None] | None = UNSET,
     reason: str | None = None,
-  ) -> m.EmojiResponse:
+  ) -> Result[m.EmojiResponse, DiscordAPIError]:
     """PATCH /guilds/{guild_id}/emojis/{emoji_id}"""
     return await self.api.update_guild_emoji(
       self.guild_id, self.emoji_id, name=name, roles=roles, reason=reason
@@ -1912,7 +1868,7 @@ class EmojiRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/emojis/{emoji_id}"""
     return await self.api.delete_guild_emoji(
       self.guild_id, self.emoji_id, reason=reason
@@ -1929,7 +1885,7 @@ class StickerRef:
 
   async def get(
     self,
-  ) -> m.GuildStickerResponse:
+  ) -> Result[m.GuildStickerResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/stickers/{sticker_id}"""
     return await self.api.get_guild_sticker(self.guild_id, self.sticker_id)
 
@@ -1940,7 +1896,7 @@ class StickerRef:
     tags: str | None = UNSET,
     description: str | None = UNSET,
     reason: str | None = None,
-  ) -> m.GuildStickerResponse:
+  ) -> Result[m.GuildStickerResponse, DiscordAPIError]:
     """PATCH /guilds/{guild_id}/stickers/{sticker_id}"""
     return await self.api.update_guild_sticker(
       self.guild_id,
@@ -1955,7 +1911,7 @@ class StickerRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/stickers/{sticker_id}"""
     return await self.api.delete_guild_sticker(
       self.guild_id, self.sticker_id, reason=reason
@@ -1975,11 +1931,12 @@ class ScheduledEventRef:
     guild_scheduled_event_id: int | str,
     *,
     with_user_count: bool | None = UNSET,
-  ) -> (
+  ) -> Result[
     m.ExternalScheduledEventResponse
     | m.StageScheduledEventResponse
-    | m.VoiceScheduledEventResponse
-  ):
+    | m.VoiceScheduledEventResponse,
+    DiscordAPIError,
+  ]:
     """GET /guilds/{guild_id}/scheduled-events/{guild_scheduled_event_id}"""
     return await self.api.get_guild_scheduled_event(
       self.guild_id, guild_scheduled_event_id, with_user_count=with_user_count
@@ -2001,11 +1958,12 @@ class ScheduledEventRef:
     recurrence_rule: m.RecurrenceRule | Mapping[str, Any] | None = UNSET,
     entity_metadata: m.EntityMetadataExternal | Mapping[str, Any] | None = UNSET,
     reason: str | None = None,
-  ) -> (
+  ) -> Result[
     m.ExternalScheduledEventResponse
     | m.StageScheduledEventResponse
-    | m.VoiceScheduledEventResponse
-  ):
+    | m.VoiceScheduledEventResponse,
+    DiscordAPIError,
+  ]:
     """PATCH /guilds/{guild_id}/scheduled-events/{guild_scheduled_event_id}"""
     return await self.api.update_guild_scheduled_event(
       self.guild_id,
@@ -2029,7 +1987,7 @@ class ScheduledEventRef:
     guild_scheduled_event_id: int | str,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /guilds/{guild_id}/scheduled-events/{guild_scheduled_event_id}"""
     return await self.api.delete_guild_scheduled_event(
       self.guild_id, guild_scheduled_event_id, reason=reason
@@ -2043,7 +2001,7 @@ class ScheduledEventRef:
     limit: int | None = UNSET,
     before: int | str | None = UNSET,
     after: int | str | None = UNSET,
-  ) -> list[m.ScheduledEventUserResponse]:
+  ) -> Result[list[m.ScheduledEventUserResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/scheduled-events/{guild_scheduled_event_id}/users"""
     return await self.api.list_guild_scheduled_event_users(
       self.guild_id,
@@ -2059,7 +2017,7 @@ class ScheduledEventRef:
     guild_scheduled_event_id: int | str,
     *,
     guild_scheduled_event_exception_ids: Sequence[int | str] | None = UNSET,
-  ) -> m.ScheduledEventUserCountResponse:
+  ) -> Result[m.ScheduledEventUserCountResponse, DiscordAPIError]:
     """GET /guilds/{guild_id}/scheduled-events/{guild_scheduled_event_id}/users/counts"""
     return await self.api.count_guild_scheduled_event_users(
       self.guild_id,
@@ -2081,11 +2039,12 @@ class WebhookRef:
 
   async def get(
     self,
-  ) -> (
+  ) -> Result[
     m.ApplicationIncomingWebhookResponse
     | m.ChannelFollowerWebhookResponse
-    | m.GuildIncomingWebhookResponse
-  ):
+    | m.GuildIncomingWebhookResponse,
+    DiscordAPIError,
+  ]:
     """GET /webhooks/{webhook_id}"""
     return await self.api.get_webhook(self.webhook_id)
 
@@ -2096,11 +2055,12 @@ class WebhookRef:
     avatar: str | None = UNSET,
     channel_id: int | str | None = UNSET,
     reason: str | None = None,
-  ) -> (
+  ) -> Result[
     m.ApplicationIncomingWebhookResponse
     | m.ChannelFollowerWebhookResponse
-    | m.GuildIncomingWebhookResponse
-  ):
+    | m.GuildIncomingWebhookResponse,
+    DiscordAPIError,
+  ]:
     """PATCH /webhooks/{webhook_id}"""
     return await self.api.update_webhook(
       self.webhook_id, name=name, avatar=avatar, channel_id=channel_id, reason=reason
@@ -2110,7 +2070,7 @@ class WebhookRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /webhooks/{webhook_id}"""
     return await self.api.delete_webhook(self.webhook_id, reason=reason)
 
@@ -2125,11 +2085,12 @@ class WebhookTokenRef:
 
   async def get(
     self,
-  ) -> (
+  ) -> Result[
     m.ApplicationIncomingWebhookResponse
     | m.ChannelFollowerWebhookResponse
-    | m.GuildIncomingWebhookResponse
-  ):
+    | m.GuildIncomingWebhookResponse,
+    DiscordAPIError,
+  ]:
     """GET /webhooks/{webhook_id}/{webhook_token}"""
     return await self.api.get_webhook_by_token(self.webhook_id, self.webhook_token)
 
@@ -2139,11 +2100,12 @@ class WebhookTokenRef:
     name: str | None = UNSET,
     avatar: str | None = UNSET,
     reason: str | None = None,
-  ) -> (
+  ) -> Result[
     m.ApplicationIncomingWebhookResponse
     | m.ChannelFollowerWebhookResponse
-    | m.GuildIncomingWebhookResponse
-  ):
+    | m.GuildIncomingWebhookResponse,
+    DiscordAPIError,
+  ]:
     """PATCH /webhooks/{webhook_id}/{webhook_token}"""
     return await self.api.update_webhook_by_token(
       self.webhook_id, self.webhook_token, name=name, avatar=avatar, reason=reason
@@ -2153,7 +2115,7 @@ class WebhookTokenRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /webhooks/{webhook_id}/{webhook_token}"""
     return await self.api.delete_webhook_by_token(
       self.webhook_id, self.webhook_token, reason=reason
@@ -2161,29 +2123,18 @@ class WebhookTokenRef:
 
   async def execute(
     self,
-    content: Draft | str | None = UNSET,
+    message: Draft | str | None = UNSET,
     *,
     wait: bool | None = UNSET,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
-    allowed_mentions: AllowedMentions
-    | m.MessageAllowedMentionsRequest
-    | Mapping[str, Any]
-    | None = UNSET,
-    components: Sequence[Buildable | Mapping[str, Any]] | None = UNSET,
-    attachments: Sequence[m.MessageAttachmentRequest | Mapping[str, Any]]
-    | None = UNSET,
     poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
-    tts: bool | None = UNSET,
-    flags: int | None = UNSET,
     username: str | None = UNSET,
     avatar_url: str | None = UNSET,
     thread_name: str | None = UNSET,
     applied_tags: Sequence[int | str] | None = UNSET,
-    files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /webhooks/{webhook_id}/{webhook_token}"""
     return await self.api.execute_webhook(
       self.webhook_id,
@@ -2191,19 +2142,12 @@ class WebhookTokenRef:
       wait=wait,
       thread_id=thread_id,
       with_components=with_components,
-      embeds=embeds,
-      allowed_mentions=allowed_mentions,
-      components=components,
-      attachments=attachments,
       poll=poll,
-      tts=tts,
-      flags=flags,
       username=username,
       avatar_url=avatar_url,
       thread_name=thread_name,
       applied_tags=applied_tags,
-      content=content,
-      files=files,
+      message=message,
       reason=reason,
     )
 
@@ -2212,7 +2156,7 @@ class WebhookTokenRef:
     message_id: int | str,
     *,
     thread_id: int | str | None = UNSET,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """GET /webhooks/{webhook_id}/{webhook_token}/messages/{message_id}"""
     return await self.api.get_webhook_message(
       self.webhook_id, self.webhook_token, message_id, thread_id=thread_id
@@ -2221,23 +2165,13 @@ class WebhookTokenRef:
   async def edit_message(
     self,
     message_id: int | str,
-    content: Draft | str | None = UNSET,
+    message: Draft | str | None = UNSET,
     *,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
-    allowed_mentions: AllowedMentions
-    | m.MessageAllowedMentionsRequest
-    | Mapping[str, Any]
-    | None = UNSET,
-    components: Sequence[Buildable | Mapping[str, Any]] | None = UNSET,
-    attachments: Sequence[m.MessageAttachmentRequest | Mapping[str, Any]]
-    | None = UNSET,
     poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
-    flags: int | None = UNSET,
-    files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /webhooks/{webhook_id}/{webhook_token}/messages/{message_id}"""
     return await self.api.update_webhook_message(
       self.webhook_id,
@@ -2245,14 +2179,8 @@ class WebhookTokenRef:
       message_id,
       thread_id=thread_id,
       with_components=with_components,
-      embeds=embeds,
-      allowed_mentions=allowed_mentions,
-      components=components,
-      attachments=attachments,
       poll=poll,
-      flags=flags,
-      content=content,
-      files=files,
+      message=message,
       reason=reason,
     )
 
@@ -2262,7 +2190,7 @@ class WebhookTokenRef:
     *,
     thread_id: int | str | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /webhooks/{webhook_id}/{webhook_token}/messages/{message_id}"""
     return await self.api.delete_webhook_message(
       self.webhook_id,
@@ -2276,7 +2204,7 @@ class WebhookTokenRef:
     self,
     *,
     thread_id: int | str | None = UNSET,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """GET /webhooks/{webhook_id}/{webhook_token}/messages/@original"""
     return await self.api.get_original_webhook_message(
       self.webhook_id, self.webhook_token, thread_id=thread_id
@@ -2284,37 +2212,21 @@ class WebhookTokenRef:
 
   async def edit_original_message(
     self,
-    content: Draft | str | None = UNSET,
+    message: Draft | str | None = UNSET,
     *,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    embeds: Sequence[Embed | m.RichEmbed | Mapping[str, Any]] | None = UNSET,
-    allowed_mentions: AllowedMentions
-    | m.MessageAllowedMentionsRequest
-    | Mapping[str, Any]
-    | None = UNSET,
-    components: Sequence[Buildable | Mapping[str, Any]] | None = UNSET,
-    attachments: Sequence[m.MessageAttachmentRequest | Mapping[str, Any]]
-    | None = UNSET,
     poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
-    flags: int | None = UNSET,
-    files: Sequence[Upload] | None = None,
     reason: str | None = None,
-  ) -> m.MessageResponse:
+  ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /webhooks/{webhook_id}/{webhook_token}/messages/@original"""
     return await self.api.update_original_webhook_message(
       self.webhook_id,
       self.webhook_token,
       thread_id=thread_id,
       with_components=with_components,
-      embeds=embeds,
-      allowed_mentions=allowed_mentions,
-      components=components,
-      attachments=attachments,
       poll=poll,
-      flags=flags,
-      content=content,
-      files=files,
+      message=message,
       reason=reason,
     )
 
@@ -2323,7 +2235,7 @@ class WebhookTokenRef:
     *,
     thread_id: int | str | None = UNSET,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /webhooks/{webhook_id}/{webhook_token}/messages/@original"""
     return await self.api.delete_original_webhook_message(
       self.webhook_id, self.webhook_token, thread_id=thread_id, reason=reason
@@ -2344,7 +2256,10 @@ class InviteRef:
     guild_scheduled_event_id: int | str | None = UNSET,
     target_channel_id: int | str | None = UNSET,
     target_message_id: int | str | None = UNSET,
-  ) -> m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse:
+  ) -> Result[
+    m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse,
+    DiscordAPIError,
+  ]:
     """GET /invites/{code}"""
     return await self.api.invite_resolve(
       self.code,
@@ -2358,7 +2273,10 @@ class InviteRef:
     self,
     *,
     reason: str | None = None,
-  ) -> m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse:
+  ) -> Result[
+    m.FriendInviteResponse | m.GroupDMInviteResponse | m.GuildInviteResponse,
+    DiscordAPIError,
+  ]:
     """DELETE /invites/{code}"""
     return await self.api.invite_revoke(self.code, reason=reason)
 
@@ -2373,7 +2291,7 @@ class CommandRef:
 
   async def get(
     self,
-  ) -> m.ApplicationCommandResponse:
+  ) -> Result[m.ApplicationCommandResponse, DiscordAPIError]:
     """GET /applications/{application_id}/commands/{command_id}"""
     return await self.api.get_application_command(self.application_id, self.command_id)
 
@@ -2405,7 +2323,7 @@ class CommandRef:
     integration_types: Sequence[m.ApplicationIntegrationType | int] | None = UNSET,
     handler: m.ApplicationCommandHandler | int | None = UNSET,
     reason: str | None = None,
-  ) -> m.ApplicationCommandResponse:
+  ) -> Result[m.ApplicationCommandResponse, DiscordAPIError]:
     """PATCH /applications/{application_id}/commands/{command_id}"""
     return await self.api.update_application_command(
       self.application_id,
@@ -2427,7 +2345,7 @@ class CommandRef:
     self,
     *,
     reason: str | None = None,
-  ) -> None:
+  ) -> Result[None, DiscordAPIError]:
     """DELETE /applications/{application_id}/commands/{command_id}"""
     return await self.api.delete_application_command(
       self.application_id, self.command_id, reason=reason

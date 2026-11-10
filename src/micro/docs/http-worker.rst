@@ -166,7 +166,7 @@ there is one, so you catch what you mean:
    except NotFound:
      pass                      # already gone
    except Forbidden as error:
-     await ctx.respond(f"I can't do that here: {error.message}", ephemeral=True)
+     await ctx.respond(Draft(f"I can't do that here: {error.message}", ephemeral=True))
 
 ``status`` is the HTTP status, ``code`` Discord's own error number (10008 "Unknown
 Message", 50013 "Missing Permissions"), ``message`` its description and ``body`` the

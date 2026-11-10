@@ -10,7 +10,7 @@ send it and that Discord returns when someone uses it. How you build the compone
 
    from pydantic import BaseModel
    from micro.discord.interactions import Components, CustomId, Modals
-   from micro.discord.ui import Button, Modal, TextInput
+   from micro.discord.ui import Button, Draft, Modal, TextInput
 
    class Ticket(BaseModel):
      id: int
@@ -22,11 +22,11 @@ send it and that Discord returns when someone uses it. How you build the compone
 
    @components.match(CLOSE)
    async def close(ctx: Interaction, ticket: Ticket) -> None:
-     await ctx.update_message(f"Ticket {ticket.id} closed.", components=[])
+     await ctx.update_message(Draft(f"Ticket {ticket.id} closed.", components=[]))
 
    @modals.match(NOTE)
    async def note(ctx: Interaction) -> None:
-     await ctx.respond(ctx.fields["text"], ephemeral=True)
+     await ctx.respond(Draft(ctx.fields["text"], ephemeral=True))
 
    Button("Close", custom_id=CLOSE.encode(Ticket(id=42)))
    Modal(NOTE.encode(), "Add a note", [TextInput("text", "Note", style="paragraph")])

@@ -47,9 +47,8 @@ from micro.discord.interactions import (
   RuntimeCommands,
   option,
 )
-from micro.discord.messages import reply_to
 from micro.discord.models.gateway import GatewayMessageCreateDispatchData
-from micro.discord.ui import Button, Modal, TextInput
+from micro.discord.ui import Button, Draft, Modal, TextInput
 from micro.gateway import GatewayWorker
 from micro.runtime import Runtime
 from micro.schemas import events
@@ -83,19 +82,24 @@ class App:
       events.MESSAGE_CREATE, when=all_of(ignore_bots, content_startswith("!ping"))
     )
     async def ping(message: GatewayMessageCreateDispatchData) -> None:
-      await reply_to(DiscordHTTPClient(service.runtime), message, "pong")
+      api = DiscordHTTPClient(service.runtime).api
+      (
+        await api.channel(message.channel_id).send(Draft("pong", reply_to=message.id))
+      ).unwrap()
 
     @commands.slash("hello", description="Say hello")
     async def hello(ctx: Interaction, name: str = "world") -> None:
       await ctx.respond(
-        f"Hello, {name}!",
-        components=[Button("Wave back", custom_id=WAVE.encode(Wave(name=name)))],
+        Draft(
+          f"Hello, {name}!",
+          components=[Button("Wave back", custom_id=WAVE.encode(Wave(name=name)))],
+        )
       )
 
     @components.match(WAVE)
     async def wave(ctx: Interaction, state: Wave) -> None:
       await ctx.respond(
-        f"{ctx.user.display_name} waves at {state.name}.", ephemeral=True
+        Draft(f"{ctx.user.display_name} waves at {state.name}.", ephemeral=True)
       )
 
     @commands.slash("feedback", description="Open a modal")
@@ -111,7 +115,7 @@ class App:
     @modals.match(FEEDBACK)
     async def got(ctx: Interaction) -> None:
       self.feedback.append(ctx.fields["text"])
-      await ctx.respond("Thanks!", ephemeral=True)
+      await ctx.respond(Draft("Thanks!", ephemeral=True))
 
     @commands.slash("slow", description="Defer, then answer")
     async def slow(ctx: Interaction) -> None:
@@ -773,6 +777,7 @@ async def ui_hooks_scenarios() -> None:
     Container,
     Label,
     Modal,
+    SelectOption,
     StringSelect,
     TextInput,
     hooks,
@@ -814,7 +819,8 @@ async def ui_hooks_scenarios() -> None:
       button.to_dict(),
     )
     tree: Any = Container(
-      ActionRow(Button("x", custom_id="x")), ActionRow(StringSelect("pick", ["a"]))
+      ActionRow(Button("x", custom_id="x")),
+      ActionRow(StringSelect("pick", [SelectOption("a")])),
     ).to_dict()
     ids = [c["custom_id"] for row in tree["components"] for c in row["components"]]
     check("nested components are intercepted too", ids == ["o.x.i", "o.pick.i"], ids)
@@ -841,7 +847,7 @@ async def ui_hooks_scenarios() -> None:
     )
     check(
       "only= limits which components it sees",
-      StringSelect("p", ["a"]).to_dict()["custom_id"] == "p.i",
+      StringSelect("p", [SelectOption("a")]).to_dict()["custom_id"] == "p.i",
     )
   check(
     "scoped() restores the registered middleware",
@@ -862,6 +868,7 @@ async def ui_limits_scenarios() -> None:
     MediaGallery,
     MediaItem,
     Section,
+    SelectOption,
     TextDisplay,
     TextInput,
     Thumbnail,
@@ -884,7 +891,12 @@ async def ui_limits_scenarios() -> None:
     "counts accumulate up the tree as it is built",
     box().components_count == 7 and box().text_count == 1,
   )
-  section = Section("a", "bb", "ccc", accessory=Thumbnail("https://x/y.png"))
+  section = Section(
+    TextDisplay("a"),
+    TextDisplay("bb"),
+    TextDisplay("ccc"),
+    accessory=Thumbnail("https://x/y.png"),
+  )
   check(
     "a section counts its texts and accessory, and their text",
     section.components_count == 5 and section.text_count == 6,
@@ -902,7 +914,9 @@ async def ui_limits_scenarios() -> None:
     Container(box(), section).components_count == 13,  # pyright: ignore[reportArgumentType]  # nesting is Discord-invalid; only counting is checked
   )
   row = ActionRow(button(1), button(2), button(3))
-  select_row = ActionRow(ui.StringSelect("pick", ["a", "b"]))
+  select_row = ActionRow(
+    ui.StringSelect("pick", [SelectOption("a"), SelectOption("b")])
+  )
   check(
     "a row reads count, max and remaining",
     (row.count, row.max, row.remaining) == (3, 5, 2),
@@ -917,7 +931,9 @@ async def ui_limits_scenarios() -> None:
   check(
     "and a select plus a button is 6 of 5",
     "slots is 6"
-    in refused(lambda: ActionRow(ui.StringSelect("p", ["a"]), button(1)).to_dict()),
+    in refused(
+      lambda: ActionRow(ui.StringSelect("p", [SelectOption("a")]), button(1)).to_dict()
+    ),
   )
   check(
     "max is readable on the class",
@@ -1125,7 +1141,7 @@ async def embed_scenarios() -> None:
     "D",
     colour="teal",
     url="https://e.com",
-    fields=[("a", "b"), ("c", "d", True), EmbedField("e", "f")],
+    fields=[EmbedField("a", "b"), EmbedField("c", "d", True), EmbedField("e", "f")],
     footer=EmbedFooter("foot", chart),
     author=EmbedAuthor("Ada", "https://e.com/ada", "https://e.com/ada.png"),
     image=chart,
@@ -1150,33 +1166,48 @@ async def embed_scenarios() -> None:
     wire,
   )
   check(
-    "footer and author can be plain strings",
-    Embed(footer="f", author="a").to_dict()
+    "a footer or author without an icon has only its text",
+    Embed(footer=EmbedFooter("f"), author=EmbedAuthor("a")).to_dict()
     == {"footer": {"text": "f"}, "author": {"name": "a"}},
   )
   check(
     "it remembers the uploads it shows, once",
     full.uploads == (chart, chart) and ui.uploads_in(embeds=[full]) == (chart,),
   )
-  more = full.add_field("g", "h")
+  more = replace(full, fields=(*full.fields, EmbedField("g", "h")))
   check(
-    "an Embed is immutable; add_field and replace give a copy",
+    "an Embed is immutable; dataclasses.replace gives a changed copy",
     len(full.fields) == 3
     and len(more.fields) == 4
     and replace(full, title="N").title == "N"
-    and full.title == "T",
+    and full.title == "T"
+    and replace(full, title="N").footer == full.footer,
   )
   check(
     "its length counts what Discord counts, in UTF-16 units",
-    Embed("ab", "😀", fields=[("n", "v")], footer="ff", author="aa").length
+    Embed(
+      "ab",
+      "😀",
+      fields=[EmbedField("n", "v")],
+      footer=EmbedFooter("ff"),
+      author=EmbedAuthor("aa"),
+    ).length
     == 2 + 2 + 2 + 2 + 2,
-    Embed("ab", "😀", fields=[("n", "v")], footer="ff", author="aa").length,
+    Embed(
+      "ab",
+      "😀",
+      fields=[EmbedField("n", "v")],
+      footer=EmbedFooter("ff"),
+      author=EmbedAuthor("aa"),
+    ).length,
   )
   check(
     "limits are checked when it is serialized",
     "title is 257" in refused(lambda: Embed("x" * 257).to_dict())
-    and "fields is 26" in refused(lambda: Embed(fields=[("a", "b")] * 26).to_dict())
-    and "value is 1025" in refused(lambda: Embed(fields=[("a", "x" * 1025)]).to_dict())
+    and "fields is 26"
+    in refused(lambda: Embed(fields=[EmbedField("a", "b")] * 26).to_dict())
+    and "value is 1025"
+    in refused(lambda: Embed(fields=[EmbedField("a", "x" * 1025)]).to_dict())
     and "description is 4097"
     in refused(lambda: Embed(description="x" * 4097).to_dict()),
   )
@@ -1299,15 +1330,22 @@ async def draft_scenarios() -> None:
     draft == replace(draft)
     and replace(draft, content="yo").content == "yo"
     and draft.content == "hi"
-    and len(draft.add_embed(Embed("2")).embeds or ()) == 2
-    and draft.add_file(Upload("a.txt", b"a")).files[-1].filename == "a.txt",
+    and len(replace(draft, embeds=(*(draft.embeds or ()), Embed("2"))).embeds or ())
+    == 2,
   )
   check(
-    "Draft.of passes a Draft through and refuses a mix",
+    "Draft.of passes a Draft through and turns a string into a text-only one",
     Draft.of(draft) is draft
-    and Draft.of("x", ephemeral=True).ephemeral
-    and _raises(lambda: Draft.of(draft, ephemeral=True), TypeError) != ""
-    and _raises(lambda: Draft.of(draft, embeds=[Embed("x")]), TypeError) != "",
+    and Draft.of("x") == Draft("x")
+    and Draft.of(None) == Draft(),
+  )
+  kept = Draft(keep=["555", 7], files=[Upload("n.txt", b"n")]).to_dict()
+  check(
+    "keep= lists the attachments that stay on an edit, then the new files",
+    kept["attachments"]
+    == [{"id": "555"}, {"id": "7"}, {"id": "0", "filename": "n.txt"}]
+    and Draft(keep=[]).to_dict()["attachments"] == [],
+    kept.get("attachments"),
   )
   with ui.hooks.scoped():
 
@@ -3238,11 +3276,16 @@ async def ui_scenarios() -> None:
   # --- message components, every field
   case(
     "button primary",
-    Button("Go", custom_id="a", style="primary", emoji="🙂", disabled=True, id=1),
+    Button(
+      "Go", custom_id="a", style="primary", emoji=Emoji.parse("🙂"), disabled=True, id=1
+    ),
   )
   for st in ("secondary", "success", "danger"):
     case(f"button {st}", Button("x", custom_id="a", style=st))
-  case("button custom emoji", Button("x", custom_id="a", emoji="<a:wave:1234567890>"))
+  case(
+    "button custom emoji",
+    Button("x", custom_id="a", emoji=Emoji.parse("<a:wave:1234567890>")),
+  )
   case("button link", Button("Docs", url="https://example.com/x", emoji=Emoji("📖")))
   case("button premium", Button(sku_id=123456789012345678))
   case(
@@ -3250,9 +3293,9 @@ async def ui_scenarios() -> None:
     ActionRow(*[Button(str(i), custom_id=f"b{i}") for i in range(5)], id=2),
   )
   opts = [
-    SelectOption("A", "a", "first", True, "🅰"),
-    "b",
-    SelectOption("C", "c", emoji="<:c:123456789>"),
+    SelectOption("A", "a", "first", True, Emoji.parse("🅰")),
+    SelectOption("b"),
+    SelectOption("C", "c", emoji=Emoji.parse("<:c:123456789>")),
   ]
   case(
     "string select",
@@ -3286,16 +3329,21 @@ async def ui_scenarios() -> None:
   case(
     "thumbnail",
     Section(
-      "a",
-      "b",
+      TextDisplay("a"),
+      TextDisplay("b"),
       TextDisplay("c"),
       accessory=Thumbnail("https://e.com/i.png", "alt", True),
     ),
   )
-  case("section + button", Section("click", accessory=Button("Go", custom_id="x")))
+  case(
+    "section + button",
+    Section(TextDisplay("click"), accessory=Button("Go", custom_id="x")),
+  )
   case(
     "media gallery",
-    MediaGallery("https://e.com/a.png", MediaItem("attachment://b.png", "desc", True)),
+    MediaGallery(
+      MediaItem("https://e.com/a.png"), MediaItem("attachment://b.png", "desc", True)
+    ),
   )
   case("file", File("attachment://report.pdf", spoiler=True))
   case("separator", [Separator(), Separator(divider=False, spacing="large")])
@@ -3304,8 +3352,8 @@ async def ui_scenarios() -> None:
     Container(
       TextDisplay("hello"),
       Separator(),
-      Section("s", accessory=Thumbnail("https://e.com/i.png")),
-      MediaGallery("https://e.com/a.png"),
+      Section(TextDisplay("s"), accessory=Thumbnail("https://e.com/i.png")),
+      MediaGallery(MediaItem("https://e.com/a.png")),
       File("attachment://f.txt"),
       ActionRow(Button("b", custom_id="b")),
       Button("loose", custom_id="l"),
@@ -3334,7 +3382,9 @@ async def ui_scenarios() -> None:
   )
   case(
     "modal string select",
-    Label("Pick", StringSelect("p", ["x", "y"], required=True)),
+    Label(
+      "Pick", StringSelect("p", [SelectOption("x"), SelectOption("y")], required=True)
+    ),
     modal=True,
   )
   case("modal user select", Label("User", UserSelect("u", defaults=[1])), modal=True)
@@ -3358,13 +3408,20 @@ async def ui_scenarios() -> None:
     "modal radio",
     Label(
       "One",
-      RadioGroup("rg", [GroupOption("A", "a", "d", True), "b", "c"], required=True),
+      RadioGroup(
+        "rg",
+        [GroupOption("A", "a", "d", True), GroupOption("b"), GroupOption("c")],
+        required=True,
+      ),
     ),
     modal=True,
   )
   case(
     "modal checkbox group",
-    Label("Many", CheckboxGroup("cg", ["a", GroupOption("B", "b")], 0, 2, False)),
+    Label(
+      "Many",
+      CheckboxGroup("cg", [GroupOption("a"), GroupOption("B", "b")], 0, 2, False),
+    ),
     modal=True,
   )
   case("modal checkbox", Label("Agree", Checkbox("ck", default=True)), modal=True)
@@ -3377,7 +3434,7 @@ async def ui_scenarios() -> None:
       TextDisplay("intro"),
       Label("Name", TextInput("n")),
       Label("Role", RoleSelect("r")),
-      Label("Opts", CheckboxGroup("c", ["a", "b"])),
+      Label("Opts", CheckboxGroup("c", [GroupOption("a"), GroupOption("b")])),
       Label("Go?", Checkbox("g")),
     ],
   )
@@ -3554,6 +3611,7 @@ async def ui_scenarios() -> None:
 async def api_scenarios() -> None:
   print("api: every operation as a method, checked on the wire")
   import inspect
+  from datetime import UTC, datetime
   from email import message_from_bytes
   from email.policy import default as email_policy
 
@@ -3580,7 +3638,8 @@ async def api_scenarios() -> None:
     positional = [
       n
       for n, p in params.items()
-      if n not in ("self", "body", "content") and p.kind is p.POSITIONAL_OR_KEYWORD
+      if n not in ("self", "body", "content", "message")
+      and p.kind is p.POSITIONAL_OR_KEYWORD
     ]
     if positional != list(op.path_fields):
       gaps.append(f"{op.id}: positional {positional} != {list(op.path_fields)}")
@@ -3593,6 +3652,12 @@ async def api_scenarios() -> None:
         for name, info in _body_fields(request["body"].annotation).items()
         if "root" not in name and not (info.alias or "").startswith("files[")
       }
+    if "body" in request and {"embeds", "components"} <= wanted:
+      # A message operation takes a Draft for everything a Draft carries.
+      wanted -= {"content", "embeds", "components", "allowed_mentions", "tts", "flags"}
+      wanted -= {"message_reference", "attachments"}
+      if "message" not in params:
+        gaps.append(f"{op.id}: no message=")
     for name in wanted:
       if name not in params and name + "_" not in params:
         gaps.append(f"{op.id}: {name} missing")
@@ -3741,19 +3806,21 @@ async def api_scenarios() -> None:
         sent = (
           await api.create_message(
             5,
-            content="@everyone hello",
-            embeds=[
-              ui.Embed(
-                "T",
-                "D",
-                timestamp="2024-01-01T00:00:00+00:00",
-                footer=ui.EmbedFooter("f", "https://e.com/i.png"),
-              )
-            ],
-            components=[
-              ui.Button("Go", custom_id="go"),
-              ui.StringSelect("s", ["a", "b"]),
-            ],
+            ui.Draft(
+              "@everyone hello",
+              embeds=[
+                ui.Embed(
+                  "T",
+                  "D",
+                  timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                  footer=ui.EmbedFooter("f", "https://e.com/i.png"),
+                )
+              ],
+              components=[
+                ui.Button("Go", custom_id="go"),
+                ui.StringSelect("s", [ui.SelectOption("a"), ui.SelectOption("b")]),
+              ],
+            ),
           )
         ).unwrap()
         call = seen[-1]
@@ -3780,7 +3847,10 @@ async def api_scenarios() -> None:
         )
         (
           await api.create_message(
-            5, components=[ui.Container(ui.TextDisplay("hi"), accent_colour=0xFF0000)]
+            5,
+            ui.Draft(
+              components=[ui.Container(ui.TextDisplay("hi"), accent_colour=0xFF0000)]
+            ),
           )
         ).unwrap()
         body = json_of(seen[-1])
@@ -3792,12 +3862,14 @@ async def api_scenarios() -> None:
         (
           await api.create_message(
             5,
-            content="with files",
-            embeds=[ui.Embed("T")],
-            files=[
-              Upload("cat.png", b"\x89PNG-data", "image/png"),
-              Upload("notes.txt", b"plain"),
-            ],
+            ui.Draft(
+              "with files",
+              embeds=[ui.Embed("T")],
+              files=[
+                Upload("cat.png", b"\x89PNG-data", "image/png"),
+                Upload("notes.txt", b"plain"),
+              ],
+            ),
             reason="because",
           )
         ).unwrap()
@@ -3830,7 +3902,7 @@ async def api_scenarios() -> None:
           call["headers"]["x-audit-log-reason"] == "because",
         )
 
-        (await api.update_message(5, 9, content="edited")).unwrap()
+        (await api.update_message(5, 9, "edited")).unwrap()
         call = seen[-1]
         check(
           "update_message: PATCH with only what you passed",
@@ -3919,13 +3991,12 @@ async def api_scenarios() -> None:
           403,
           {"code": 50013, "message": "Missing Permissions"},
         )
-        try:
-          await api.ban_user_from_guild(7, 8, delete_message_seconds=60, reason="r")
-          caught = None
-        except DiscordAPIError as error:
-          caught = error
+        banned = await api.ban_user_from_guild(
+          7, 8, delete_message_seconds=60, reason="r"
+        )
+        caught = banned.error if isinstance(banned, Err) else None
         check(
-          "a Discord error raises DiscordAPIError with the status and body",
+          "a Discord error comes back as an Err holding the DiscordAPIError, with the status and body",
           caught is not None
           and caught.status == 403
           and isinstance(caught.body, dict)
@@ -3936,7 +4007,9 @@ async def api_scenarios() -> None:
         from datetime import UTC
         from datetime import datetime as when
 
-        (await api.channel(5).send("via ref", embeds=[ui.Embed("E")])).unwrap()
+        (
+          await api.channel(5).send(ui.Draft("via ref", embeds=[ui.Embed("E")]))
+        ).unwrap()
         check(
           "api.channel(5).send: POST to that channel",
           seen[-1]["method"] == "POST"
@@ -3946,7 +4019,7 @@ async def api_scenarios() -> None:
         (await api.message(5, 9).reply("yo")).unwrap()
         check(
           "message.reply sets message_reference to the message",
-          json_of(seen[-1])["message_reference"] == {"message_id": "9"}
+          json_of(seen[-1])["message_reference"]["message_id"] == "9"
           and seen[-1]["path"] == "/channels/5/messages",
           json_of(seen[-1]),
         )
@@ -4019,7 +4092,7 @@ async def api_scenarios() -> None:
           and sent_dm["path"] == "/channels/55/messages",
           (opened["path"], sent_dm["path"]),
         )
-        await api.webhook_token(3, "tok").execute(content="hook", wait=True)
+        (await api.webhook_token(3, "tok").execute("hook", wait=True)).unwrap()
         check(
           "webhook_token(...).execute: id and token in the path, query kept",
           seen[-1]["path"] == "/webhooks/3/tok"
@@ -4067,7 +4140,7 @@ async def api_scenarios() -> None:
 
         before = len(seen)
         try:
-          await api.create_message(5, tts="maybe")  # type: ignore[arg-type]
+          await api.create_message(5, enforce_nonce="maybe")  # type: ignore[arg-type]
           refused = False
         except ValidationError:
           refused = True
@@ -4140,7 +4213,7 @@ async def api_scenarios() -> None:
 
         picture = Upload("cat.png", b"\x89PNG", "image/png")
         ctx = interaction()
-        await ctx.respond("look", files=[picture], ephemeral=True)
+        await ctx.respond(Draft("look", files=[picture], ephemeral=True))
         payload, found = multipart(seen[-1])
         check(
           "respond(files=...) uploads with the first response",
@@ -4153,7 +4226,7 @@ async def api_scenarios() -> None:
           (seen[-1]["path"], payload),
         )
         answers["POST /webhooks/100/tok"] = (200, message)
-        await ctx.respond("more", files=[picture])
+        await ctx.respond(Draft("more", files=[picture]))
         payload, found = multipart(seen[-1])
         check(
           "a follow-up carries files",
@@ -4166,7 +4239,7 @@ async def api_scenarios() -> None:
         ctx = interaction()
         await ctx.defer(thinking=True, ephemeral=True)
         await ctx.respond(
-          components=[ui.Container(ui.TextDisplay("done"))], ephemeral=True
+          Draft(components=[ui.Container(ui.TextDisplay("done"))], ephemeral=True)
         )
         body = json_of(seen[-1])
         check(
@@ -4185,13 +4258,17 @@ async def api_scenarios() -> None:
         chart = Upload("chart.png", b"png", description="Sales by week")
         ctx = interaction()
         await ctx.respond(
-          components=[
-            ui.Container(
-              ui.Section("Sales", accessory=ui.Thumbnail(chart)),
-              ui.MediaGallery(chart, Upload("b.png", b"b", spoiler=True)),
-              ui.File(Upload.text("log.txt", "all good")),
-            )
-          ]
+          Draft(
+            components=[
+              ui.Container(
+                ui.Section(ui.TextDisplay("Sales"), accessory=ui.Thumbnail(chart)),
+                ui.MediaGallery(
+                  ui.MediaItem(chart), ui.MediaItem(Upload("b.png", b"b", spoiler=True))
+                ),
+                ui.File(Upload.text("log.txt", "all good")),
+              )
+            ]
+          )
         )
         payload, found = multipart(seen[-1])
         inner = payload["data"]["components"][0]["components"]
@@ -4216,7 +4293,7 @@ async def api_scenarios() -> None:
           payload["data"].get("attachments"),
         )
         ctx = interaction()
-        await ctx.respond(embeds=[ui.Embed("T", image=chart)])
+        await ctx.respond(Draft(embeds=[ui.Embed("T", image=chart)]))
         payload, found = multipart(seen[-1])
         check(
           "an embed's picture can be an Upload too",
@@ -4230,7 +4307,9 @@ async def api_scenarios() -> None:
         except ValueError:
           clash = True
         check("two different files under one name are refused", clash)
-        await ctx.edit_response("v2", files=[Upload("new.txt", b"n")], keep=["555"])
+        await ctx.edit_response(
+          Draft("v2", files=[Upload("new.txt", b"n")], keep=["555"])
+        )
         payload, found = multipart(seen[-1])
         check(
           "an edit says which existing files stay, and adds the new ones",
@@ -4238,7 +4317,11 @@ async def api_scenarios() -> None:
           and "files[0]" in found,
           payload,
         )
-        (await api.create_message(5, components=[ui.MediaGallery(chart)])).unwrap()
+        (
+          await api.create_message(
+            5, ui.Draft(components=[ui.MediaGallery(ui.MediaItem(chart))])
+          )
+        ).unwrap()
         payload, found = multipart(seen[-1])
         check(
           "the API methods attach shown uploads the same way",
@@ -4262,12 +4345,6 @@ async def api_scenarios() -> None:
           and "files[0]" in found,
           payload,
         )
-        try:
-          await ctx.respond(ui.Draft("x"), ephemeral=True)
-          mixed = False
-        except TypeError:
-          mixed = True
-        check("a Draft and loose pieces together are refused", mixed)
         await api.create_message(5, ui.Draft("api draft", embeds=[ui.Embed("E")]))
         check(
           "api.create_message accepts a Draft as its content",
@@ -4275,19 +4352,15 @@ async def api_scenarios() -> None:
           and json_of(seen[-1])["embeds"][0]["title"] == "E",
           json_of(seen[-1]),
         )
-        await api.create_message(5, ui.Draft(components=[ui.MediaGallery(chart)]))
+        await api.create_message(
+          5, ui.Draft(components=[ui.MediaGallery(ui.MediaItem(chart))])
+        )
         payload, found = multipart(seen[-1])
         check(
           "a Draft's uploads travel with the API call",
           "files[0]" in found and payload["flags"] & ui.IS_COMPONENTS_V2,
           payload,
         )
-        try:
-          await api.create_message(5, ui.Draft("x"), embeds=[ui.Embed("y")])
-          mixed = False
-        except TypeError:
-          mixed = True
-        check("the API refuses a Draft mixed with pieces too", mixed)
         (await api.channel(5).send(ui.Draft("via ref", reply_to=9))).unwrap()
         check(
           "channel.send takes a Draft",
@@ -4308,12 +4381,8 @@ async def api_scenarios() -> None:
         # A gateway error is retried only where sending twice cannot act twice.
         answers["GET /guilds/777"] = (504, {"message": "upstream"})
         before = len(seen)
-        try:
-          await api.guild(777).get()
-        except DiscordAPIError as error:
-          gave_up = error.status == 504
-        else:
-          gave_up = False
+        late_gateway = await api.guild(777).get()
+        gave_up = isinstance(late_gateway, Err) and late_gateway.error.status == 504
         check(
           "a 504 on a GET is retried (it is idempotent)",
           gave_up and len(seen) - before == 4,
@@ -4321,7 +4390,7 @@ async def api_scenarios() -> None:
         )
         answers["POST /channels/777/messages"] = (504, {"message": "upstream"})
         before = len(seen)
-        refused = await api.create_message(777, content="once")
+        refused = await api.create_message(777, "once")
         gave_up = isinstance(refused, Err) and refused.error.status == 504
         check(
           "a 504 on a POST is not: it may have been carried out",
@@ -4373,7 +4442,7 @@ async def api_scenarios() -> None:
 
         held = await runtime.nats.subscribe("test.inline", cb=on_inline)
         ctx = interaction(**{REPLY_KEY: "test.inline"})
-        await ctx.respond("over http", files=[picture], ephemeral=True)
+        await ctx.respond(Draft("over http", files=[picture], ephemeral=True))
         await runtime.nats.flush()
         payload, found = multipart(seen[-1])
         check(

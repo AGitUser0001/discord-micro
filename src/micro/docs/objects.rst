@@ -56,7 +56,7 @@ channel).
    from micro.discord.permissions import Permissions
 
    if not ctx.member.permissions.allows(Permissions.MANAGE_MESSAGES):
-     await ctx.respond("You need Manage Messages.", ephemeral=True)
+     await ctx.respond(Draft("You need Manage Messages.", ephemeral=True))
 
    needed = Permissions.KICK_MEMBERS | Permissions.BAN_MEMBERS
    needed in role.permissions            # exactly these bits

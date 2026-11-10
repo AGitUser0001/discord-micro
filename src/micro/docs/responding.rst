@@ -9,7 +9,7 @@ interaction has already sent.
 
 .. code-block:: python
 
-   await ctx.respond("hi", ephemeral=True, embeds=[...], components=[...])
+   await ctx.respond(Draft("hi", ephemeral=True, embeds=[...], components=[...]))
    await ctx.defer()                       # button: silent, update mode. Command: "thinking..."
    await ctx.defer(thinking=True)          # button: "thinking..." (message mode)
    await ctx.edit_response("changed")
@@ -52,10 +52,15 @@ calls raise :class:`InteractionExpired`.
 A message as a value
 --------------------
 
-Anything that takes ``content, embeds, components, ...`` also takes a :class:`Draft` in the
-place of ``content``: ``await ctx.respond(Draft("hi", embeds=[...], ephemeral=True))``. It is the
-same message held as data, so you can build it away from the handler, test it, and reuse
-it (:doc:`ui`). Not both: a ``Draft`` plus loose pieces is a ``TypeError``.
+A message is a :class:`Draft` (:doc:`ui`): ``ctx.respond``, ``edit_response`` and
+``update_message`` each take one, or a plain string for text only. There is no other way to
+pass embeds, components, files or ``ephemeral``, so a message is always one value you can
+build away from the handler, test, and reuse.
+
+.. code-block:: python
+
+   await ctx.respond("hi")
+   await ctx.respond(Draft("hi", ephemeral=True, embeds=[Embed("T")]))
 
 Files
 -----
@@ -66,20 +71,22 @@ to spell.
 
 .. code-block:: python
 
-   from micro.discord.ui import Embed, File, MediaGallery, Section, Thumbnail, Upload
+   from micro.discord.ui import (
+     Draft, Embed, File, MediaGallery, MediaItem, Section, TextDisplay, Thumbnail, Upload,
+   )
 
    chart = Upload("chart.png", png_bytes, description="Sales by week")
 
-   await ctx.respond(components=[MediaGallery(chart)])                  # a picture
-   await ctx.respond(components=[Section("Sales", accessory=Thumbnail(chart))])
-   await ctx.respond(components=[File(Upload.text("log.txt", log))])    # a download
-   await ctx.respond(embeds=[Embed("Sales", image=chart)])              # in an embed
+   await ctx.respond(Draft(components=[MediaGallery(MediaItem(chart))]))  # a picture
+   await ctx.respond(Draft(components=[Section(TextDisplay("Sales"), accessory=Thumbnail(chart))]))
+   await ctx.respond(Draft(components=[File(Upload.text("log.txt", log))]))   # a download
+   await ctx.respond(Draft(embeds=[Embed("Sales", image=chart)]))         # in an embed
 
-A file that is only attached, not shown, goes in ``files=``:
+A file that is only attached, not shown, goes in the draft's ``files``:
 
 .. code-block:: python
 
-   await ctx.respond("Here you go.", files=[Upload.from_path("report.pdf")])
+   await ctx.respond(Draft("Here you go.", files=[Upload.from_path("report.pdf")]))
 
 ``Upload.text(name, string)``, ``Upload.json(name, value)`` and ``Upload.from_path(path)``
 build one from what you have. ``description=`` is its alt text, ``spoiler=True`` hides it
@@ -87,22 +94,20 @@ behind a click. The same ``Upload`` used in several places is sent once; two dif
 files under one name are refused, before anything is sent.
 
 Files work on the first response, the answer to a deferral, follow-ups and edits. On an
-edit (``edit_response``, ``update_message``) new files are **added** and the ones already
-there stay; ``keep=`` says otherwise:
+edit new files are **added** and the ones already there stay; ``keep`` says otherwise:
 
 .. code-block:: python
 
-   await ctx.update_message(components=[MediaGallery(new_chart)], keep=[])   # replace all
-   await ctx.edit_response("trimmed", keep=[ctx.message.attachments[0]])     # keep one
+   await ctx.update_message(Draft(components=[MediaGallery(MediaItem(new_chart))], keep=[]))    # replace all
+   await ctx.edit_response(Draft("trimmed", keep=[ctx.message.attachments[0]]))      # keep one
 
-(Alt text on a file added by an edit is sent only together with ``keep=``, because naming
+(Alt text on a file added by an edit is sent only together with ``keep``, because naming
 the files is what tells Discord which ones the message has.)
 
 An interaction received over HTTP (:doc:`endpoint`) is answered in a JSON reply that
 cannot carry files, so there ``respond`` acknowledges in that reply and sends the message
-with its files straight after; nothing changes in your code. ``micro.discord.messages.send``
-and every message method of the API (``channel.send``, ``create_message``, ...) attach
-shown uploads the same way.
+with its files straight after; nothing changes in your code. Every message method of the API
+(``channel.send``, ``create_message``, ...) attaches shown uploads the same way.
 
 Low-level calls
 ---------------

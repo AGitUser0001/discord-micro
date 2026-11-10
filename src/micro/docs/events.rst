@@ -79,19 +79,19 @@ Discord sends one guild's events in order, but replicas and retries do not prese
 ``Service("x", ordered_by_guild=True)`` runs one guild's events one at a time, in order,
 within each replica.
 
-Sending replies
----------------
+Replying to an event
+--------------------
 
-The helpers in ``micro.discord.messages`` answer an event's message through the
-:doc:`http-worker`, with the safe mention defaults of :doc:`api`:
+Send through the API like anywhere else (:doc:`api`); a ``Draft`` carries the reply, with
+safe mention defaults:
 
 .. code-block:: python
 
    from micro.discord import DiscordHTTPClient
-   from micro.discord.messages import reply_to, send
+   from micro.discord.ui import AllowedMentions, Draft
 
-   await reply_to(DiscordHTTPClient(service.runtime), message, "pong")
-   await send(http, channel_id, "Hi <@1>", allowed_mentions=AllowedMentions.only(users=[1]))
+   api = DiscordHTTPClient(service.runtime).api
+   (await api.channel(message.channel_id).send(Draft("pong", reply_to=message.id))).unwrap()
 
 Reference
 ---------
@@ -108,5 +108,3 @@ Reference
    micro.discord.filters.in_guild
    micro.discord.filters.not_from
    micro.discord.filters.Predicate
-   micro.discord.messages.reply_to
-   micro.discord.messages.send

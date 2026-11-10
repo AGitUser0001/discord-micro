@@ -3,7 +3,7 @@
     @components.use
     async def staff_only(ctx, next, end):
       if not is_staff(ctx.interaction):
-        await ctx.interaction.respond("Staff only.", ephemeral=True)
+        await ctx.interaction.respond(Draft("Staff only.", ephemeral=True))
         return await end()
       await next()
 

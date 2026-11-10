@@ -10,11 +10,35 @@ the token are handled for you.
 .. code-block:: python
 
    api = ctx.api
-   message = (await api.create_message(channel_id, "hi", embeds=[Embed("T", "D")])).unwrap()
-   await api.update_message(channel_id, message.id, content="edited")
-   await api.create_message(channel_id, "see attached", files=[Upload("report.pdf", data)])
+   sent = await api.create_message(channel_id, Draft("hi", embeds=[Embed("T", "D")]))
+   message = sent.unwrap()                                   # or match on Ok / Err
+   await api.update_message(channel_id, message.id, "edited")
+   await api.create_message(channel_id, Draft("see attached", files=[Upload("report.pdf", data)]))
    await api.ban_user_from_guild(guild_id, user_id, delete_message_seconds=3600, reason="spam")
    await api.update_channel(channel_id, topic=None)          # None is sent as null
+
+Results
+-------
+
+**Every method returns a** :class:`Result`: an :class:`Ok` with the typed value, or an
+:class:`Err` with the :class:`DiscordAPIError` when Discord answered with an error status.
+Discord saying no (missing permission, the thing is gone, DMs closed) is an ordinary outcome
+of a working bot, not an exception, so you handle it where it matters:
+
+.. code-block:: python
+
+   match await api.message(channel_id, message_id).delete():
+     case Ok(): ...
+     case Err(NotFound()): ...                  # already gone
+     case Err(Forbidden() as error): print(error.code, error.message)
+     case Err(error): raise error
+
+   message = (await api.get_message(channel_id, message_id)).unwrap()   # abort: raises
+   maybe = (await api.get_message(channel_id, message_id)).ok()         # or None
+
+``unwrap()`` raises the original error, so a generic handler sees what it always did. What
+is **not** a result stays an exception: a wrong argument (``ValidationError``), no worker
+running (``RoutingError``), NATS down. See :doc:`errors`.
 
 Arguments
 ---------
@@ -23,14 +47,16 @@ Arguments
   user_id)``. Ids may be ints or strings at any depth; Micro turns them into the strings
   Discord expects.
 * **Everything else is a keyword**, with the types Discord's models give them. A request
-  body's fields and query parameters are all keywords (``content`` of ``create_message`` is
-  also accepted as the second positional argument, since you use it constantly).
+  body's fields and query parameters are all keywords. The exception is a message: every
+  operation that sends or edits one takes it as a :class:`Draft` (or a string for text only)
+  in place of ``content``, ``embeds``, ``components``, ``allowed_mentions``, ``flags``,
+  ``tts``, ``message_reference`` and ``attachments``, the second positional argument.
 * **Leaving an argument out leaves it out of the request. Passing ``None`` sends ``null``**,
   which is how you clear a field (a topic, a nickname).
 * A mistake (a wrong type, an unknown field, a value outside Discord's limits) is a
   ``pydantic.ValidationError`` raised **before anything is sent**.
-* ``files=[Upload(name, data, content_type=None)]`` on every operation that takes uploads;
-  the few that take one file (stickers, some invite operations) use ``file=Upload(...)``.
+* Files go in the ``Draft`` of a message operation; the few operations that take one file
+  (stickers, some invite operations) use ``file=Upload(...)``.
 * ``reason="..."`` on every operation that changes something becomes the audit log reason.
 * Micro's builders go wherever Discord wants JSON: components (loose buttons are laid into
   rows; layout components set the v2 flag), embeds, :class:`AllowedMentions` (see :doc:`ui`).

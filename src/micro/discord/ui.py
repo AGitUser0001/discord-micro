@@ -20,7 +20,7 @@ import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from os import PathLike
 from typing import Any, ClassVar, Literal, cast, overload
@@ -28,6 +28,7 @@ from typing import Any, ClassVar, Literal, cast, overload
 from pydantic import JsonValue
 
 from .colour import Colour, ColourLike
+from .objects import Object
 
 type Json = dict[str, JsonValue]
 
@@ -37,8 +38,8 @@ class Upload:
   """A file to send with a message.
 
       chart = Upload("chart.png", png_bytes)
-      await ctx.respond(components=[MediaGallery(chart)])     # shown, and attached
-      await ctx.respond("the log", files=[Upload.text("log.txt", text)])
+      await ctx.respond(Draft(components=[MediaGallery(MediaItem(chart))]))   # shown, attached
+      await ctx.respond(Draft("the log", files=[Upload.text("log.txt", text)]))
 
   Put it wherever a picture or file goes (`Thumbnail`, `MediaGallery`, `File`, an
   embed's `image=`) and the message attaches it by itself; a file that is only
@@ -616,9 +617,6 @@ class EmbedAuthor(metaclass=_Hooked):
     )
 
 
-type FieldLike = EmbedField | tuple[str, str] | tuple[str, str, bool]
-"""A field, or the tuple `(name, value)` / `(name, value, inline)`."""
-
 MAX_EMBEDS = 10
 MAX_EMBED_TEXT = 6000
 """Characters of text all of a message's embeds may hold between them."""
@@ -630,11 +628,10 @@ class Embed(metaclass=_Hooked):
   message then attaches by itself.
 
       Embed("Sales", "This week", colour=Colour.GREEN, image=chart,
-            fields=[("North", "12"), ("South", "9", True)],
-            footer="updated", author=EmbedAuthor("Ada", icon=avatar_url))
+            fields=[EmbedField("North", "12"), EmbedField("South", "9", inline=True)],
+            footer=EmbedFooter("updated"), author=EmbedAuthor("Ada", icon=avatar_url))
 
-  `footer` and `author` are a string or an `EmbedFooter` / `EmbedAuthor`. Embeds are
-  immutable; `add_field`, or `dataclasses.replace`, gives a changed copy. The limits Discord enforces
+  Embeds are immutable; `dataclasses.replace` gives a changed copy. The limits Discord enforces
   (256 title, 4096 description, 25 fields, 6000 characters over a message's embeds, ...)
   are checked when it is serialized (see `measures`).
   """
@@ -648,7 +645,7 @@ class Embed(metaclass=_Hooked):
   image: Media | None
   thumbnail: Media | None
   author: EmbedAuthor | None
-  timestamp: datetime | str | None
+  timestamp: datetime | None
 
   def __init__(
     self,
@@ -657,28 +654,24 @@ class Embed(metaclass=_Hooked):
     *,
     colour: ColourLike | None = None,
     url: str | None = None,
-    fields: Sequence[FieldLike] = (),
-    footer: EmbedFooter | str | None = None,
+    fields: Sequence[EmbedField] = (),
+    footer: EmbedFooter | None = None,
     image: Media | None = None,
     thumbnail: Media | None = None,
-    author: EmbedAuthor | str | None = None,
-    timestamp: datetime | str | None = None,
+    author: EmbedAuthor | None = None,
+    timestamp: datetime | None = None,
   ) -> None:
     set_ = object.__setattr__
     set_(self, "title", title)
     set_(self, "description", description)
     set_(self, "colour", None if colour is None else Colour.parse(colour))
     set_(self, "url", url)
-    set_(self, "fields", tuple(_field(item) for item in fields))
-    set_(self, "footer", EmbedFooter(footer) if isinstance(footer, str) else footer)
+    set_(self, "fields", tuple(fields))
+    set_(self, "footer", footer)
     set_(self, "image", image)
     set_(self, "thumbnail", thumbnail)
-    set_(self, "author", EmbedAuthor(author) if isinstance(author, str) else author)
+    set_(self, "author", author)
     set_(self, "timestamp", timestamp)
-
-  def add_field(self, name: str, value: str, inline: bool = False) -> Embed:
-    """A copy with one more field."""
-    return replace(self, fields=(*self.fields, EmbedField(name, value, inline)))
 
   @property
   def uploads(self) -> tuple[Upload, ...]:
@@ -741,11 +734,7 @@ class Embed(metaclass=_Hooked):
       url=self.url,
     )
     if self.timestamp is not None:
-      value["timestamp"] = (
-        self.timestamp.isoformat()
-        if isinstance(self.timestamp, datetime)
-        else self.timestamp
-      )
+      value["timestamp"] = self.timestamp.isoformat()
     if self.fields:
       value["fields"] = [item.to_dict() for item in self.fields]
     if self.footer is not None:
@@ -757,12 +746,6 @@ class Embed(metaclass=_Hooked):
     if self.author is not None:
       value["author"] = self.author.to_dict()
     return value
-
-
-def _field(item: FieldLike) -> EmbedField:
-  if isinstance(item, EmbedField):
-    return item
-  return EmbedField(item[0], item[1], bool(item[2]) if len(item) > 2 else False)
 
 
 def embed_length(embed: Mapping[str, JsonValue]) -> int:
@@ -811,10 +794,8 @@ class Emoji(metaclass=_Hooked):
     return _put({"name": self.name}, id=None if self.id is None else str(self.id))
 
 
-def _emoji(value: str | Emoji | None) -> Json | None:
-  if value is None:
-    return None
-  return (value if isinstance(value, Emoji) else Emoji.parse(value)).to_dict()
+def _emoji(value: Emoji | None) -> Json | None:
+  return None if value is None else value.to_dict()
 
 
 # Buttons and selects -----------------------------------------------------------
@@ -832,7 +813,7 @@ class Button(Component):
   custom_id: str | None = None
   url: str | None = None
   style: ButtonStyle = "primary"
-  emoji: str | Emoji | None = None
+  emoji: Emoji | None = None
   disabled: bool = False
   sku_id: int | str | None = None
   id: int | None = None
@@ -857,13 +838,29 @@ class Button(Component):
 
 @dataclass(frozen=True, slots=True)
 class SelectOption(metaclass=_Hooked):
-  """One option of a string select."""
+  """One option of a string select. Its `value` (what a submission reports) is its
+  `label` unless you give one."""
 
   label: str
   value: str
   description: str | None = None
   default: bool = False
-  emoji: str | Emoji | None = None
+  emoji: Emoji | None = None
+
+  def __init__(
+    self,
+    label: str,
+    value: str | None = None,
+    description: str | None = None,
+    default: bool = False,
+    emoji: Emoji | None = None,
+  ) -> None:
+    set_ = object.__setattr__
+    set_(self, "label", label)
+    set_(self, "value", label if value is None else value)
+    set_(self, "description", description)
+    set_(self, "default", default)
+    set_(self, "emoji", emoji)
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
@@ -937,10 +934,10 @@ def _select(
 
 @dataclass(frozen=True, slots=True)
 class StringSelect(Component):
-  """A menu of string options; options may be plain strings or `SelectOption`s."""
+  """A menu of `SelectOption`s."""
 
   custom_id: str
-  options: Sequence[SelectOption | str]
+  options: Sequence[SelectOption]
   placeholder: str | None = None
   min_values: int | None = None
   max_values: int | None = None
@@ -950,13 +947,10 @@ class StringSelect(Component):
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
-    options = [
-      o if isinstance(o, SelectOption) else SelectOption(o, o) for o in self.options
-    ]
     return _select(
       3, self.custom_id, self.placeholder, self.min_values, self.max_values,
       self.disabled, self.required, self.id,
-      options=[o.to_dict() for o in options],
+      options=[o.to_dict() for o in self.options],
     )  # fmt: skip
 
 
@@ -1127,13 +1121,13 @@ class Thumbnail(Component):
 class Section(Component):
   """One to three texts with a `Button` or `Thumbnail` beside them."""
 
-  texts: Sequence[TextDisplay | str]
+  texts: Sequence[TextDisplay]
   accessory: Button | Thumbnail
   id: int | None = None
 
   def __init__(
     self,
-    *texts: TextDisplay | str,
+    *texts: TextDisplay,
     accessory: Button | Thumbnail,
     id: int | None = None,
   ) -> None:
@@ -1143,10 +1137,9 @@ class Section(Component):
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
-    texts = [t if isinstance(t, TextDisplay) else TextDisplay(t) for t in self.texts]
     value: Json = {
       "type": 9,
-      "components": [t.to_dict() for t in texts],
+      "components": [t.to_dict() for t in self.texts],
       "accessory": self.accessory.to_dict(),
     }
     return _put(value, id=self.id)
@@ -1178,17 +1171,16 @@ class MediaItem(metaclass=_Hooked):
 class MediaGallery(Component):
   """Up to ten pictures or videos."""
 
-  items: Sequence[MediaItem | Media]
+  items: Sequence[MediaItem]
   id: int | None = None
 
-  def __init__(self, *items: MediaItem | Media, id: int | None = None) -> None:
+  def __init__(self, *items: MediaItem, id: int | None = None) -> None:
     object.__setattr__(self, "items", tuple(items))
     object.__setattr__(self, "id", id)
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
-    items = [i if isinstance(i, MediaItem) else MediaItem(i) for i in self.items]
-    return _put({"type": 12, "items": [i.to_dict() for i in items]}, id=self.id)
+    return _put({"type": 12, "items": [i.to_dict() for i in self.items]}, id=self.id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1372,12 +1364,26 @@ class TextInput(Component):
 
 @dataclass(frozen=True, slots=True)
 class GroupOption(metaclass=_Hooked):
-  """An option of a `RadioGroup` or `CheckboxGroup`."""
+  """An option of a `RadioGroup` or `CheckboxGroup`. Its `value` is its `label` unless
+  you give one."""
 
   label: str
   value: str
   description: str | None = None
   default: bool = False
+
+  def __init__(
+    self,
+    label: str,
+    value: str | None = None,
+    description: str | None = None,
+    default: bool = False,
+  ) -> None:
+    set_ = object.__setattr__
+    set_(self, "label", label)
+    set_(self, "value", label if value is None else value)
+    set_(self, "description", description)
+    set_(self, "default", default)
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
@@ -1385,10 +1391,8 @@ class GroupOption(metaclass=_Hooked):
     return _put(value, description=self.description)
 
 
-def _group(options: Sequence[GroupOption | str]) -> list[JsonValue]:
-  return [
-    (o if isinstance(o, GroupOption) else GroupOption(o, o)).to_dict() for o in options
-  ]
+def _group(options: Sequence[GroupOption]) -> list[JsonValue]:
+  return [option.to_dict() for option in options]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1396,7 +1400,7 @@ class RadioGroup(Component):
   """Pick exactly one of two to ten options."""
 
   custom_id: str
-  options: Sequence[GroupOption | str]
+  options: Sequence[GroupOption]
   required: bool | None = None
   id: int | None = None
 
@@ -1415,7 +1419,7 @@ class CheckboxGroup(Component):
   """Pick any of up to ten options (`min_values`, `max_values` limit how many)."""
 
   custom_id: str
-  options: Sequence[GroupOption | str]
+  options: Sequence[GroupOption]
   min_values: int | None = None
   max_values: int | None = None
   required: bool | None = None
@@ -1602,13 +1606,15 @@ class Draft(metaclass=_Hooked):
       await ctx.respond(reply)              # also channel.send(reply), message.edit(reply)
       await ctx.respond(replace(reply, content="again"))
 
-  A `Draft` is immutable, comparable and cheap, so build it anywhere (a helper, a
-  template, a test) and send it wherever. Nothing is sent until you do. The usual
-  arguments (`content`, `embeds`, `components`, `files`, `allowed_mentions`,
-  `ephemeral`) work the same without it, and you cannot mix the two.
+  A `Draft` is immutable and comparable, so build it anywhere (a helper, a template, a
+  test) and send it wherever; nothing is sent until you do. Change one with
+  `dataclasses.replace`. Every way of sending a message takes a `Draft` (or a plain
+  string for a text-only one).
 
   For an edit, a part that is `None` is left as it is on the message and an empty one
-  clears it: `Draft(embeds=())` removes the embeds, `Draft(content="")` the text.
+  clears it: `Draft(embeds=())` removes the embeds, `Draft(content="")` the text. Files
+  you add are added; `keep=[...]` lists the existing attachments that stay (`keep=[]`
+  removes them all).
   Layout components make it a components v2 message, which has no `content` or
   `embeds`. `to_dict()` is the JSON Discord expects (and runs the serialize hooks).
   """
@@ -1623,6 +1629,7 @@ class Draft(metaclass=_Hooked):
   tts: bool
   silent: bool
   suppress_embeds: bool
+  keep: tuple[str, ...] | None
 
   def __init__(
     self,
@@ -1637,6 +1644,7 @@ class Draft(metaclass=_Hooked):
     tts: bool = False,
     silent: bool = False,
     suppress_embeds: bool = False,
+    keep: Sequence[Object | str | int] | None = None,
   ) -> None:
     set_ = object.__setattr__
     set_(self, "content", content)
@@ -1649,49 +1657,18 @@ class Draft(metaclass=_Hooked):
     set_(self, "tts", tts)
     set_(self, "silent", silent)
     set_(self, "suppress_embeds", suppress_embeds)
+    set_(
+      self,
+      "keep",
+      None
+      if keep is None
+      else tuple(item.id if isinstance(item, Object) else str(item) for item in keep),
+    )
 
   @classmethod
-  def of(
-    cls,
-    content: Draft | str | None = None,
-    *,
-    embeds: Sequence[Embed | Json] | None = None,
-    components: Sequence[Buildable] | None = None,
-    files: Sequence[Upload] = (),
-    allowed_mentions: AllowedMentions | None = None,
-    ephemeral: bool = False,
-  ) -> Draft:
-    """The `Draft` a send method works from: `content` itself if it is one, else a
-    `Draft` of the pieces. Giving a `Draft` and pieces together is a TypeError."""
-    if not isinstance(content, Draft):
-      return cls(
-        content,
-        embeds=embeds,
-        components=components,
-        files=files,
-        allowed_mentions=allowed_mentions,
-        ephemeral=ephemeral,
-      )
-    if (
-      embeds is not None
-      or components is not None
-      or files
-      or allowed_mentions is not None
-      or ephemeral
-    ):
-      raise TypeError(
-        "Pass a Draft, or content/embeds/components/files/..., not both: "
-        "use dataclasses.replace(draft, ...) to change a Draft."
-      )
-    return content
-
-  def add_embed(self, embed: Embed | Json) -> Draft:
-    """A copy with one more embed."""
-    return replace(self, embeds=(*(self.embeds or ()), embed))
-
-  def add_file(self, file: Upload) -> Draft:
-    """A copy with one more attached file."""
-    return replace(self, files=(*self.files, file))
+  def of(cls, message: Draft | str | None) -> Draft:
+    """The `Draft` for what a send method was given: itself, or a text-only one."""
+    return message if isinstance(message, Draft) else cls(message)
 
   @property
   def uploads(self) -> tuple[Upload, ...]:
@@ -1724,6 +1701,9 @@ class Draft(metaclass=_Hooked):
       }
     if self.tts:
       body["tts"] = True
+    if self.keep is not None:
+      # Listing attachments replaces the message's files with exactly these.
+      body["attachments"] = attachments(self.uploads, self.keep)
     return body
 
 

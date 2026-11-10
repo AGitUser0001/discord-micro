@@ -10,6 +10,7 @@ from typing import Annotated
 
 from micro.discord.interactions import Commands, Interaction, Option
 from micro.discord.objects import Attachment
+from micro.discord.ui import Draft
 from micro.service import Service
 from micro.store import GraphModule, StoreClient
 
@@ -68,7 +69,7 @@ async def add(
       "file": data,
     },
   )
-  await ctx.respond("Saved.", ephemeral=True)
+  await ctx.respond(Draft("Saved.", ephemeral=True))
 
 
 @note.command("list", description="Show recent notes")
@@ -78,4 +79,4 @@ async def list_notes(ctx: Interaction) -> None:
   )
   notes = (result.get("data") or {}).get("notes") or []
   lines = [f"**{item['author']}**: {item['text']}" for item in notes]
-  await ctx.respond("\n".join(lines) or "No notes yet.", ephemeral=True)
+  await ctx.respond(Draft("\n".join(lines) or "No notes yet.", ephemeral=True))

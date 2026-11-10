@@ -14,10 +14,9 @@ from micro.discord.interactions import (
   Modals,
   Option,
 )
-from micro.discord.messages import reply_to
 from micro.discord.models.gateway import GatewayMessageCreateDispatchData
 from micro.discord.objects import Member
-from micro.discord.ui import AllowedMentions, Button, Embed, Modal, TextInput
+from micro.discord.ui import AllowedMentions, Button, Draft, Embed, Modal, TextInput
 from micro.schemas import events
 from micro.service import Service
 
@@ -33,7 +32,10 @@ modals = Modals(service)
   events.MESSAGE_CREATE, when=all_of(ignore_bots, content_startswith("!ping"))
 )
 async def ping(message: GatewayMessageCreateDispatchData) -> None:
-  await reply_to(DiscordHTTPClient(service.runtime), message, "pong")
+  api = DiscordHTTPClient(service.runtime).api
+  (
+    await api.channel(message.channel_id).send(Draft("pong", reply_to=message.id))
+  ).unwrap()
 
 
 @commands.slash("greet", description="Greet someone")
@@ -67,11 +69,13 @@ async def start_poll(
   yes = VOTE.encode(Poll(question=question, choice=1))
   no = VOTE.encode(Poll(question=question, choice=0))
   await ctx.respond(
-    embeds=[Embed(question, "Vote below.")],
-    components=[
-      Button("Yes", custom_id=yes, style="success"),
-      Button("No", custom_id=no, style="danger"),
-    ],
+    Draft(
+      embeds=[Embed(question, "Vote below.")],
+      components=[
+        Button("Yes", custom_id=yes, style="success"),
+        Button("No", custom_id=no, style="danger"),
+      ],
+    )
   )
 
 
@@ -79,7 +83,9 @@ async def start_poll(
 async def vote(ctx: Interaction, poll: Poll) -> None:
   answer = "yes" if poll.choice else "no"
   await ctx.respond(
-    f"{ctx.user.display_name} voted {answer} on {poll.question!r}.", ephemeral=True
+    Draft(
+      f"{ctx.user.display_name} voted {answer} on {poll.question!r}.", ephemeral=True
+    )
   )
 
 
@@ -94,10 +100,10 @@ async def feedback(ctx: Interaction) -> None:
   await service.client.enqueue(
     AUDIT, Greeting(name=f"feedback: {ctx.fields['text'][:40]}")
   )
-  await ctx.respond("Thanks for the feedback!", ephemeral=True)
+  await ctx.respond(Draft("Thanks for the feedback!", ephemeral=True))
 
 
 @commands.user("Say hi")
 async def say_hi(ctx: Interaction, member: Member) -> None:
   mentions = AllowedMentions.only(users=[int(member.id or 0)])
-  await ctx.respond(f"Hi {member.mention}!", allowed_mentions=mentions)
+  await ctx.respond(Draft(f"Hi {member.mention}!", allowed_mentions=mentions))

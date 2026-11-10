@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from micro.discord.interactions import Commands, Interaction
+from micro.discord.ui import Draft
 from micro.runtime import Runtime
 from micro.service import Service
 
@@ -68,6 +69,8 @@ async def health(ctx: Interaction) -> None:
   )
   running = table(["kind", "count"], list(data["components"].items()))
   await ctx.respond(
-    f"**{data['consumers']}** consumers in total\n```\n{streams}\n\n{running}\n```",
-    ephemeral=True,
+    Draft(
+      f"**{data['consumers']}** consumers in total\n```\n{streams}\n\n{running}\n```",
+      ephemeral=True,
+    )
   )

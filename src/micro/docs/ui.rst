@@ -9,14 +9,16 @@ accepts them, and anything a builder lacks can be passed as a plain dict instead
 
 .. code-block:: python
 
-   from micro.discord.ui import ActionRow, AllowedMentions, Button, Colour, Embed, StringSelect
+   from micro.discord.ui import (
+     AllowedMentions, Button, Colour, Draft, Embed, EmbedField, StringSelect,
+   )
 
-   await channel.send(
+   await channel.send(Draft(
      "Report ready",
-     embeds=[Embed("Title", "Body", colour=Colour.BLURPLE, fields=[("a", "b", True)])],
+     embeds=[Embed("Title", "Body", colour=Colour.BLURPLE, fields=[EmbedField("a", "b", inline=True)])],
      components=[Button("Open", custom_id="report.open"), Button("Docs", url="https://...")],
      allowed_mentions=AllowedMentions.only(users=[1]),
-   )
+   ))
 
 **Mentions never ping unless allowed.** If you pass no ``allowed_mentions`` Micro sends
 ``{"parse": []}``; ``AllowedMentions.only(users=..., roles=...)`` opts specific ones in.
@@ -25,22 +27,20 @@ Embeds
 ------
 
 :class:`Embed` is a builder like the components: ``title``, ``description``, ``url``,
-``colour``, ``timestamp`` (a ``datetime`` or ISO string), ``fields``, ``footer``, ``author``,
-``image`` and ``thumbnail``. A field is an :class:`EmbedField` or the tuple ``(name, value)``
-/ ``(name, value, inline)``; ``footer`` and ``author`` are a string or an
-:class:`EmbedFooter` / :class:`EmbedAuthor` when they need an icon or a link; a picture is a
-URL or an :class:`Upload`.
+``colour``, ``timestamp`` (a ``datetime``), ``fields`` (:class:`EmbedField`),
+``footer`` (:class:`EmbedFooter`), ``author`` (:class:`EmbedAuthor`), ``image`` and
+``thumbnail``. A picture is a URL or an :class:`Upload`.
 
 .. code-block:: python
 
    Embed(
      "Sales", "This week", colour=Colour.GREEN, image=chart,
-     fields=[("North", "12"), ("South", "9", True)],
+     fields=[EmbedField("North", "12"), EmbedField("South", "9", inline=True)],
      footer=EmbedFooter("updated", icon=avatar_url),
-     author="Ada",
+     author=EmbedAuthor("Ada"),
    )
 
-Embeds are immutable; ``add_field`` and ``dataclasses.replace`` give a changed copy. Like components they
+Embeds are immutable; ``dataclasses.replace`` gives a changed copy. Like components they
 carry their limits (``embed.measures``, ``embed.length``): 256 title, 4096 description, 25
 fields, 6000 characters between all of a message's embeds, ten embeds a message. They are
 checked when the embed is serialized, with the same middleware (`hooks`) as the
@@ -67,21 +67,20 @@ and flags that make it, held as a value. Nothing is sent until you hand it to so
    await ctx.edit_response(replace(report, content="Updated"))   # dataclasses.replace
    await channel.send(report)                      # a channel, a message edit, the API:
    await api.create_message(channel_id, report)    # every message method takes a Draft
-   await messages.send(http, channel_id, report)
 
-A ``Draft`` is immutable and compares by value, so build it in a helper, keep it in a
-table, return it from a function, assert on it in a test. ``dataclasses.replace``, ``add_embed``
-and ``add_file`` give a changed copy; ``draft.to_dict()`` is the JSON Discord receives and
-``draft.uploads`` the files that travel with it. It also takes ``reply_to`` (reply to a
-message), ``silent`` (no notification), ``suppress_embeds`` and ``tts``.
-
-Everything still works without it: ``ctx.respond("hi", embeds=[...])``. A ``Draft`` and loose
-pieces together are a ``TypeError``, because there would be two answers to "which text?".
-Use ``dataclasses.replace(draft, ...)`` to change one.
+A ``Draft`` is the **one way** to say what a message is: there are no separate ``embeds=``,
+``components=``, ``files=`` or ``ephemeral=`` arguments to send it with, and a plain string
+stands for a text-only ``Draft``. It is immutable and compares by value, so build it in a
+helper, keep it in a table, return it from a function, assert on it in a test.
+``dataclasses.replace(draft, content="...")`` gives a changed copy; ``draft.to_dict()`` is
+the JSON Discord receives and ``draft.uploads`` the files that travel with it. It also takes
+``reply_to`` (reply to a message), ``silent`` (no notification), ``suppress_embeds``, ``tts``
+and, for edits, ``keep``.
 
 **Editing.** A part left as ``None`` stays as it is on the message and an empty one clears
 it: ``Draft(embeds=())`` removes the embeds, ``Draft(content="")`` the text,
-``Draft(components=())`` the components.
+``Draft(components=())`` the components. Files you add are added to the message;
+``Draft(keep=[...])`` lists the existing attachments that stay (``keep=[]`` removes them all).
 
 A ``Draft`` runs the serialize hooks like everything else, so one rule can touch every
 outgoing message:
@@ -139,11 +138,16 @@ out (buttons fill rows of five, each select gets its own row); wrap them in
 
 .. code-block:: python
 
-   Button("Go", custom_id="go", style="success", emoji="🚀")   # also url=, or sku_id= (premium)
-   StringSelect("pick", ["a", SelectOption("B", "b", "second", emoji="🅱")], max_values=2)
+   Button("Go", custom_id="go", style="success", emoji=Emoji("🚀"))   # also url=, or sku_id= (premium)
+   StringSelect("pick", [SelectOption("a"), SelectOption("B", "b", "second", emoji=Emoji("🅱"))], max_values=2)
    UserSelect("who", defaults=[123]); RoleSelect("role")
    MentionableSelect("m", defaults=[Default.user(1), Default.role(2)])
    ChannelSelect("where", channel_types=["text", "voice", "category"])
+
+A string select takes :class:`SelectOption` objects (its ``value`` is its label unless you
+give one), a button or option an :class:`Emoji`, a section :class:`TextDisplay` objects and a
+gallery :class:`MediaItem` objects: **no bare strings stand in for them**, so there is one
+way to say each thing (``Emoji.parse("<:name:id>")`` reads an emoji from its text).
 
 Button styles are ``primary``, ``secondary``, ``success``, ``danger`` (these take a
 ``custom_id``) and ``link`` / ``premium`` (a ``url`` / a ``sku_id`` instead). The select
@@ -160,9 +164,9 @@ A message that uses any of these sets Discord's ``IS_COMPONENTS_V2`` flag for yo
 
    Container(
      TextDisplay("## Report"),
-     Section("**Ada** opened this", "2 days ago", accessory=Thumbnail("https://.../a.png")),
+     Section(TextDisplay("**Ada** opened this"), TextDisplay("2 days ago"), accessory=Thumbnail("https://.../a.png")),
      Separator(),
-     MediaGallery("https://.../1.png", MediaItem("attachment://2.png", "alt text")),
+     MediaGallery(MediaItem("https://.../1.png"), MediaItem("attachment://2.png", "alt text")),
      File("attachment://report.pdf"),
      ActionRow(Button("Close", custom_id="close")),
      accent_colour=Colour.BLURPLE,
@@ -181,11 +185,11 @@ A :class:`Modal` has a ``custom_id``, a title and components: :class:`Label` wra
      TextDisplay("Tell us what happened."),
      Label("Summary", TextInput("summary", max_length=100)),
      Label("Details", TextInput("details", style="paragraph", required=False)),
-     Label("Kind", StringSelect("kind", ["bug", "abuse"])),
+     Label("Kind", StringSelect("kind", [SelectOption("bug"), SelectOption("abuse")])),
      Label("Who", UserSelect("who")),
      Label("Evidence", FileUpload("files", max_values=3)),
-     Label("Severity", RadioGroup("severity", ["low", "high"])),
-     Label("Notify", CheckboxGroup("notify", ["me", "staff"])),
+     Label("Severity", RadioGroup("severity", [GroupOption("low"), GroupOption("high")])),
+     Label("Notify", CheckboxGroup("notify", [GroupOption("me"), GroupOption("staff")])),
      Label("Confirm", Checkbox("sure")),
    ])
 
@@ -384,7 +388,6 @@ Reference
    micro.discord.ui.EmbedField
    micro.discord.ui.EmbedFooter
    micro.discord.ui.EmbedAuthor
-   micro.discord.ui.FieldLike
    micro.discord.ui.embed_length
    micro.discord.ui.MAX_EMBEDS
    micro.discord.ui.MAX_EMBED_TEXT

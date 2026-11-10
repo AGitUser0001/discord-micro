@@ -9,6 +9,7 @@ store, so they survive restarts and work from every replica.
 from typing import Annotated
 
 from micro.discord.interactions import Commands, Interaction, Option, RuntimeCommands
+from micro.discord.ui import Draft
 from micro.service import Service
 from micro.store import GraphModule, StoreClient
 
@@ -67,7 +68,9 @@ async def run(ctx: Interaction) -> None:
     variables={"g": ctx.guild_id, "n": ctx.command_name},
   )
   found = ((result.get("data") or {}).get("custom")) or {}
-  await ctx.respond(found.get("text") or "That command was removed.", ephemeral=True)
+  await ctx.respond(
+    Draft(found.get("text") or "That command was removed.", ephemeral=True)
+  )
 
 
 @custom.command("add", description="Make a command (or change its text)")
@@ -77,11 +80,11 @@ async def add(
   text: Annotated[str, Option("What it says", max_length=2000)],
 ) -> None:
   if ctx.guild_id is None:
-    await ctx.respond("Only in servers.", ephemeral=True)
+    await ctx.respond(Draft("Only in servers.", ephemeral=True))
     return
   name = name.lower().lstrip("/")
   if name == "custom":
-    await ctx.respond("That name is taken.", ephemeral=True)
+    await ctx.respond(Draft("That name is taken.", ephemeral=True))
     return
   await store().execute(
     "mutation($g: ID!) { addGuild(id: $g) { id } }", variables={"g": ctx.guild_id}
@@ -105,9 +108,11 @@ async def add(
   try:
     await dynamic.add(name, "Custom command", guild_id=ctx.guild_id)
   except ValueError:
-    await ctx.respond("Names are lowercase letters, digits, - and _.", ephemeral=True)
+    await ctx.respond(
+      Draft("Names are lowercase letters, digits, - and _.", ephemeral=True)
+    )
     return
-  await ctx.respond(f"Made /{name}. It shows up in a moment.", ephemeral=True)
+  await ctx.respond(Draft(f"Made /{name}. It shows up in a moment.", ephemeral=True))
 
 
 @custom.command("remove", description="Delete a command")
@@ -120,7 +125,9 @@ async def remove(ctx: Interaction, name: Annotated[str, Option("Its name")]) -> 
   gone = ((result.get("data") or {}).get("removeCustom")) is True
   if gone and ctx.guild_id is not None:
     await dynamic.remove(name, guild_id=ctx.guild_id)
-  await ctx.respond(f"Removed /{name}." if gone else "No such command.", ephemeral=True)
+  await ctx.respond(
+    Draft(f"Removed /{name}." if gone else "No such command.", ephemeral=True)
+  )
 
 
 @custom.command("list", description="Show this server's custom commands")
@@ -132,5 +139,5 @@ async def list_commands(ctx: Interaction) -> None:
   guild = (result.get("data") or {}).get("guild") or {}
   names = sorted(item["name"] for item in guild.get("commands") or [])
   await ctx.respond(
-    " ".join(f"`/{name}`" for name in names) or "None yet.", ephemeral=True
+    Draft(" ".join(f"`/{name}`" for name in names) or "None yet.", ephemeral=True)
   )

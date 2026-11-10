@@ -8,7 +8,6 @@ if TYPE_CHECKING:
   from micro.discord import filters as filters
   from micro.discord import interactions as interactions
   from micro.discord import invite as invite
-  from micro.discord import messages as messages
   from micro.discord import models as models
   from micro.discord import objects as objects
   from micro.discord import permissions as permissions
@@ -42,7 +41,6 @@ __getattr__, __dir__ = exports(
     "filters": ".filters",
     "interactions": ".interactions",
     "invite": ".invite",
-    "messages": ".messages",
     "models": ".models",
     "objects": ".objects",
     "permissions": ".permissions",
@@ -91,7 +89,6 @@ __all__ = [
   "Unauthorized",
   "filters",
   "interactions",
-  "messages",
   "models",
   "objects",
   "partition_key",

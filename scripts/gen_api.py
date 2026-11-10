@@ -28,13 +28,24 @@ OUT = Path(__file__).resolve().parent.parent / "src/micro/discord/api.py"
 REFS_OUT = OUT.with_name("refs.py")
 RESERVED = {"self", "files", "reason", "body"}
 ERRORS = {"RatelimitedResponse", "ErrorResponse"}
-RESULTS = ("/channels/{channel_id}/messages",)
-"""Operations (by path prefix) whose methods return a `Result` instead of raising when
-Discord refuses: the message operations, as a trial of the style."""
+DRAFT_FIELDS = frozenset(
+  (
+    "content",
+    "embeds",
+    "components",
+    "allowed_mentions",
+    "tts",
+    "flags",
+    "message_reference",
+    "attachments",
+  )
+)
+"""What a `Draft` carries: a message operation takes one in place of these arguments."""
 
 
 def returns_result(op: Any) -> bool:
-  return op.path.startswith(RESULTS)
+  """Every method returns a `Result`: Discord's refusal is a value, not an exception."""
+  return True
 
 
 def returned(op: Any, written: str) -> str:
@@ -218,6 +229,11 @@ def shape(op: Any) -> Shape:
       if wire.startswith("files["):
         has_upload_slot = True
         continue
+      if message_like and raw in DRAFT_FIELDS:
+        if raw == "content":
+          lead.append((name_of("message"), "Draft | str | None"))
+          collected.append('"content": message')
+        continue  # a `Draft` carries the rest of the message
       name = name_of(raw)
       is_file = "bytes" in str(info.annotation)
       ann = "Upload" if is_file else render(info.annotation)
@@ -228,20 +244,14 @@ def shape(op: Any) -> Shape:
           if "None" in ann
           else "Sequence[Buildable | Mapping[str, Any]]"
         )
-      if raw == "content" and message_like:
-        ann = "Draft | " + ann
-      if wire == "allowed_mentions":
-        ann = "AllowedMentions | " + ann
-      if wire == "embeds" and "Sequence" in ann:
-        ann = ann.replace("Sequence[", "Sequence[Embed | ", 1)
       if raw == "content" and (not info.is_required() or union):
         lead.append((name, ann))
       else:
         (required if info.is_required() and not union else optional).append((name, ann))
       collected.append(f'"{wire}": {name}')
   takes_files = (
-    multipart and "application/json" in op.content_types
-  ) or has_upload_slot
+    (multipart and "application/json" in op.content_types) or has_upload_slot
+  ) and not message_like
   return Shape(
     op=op,
     path=path_args,
@@ -372,11 +382,8 @@ REFS: dict[str, RefSpec] = {
       "start_thread": "create_thread_from_message",
       "poll_voters": "get_answer_voters",
       "end_poll": "poll_expire",
-      "reply": (
-        "create_message",
-        {"message_reference": '{"message_id": self.message_id}'},
-      ),
     },
+    mixin="_MessageExtras",
   ),
   "GuildRef": RefSpec(
     ("guild_id",),
@@ -624,7 +631,7 @@ def refs_module() -> str:
     "from typing import TYPE_CHECKING, Any, Literal",
     "",
     "from micro.discord._api import UNSET, Upload",
-    "from micro.discord._refs import _MemberExtras, _UserExtras",
+    "from micro.discord._refs import _MemberExtras, _MessageExtras, _UserExtras",
     "from micro.discord.models import http as m",
     "from micro.discord.http_service import DiscordAPIError",
     "from micro.discord.ui import AllowedMentions, Buildable, Draft, Embed, Emoji",

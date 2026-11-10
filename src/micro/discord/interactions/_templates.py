@@ -23,6 +23,7 @@ from micro.discord.routes import (
   component_route,
   modal_route,
 )
+from micro.discord.ui import Draft
 from micro.runtime import StreamConsumer
 
 from ._commands import (
@@ -227,7 +228,7 @@ async def report_failure(flow: Flow, error: BaseException) -> None:
       text = "This command was just updated. Please try again."
     else:
       text = "Something went wrong."
-    await interaction.respond(text, ephemeral=True)
+    await interaction.respond(Draft(text, ephemeral=True))
   except Exception:
     logger.warning("Could not report an interaction error", exc_info=True)
 

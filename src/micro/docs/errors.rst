@@ -82,7 +82,7 @@ Everything above is raised. The exception is Discord telling you *no*: missing p
 the message is gone, DMs are closed. That is not a bug and not a broken system, it is an
 ordinary answer from a working bot, so the API methods that are being moved to it return it
 as a value, a :class:`Result`: an :class:`Ok` with the value, or an :class:`Err` with the
-:class:`DiscordAPIError`.
+:class:`DiscordAPIError`. This is every method of the :doc:`api` and of its refs.
 
 .. code-block:: python
 
@@ -101,8 +101,9 @@ as a value, a :class:`Result`: an :class:`Ok` with the value, or an :class:`Err`
 Handle it where you need to, or write ``unwrap()`` to let it fail: that raises the original
 error, so your generic handler sees exactly what it always saw. Bugs and broken
 infrastructure (a bad argument, a limit exceeded, NATS down) are not results; they still
-raise. Today the message operations (``/channels/{id}/messages...``) return results; the
-rest of the API raises, until this settles.
+raise. The interaction methods (``ctx.respond`` and friends) are the state machine over the
+API and raise: answering an interaction that was already answered is a mistake, not an
+outcome.
 
 Reference
 ---------

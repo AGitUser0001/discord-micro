@@ -304,7 +304,6 @@ PUBLIC_MODULES = (
   "micro.discord",
   "micro.discord.interactions",
   "micro.discord.filters",
-  "micro.discord.messages",
   "micro.discord.refs",
   "micro.discord.ui",
   "micro.discord.colour",
