@@ -1420,15 +1420,14 @@ async def logging_scenarios() -> None:
       catch.records[-1].getMessage(),
     )
 
-    with log.context(interaction=77):
-      with log.step("outer"):
+    with log.context(interaction=77), log.step("outer"):
 
-        async def inner() -> None:
-          with log.step("inner"):
-            log.error("deep", error=ValueError("x"))
+      async def inner() -> None:
+        with log.step("inner"):
+          log.error("deep", error=ValueError("x"))
 
-        await asyncio.create_task(inner())
-        log.bind(user=3).info("bound")
+      await asyncio.create_task(inner())
+      log.bind(user=3).info("bound")
     deep = next(r for r in catch.records if r.getMessage().startswith("deep"))
     bound = next(r for r in catch.records if r.getMessage().startswith("bound"))
     check(
