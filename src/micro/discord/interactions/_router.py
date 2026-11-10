@@ -21,9 +21,11 @@ from ._pattern import RouteTable
 from ._templates import (
   INTERACTIONS_KEY,
   RESPONSE_DEADLINE,
+  ErrorHook,
   ensure_interactions_stream,
   report_failure,
   route_consumer,
+  run_error_hook,
 )
 
 if TYPE_CHECKING:
@@ -64,6 +66,7 @@ class InteractionRouter(Service):
       ordered_by_guild=ordered_by_guild,
     )
     self._middleware: Middlewares[Flow] = Middlewares()
+    self._on_error: ErrorHook = report_failure
     self._http: DiscordHTTPClient | None = None
     self._tables: dict[str, RouteTable] | None = None
     self._unwatch: Callable[[], None] | None = None
@@ -83,6 +86,11 @@ class InteractionRouter(Service):
     if function is None:
       return self._middleware.use(scope)  # type: ignore[arg-type]
     return self._middleware.use(scope, function)  # type: ignore[arg-type]
+
+  def on_error(self, hook: ErrorHook) -> ErrorHook:
+    """Decide what happens when middleware here raises (see `Commands.on_error`)."""
+    self._on_error = hook
+    return hook
 
   async def on_start(self) -> None:
     """Subscribe to route tables and begin routing interactions."""
@@ -206,7 +214,7 @@ class InteractionRouter(Service):
       if infrastructure and error is infrastructure[0]:
         raise  # NATS trouble: let the event be redelivered
       log.exception("Interaction middleware failed in %s", self.name)
-      await report_failure(flow, error)
+      await run_error_hook(self._on_error, flow, error)
 
   async def _publish(self, flow: Flow) -> None:
     payload = flow.payload

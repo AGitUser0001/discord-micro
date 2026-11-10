@@ -143,16 +143,36 @@ autocomplete, which cannot be deferred.
 Errors
 ------
 
-An error anywhere (middleware, a custom ID that will not decode, a handler) is logged and
-the user sees one ephemeral "Something went wrong." (or "This command was just updated" for
-:class:`CommandOutdated`). To say something else, wrap ``next()`` in ``try/except`` in your
-own middleware. A flow that ends without responding is logged as a warning; Discord will
-show the user a failure.
+An error anywhere (middleware, a custom ID that will not decode, a handler, an error result
+nobody looked at) is **logged**, and then handed to the **error hook**. The default hook,
+:func:`report_failure`, answers with one ephemeral "Something went wrong." (or "This command
+was just updated" for :class:`CommandOutdated`). Replace it, per template and on the router,
+with ``on_error``:
+
+.. code-block:: python
+
+   from micro.discord.interactions import Flow
+   from micro.discord.ui import Draft
+
+   @commands.on_error
+   async def failed(flow: Flow, error: BaseException) -> None:
+     if isinstance(error, PermissionError):
+       await flow.interaction.respond(Draft("Not allowed.", ephemeral=True))
+     elif not flow.interaction.responded:
+       await flow.interaction.respond(Draft(f"Error {flow.interaction.id}", ephemeral=True))
+
+Your hook replaces the default entirely: answer however you like, or not at all (an empty
+hook silences the reply). It is called with the :class:`Flow` and the exception; one hook
+per template, and a second call replaces the first. A hook that itself raises is logged and
+ignored. A flow that ends without responding is logged as a warning; Discord will show the
+user a failure.
 
 Reference
 ---------
 
 .. api::
+   micro.discord.interactions.ErrorHook
+   micro.discord.interactions.report_failure
    micro.discord.interactions.Flow
    micro.discord.interactions.defers
    micro.discord.interactions.MiddlewareError

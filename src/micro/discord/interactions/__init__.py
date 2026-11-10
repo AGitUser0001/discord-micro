@@ -41,9 +41,11 @@ from ._templates import (
   RESPONSE_DEADLINE,
   Commands,
   Components,
+  ErrorHook,
   InteractionTemplate,
   Modals,
   ensure_interactions_stream,
+  report_failure,
   route_consumer,
 )
 
@@ -63,6 +65,7 @@ __all__ = (
   "Commands",
   "Components",
   "CustomId",
+  "ErrorHook",
   "Flow",
   "Interaction",
   "InteractionEndpoint",
@@ -85,6 +88,7 @@ __all__ = (
   "defers",
   "ensure_interactions_stream",
   "option",
+  "report_failure",
   "route_consumer",
   "sync_commands",
 )

@@ -1576,6 +1576,117 @@ async def logging_scenarios() -> None:
     root.setLevel(previous)
 
 
+async def error_hook_scenarios() -> None:
+  print("error hook: what an interaction does when its handler raised")
+  from micro.discord.interactions import (
+    Commands,
+    Flow,
+    InteractionRouter,
+    report_failure,
+  )
+  from micro.discord.ui import Draft
+  from micro.result import Err
+
+  class Recorder:
+    """Stands in for the HTTP client: records the interaction responses sent."""
+
+    def __init__(self) -> None:
+      self.sent: list[Any] = []
+
+    async def call(self, operation: str, **parts: Any) -> Any:
+      self.sent.append((operation, parts.get("body")))
+
+  def flow_for(recorder: Recorder, number: int) -> Flow:
+    payload = {
+      "id": str(1000000000000000 + number), "token": f"t{number}",
+      "application_id": "100", "type": 2, "data": {"name": "x"}, "user": {"id": "1"},
+    }  # fmt: skip
+    return Flow(payload, http=recorder, key="x")  # type: ignore[arg-type]
+
+  async def run(commands: Commands, number: int) -> Recorder:
+    recorder = Recorder()
+    await commands.handle(flow_for(recorder, number))
+    return recorder
+
+  def boom(commands: Commands) -> None:
+    @commands.use
+    async def fails(flow: Flow, next: Any) -> None:
+      raise RuntimeError("boom")
+
+  default = Commands(Service("errors.default"))
+  boom(default)
+  recorder = await run(default, 1)
+  body = recorder.sent[0][1]["data"] if recorder.sent else {}
+  check(
+    "by default the user gets an ephemeral 'Something went wrong.'",
+    len(recorder.sent) == 1
+    and body.get("content") == "Something went wrong."
+    and body.get("flags") == 64,
+    recorder.sent,
+  )
+
+  dropping = Commands(Service("errors.dropping"))
+
+  @dropping.use
+  async def drops(flow: Flow, next: Any) -> None:
+    Err(ValueError("lost"))
+    await next()
+
+  recorder = await run(dropping, 2)
+  check(
+    "an error result nobody looked at goes the same way",
+    len(recorder.sent) == 1
+    and recorder.sent[0][1]["data"]["content"] == "Something went wrong.",
+    recorder.sent,
+  )
+
+  seen: list[BaseException] = []
+  custom = Commands(Service("errors.custom"))
+  boom(custom)
+
+  @custom.on_error
+  async def failed(flow: Flow, error: BaseException) -> None:
+    seen.append(error)
+    await flow.interaction.respond(Draft(f"Custom: {error}", ephemeral=True))
+
+  recorder = await run(custom, 3)
+  check(
+    "an error hook replaces the default, and gets the flow and the error",
+    len(recorder.sent) == 1
+    and recorder.sent[0][1]["data"]["content"] == "Custom: boom"
+    and len(seen) == 1
+    and isinstance(seen[0], RuntimeError),
+    recorder.sent,
+  )
+
+  quiet = Commands(Service("errors.quiet"))
+  boom(quiet)
+
+  @quiet.on_error
+  async def say_nothing(flow: Flow, error: BaseException) -> None:
+    return None
+
+  check("a hook that does nothing sends nothing", (await run(quiet, 4)).sent == [])
+
+  broken = Commands(Service("errors.broken"))
+  boom(broken)
+
+  @broken.on_error
+  async def also_fails(flow: Flow, error: BaseException) -> None:
+    raise KeyError("the hook itself broke")
+
+  check(
+    "a hook that raises is logged and does not escape",
+    (await run(broken, 5)).sent == [],
+  )
+
+  mine = InteractionRouter()
+  check(
+    "the router has one too, and the default is exported to build on",
+    mine.on_error(say_nothing) is say_nothing and callable(report_failure),
+  )
+
+
 async def colour_scenarios() -> None:
   print("colour: a helper, and colour spelled the Canadian way")
   from micro.discord import ui
@@ -5251,6 +5362,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "ui-limits": ui_limits_scenarios,
   "colour": colour_scenarios,
   "logging": logging_scenarios,
+  "errors": error_hook_scenarios,
   "embed": embed_scenarios,
   "draft": draft_scenarios,
   "helpers": helper_scenarios,

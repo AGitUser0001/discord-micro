@@ -56,6 +56,10 @@ LATE_WARNING = 2.0
 
 type Call = Callable[[], Awaitable[Any]]
 
+type ErrorHook = Callable[[Flow, BaseException], Awaitable[None]]
+"""`async def hook(flow, error)`: what to do when an interaction's handler or middleware
+raised. It runs after the error is logged and may answer `flow.interaction` as it likes."""
+
 
 class MenuSettings(TypedDict, total=False):
   """Options of a `user` or `message` context-menu command."""
@@ -98,6 +102,7 @@ class InteractionTemplate:
     self._consumers: list[StreamConsumer] = []
     self._http: DiscordHTTPClient | None = None
     self._middleware: Middlewares[Flow] = Middlewares()
+    self._on_error: ErrorHook = report_failure
     service.extend(self)
 
   # Subclasses describe their routes and how to run one interaction.
@@ -124,6 +129,21 @@ class InteractionTemplate:
     if function is None:
       return self._middleware.use(scope)  # type: ignore[arg-type]
     return self._middleware.use(scope, function)  # type: ignore[arg-type]
+
+  def on_error(self, hook: ErrorHook) -> ErrorHook:
+    """Decide what happens when a handler or its middleware raises (a decorator).
+
+        @commands.on_error
+        async def failed(flow: Flow, error: BaseException) -> None:
+          if isinstance(error, PermissionError):
+            await flow.interaction.respond(Draft("Not allowed.", ephemeral=True))
+
+    The error is always logged first. The default, `report_failure`, answers with an
+    ephemeral "Something went wrong."; your hook replaces it entirely (answer however
+    you like, or not at all). One hook per template; a second call replaces the first.
+    """
+    self._on_error = hook
+    return hook
 
   # ServiceExtension.
 
@@ -201,7 +221,7 @@ class InteractionTemplate:
         self.service.name,
         flow.interaction.age,
       )
-      await report_failure(flow, error)
+      await run_error_hook(self._on_error, flow, error)
       return
     if not flow.reached and not flow.interaction.responded:
       log.warning(
@@ -217,8 +237,16 @@ class InteractionTemplate:
     await call()
 
 
+async def run_error_hook(hook: ErrorHook, flow: Flow, error: BaseException) -> None:
+  """Call an error hook; one that itself fails is logged and does nothing more."""
+  try:
+    await hook(flow, error)
+  except Exception:
+    log.warning("The interaction error hook failed", exc_info=True)
+
+
 async def report_failure(flow: Flow, error: BaseException) -> None:
-  """Tell the user a handler or middleware failed (the default error layer)."""
+  """The default error hook: tell the user, in an ephemeral reply, that it failed."""
   try:
     interaction = flow.interaction
     if interaction.expired or interaction.is_autocomplete:
