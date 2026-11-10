@@ -78,6 +78,7 @@ class GatewayControl:
     intents: str | int | None = None,
     max_concurrency: int | None = None,
     lease_ttl: float | None = None,
+    identify_interval: float | None = None,
   ) -> GatewaySettings:
     """Change the Gateway's settings: only the fields you pass change.
 
@@ -100,6 +101,8 @@ class GatewayControl:
       fields["max_concurrency"] = max_concurrency
     if lease_ttl is not None:
       fields["lease_ttl"] = lease_ttl
+    if identify_interval is not None:
+      fields["identify_interval"] = identify_interval
     config = await self.settings()
     stored = (await config.update(**fields)).value
     if shard_count is not None or intents is not None:
@@ -239,12 +242,16 @@ class GatewayControl:
     )
     await self._send(guild_id, "voice", update)
 
-  async def shard_for(self, guild_id: int) -> int:
-    """The shard id a guild belongs to in the active generation."""
+  async def shard_count(self) -> int:
+    """How many shards the active generation has."""
     active = await (await self._generations()).get(ACTIVE_KEY)
     if active is None:
       raise RoutingError("No Gateway generation is active.")
-    return (guild_id >> 22) % active.value.shard_count
+    return active.value.shard_count
+
+  async def shard_for(self, guild_id: int) -> int:
+    """The shard id a guild belongs to in the active generation."""
+    return (guild_id >> 22) % await self.shard_count()
 
   async def connection_for(self, guild_id: int) -> str | None:
     """The READY connection publishing the guild's shard, if any."""

@@ -103,6 +103,7 @@ Reference
    micro.coordination.Locks
    micro.coordination.LockHolder
    micro.coordination.LockLost
+   micro.coordination.Lease
    micro.coordination.Declarations
    micro.coordination.Declared
    micro.coordination.DeclarationState

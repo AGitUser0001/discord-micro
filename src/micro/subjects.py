@@ -10,17 +10,19 @@ import re
 PREFIX = "micro"
 
 EVENTS_STREAM = "MICRO_EVENTS"
-"""Interest-retention stream holding application events, Discord dispatches,
-standby dispatches, and Gateway connection lifecycle events."""
+"""Interest-retention stream holding application events, Discord dispatches and
+Gateway connection lifecycle events."""
 
 EVENT_STREAM_SUBJECTS = (
   "micro.evt.>",
   "micro.discord.dispatch.>",
-  "micro.discord.standby.>",
   "micro.gateway.connection.>",
 )
 
-RETIRED_EVENT_STREAM_SUBJECTS = ("micro.discord.interaction.>",)
+RETIRED_EVENT_STREAM_SUBJECTS = (
+  "micro.discord.interaction.>",
+  "micro.discord.standby.>",
+)
 """Subjects earlier versions put in MICRO_EVENTS; removed on start."""
 
 INTERACTIONS_STREAM = "MICRO_INTERACTIONS"
@@ -98,9 +100,9 @@ def dispatch_filter(name: str = "*", guild_id: int | str | None = "*") -> str:
   return f"micro.discord.dispatch.{event_name}.{guild}"
 
 
-def standby(name: str, guild_id: int | str | None = None) -> str:
-  """Dispatches from connections that are not publishing (projection only)."""
-  return f"micro.discord.standby.{token(name)}.{_guild(guild_id)}"
+def state(shard_id: int) -> str:
+  """Where the connection serving a shard answers questions about its guilds."""
+  return f"micro.discord.state.{shard_id}"
 
 
 def interaction(route: str) -> str:
@@ -192,7 +194,7 @@ __all__ = (
   "node",
   "request",
   "safe_name",
-  "standby",
+  "state",
   "token",
   "work",
   "work_stream",

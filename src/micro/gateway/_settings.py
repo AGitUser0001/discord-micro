@@ -25,6 +25,8 @@ class GatewaySettings(BaseModel):
   """Gateway intents: names or numbers, comma separated (`unprivileged,message_content`)."""
   max_concurrency: int = Field(default=1, ge=1)
   """Identifies Discord allows per 5 seconds."""
+  identify_interval: float = Field(default=5.0, gt=0)
+  """Seconds between identifies in one bucket (Discord allows one per 5 seconds)."""
   lease_ttl: float = Field(default=10.0, ge=3)
   """Seconds a shard lease lives without renewal."""
   presence: PresenceUpdate | None = None

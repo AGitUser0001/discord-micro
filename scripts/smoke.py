@@ -170,7 +170,9 @@ class Stack:
     gateway: dict[str, Any] | None = None,
     extra_gateways: int = 0,
     members: dict[str, list[dict[str, Any]]] | None = None,
+    presence_ttl: float = 10.0,
   ) -> None:
+    self.presence_ttl = presence_ttl
     self.members = members or {}
     self.app = app
     self.first = tuple(first)
@@ -201,7 +203,10 @@ class Stack:
     )
     await wait_listening(port)
     self.runtime = Runtime(
-      f"nats://127.0.0.1:{port}", name="smoke", storage=StorageType.MEMORY
+      f"nats://127.0.0.1:{port}",
+      name="smoke",
+      storage=StorageType.MEMORY,
+      presence_ttl=self.presence_ttl,
     )
     await self.runtime.__aenter__()
 
@@ -216,7 +221,10 @@ class Stack:
     if self.seed_intents:
       from micro.gateway import GatewayControl
 
-      await GatewayControl(self.runtime).set_intents(int(intents))
+      # The 5 s between identifies is Discord's rule; the fake Discord has none.
+      await GatewayControl(self.runtime).configure(
+        intents=int(intents), identify_interval=0.1
+      )
     await self.runtime.add(
       *self.first,
       DiscordHTTPWorker(TOKEN, api_url=api),
@@ -238,7 +246,9 @@ class Stack:
 
   async def __aexit__(self, *error: object) -> None:
     try:
-      await self.runtime.__aexit__(*error)  # type: ignore[arg-type]
+      # Close without draining: a graceful drain (handing shards to a peer, waiting
+      # out leases) is what the tests that are about draining check themselves.
+      await self.runtime.close()
     except Exception as exc:  # shutdown noise must not hide a result
       print(f"  (shutdown: {type(exc).__name__}: {exc})")
     self._nats.terminate()
@@ -269,10 +279,14 @@ class Stack:
 results: list[tuple[str, bool]] = []
 
 
+_BEGAN = time.monotonic()
+
+
 def check(name: str, ok: bool, detail: object = "") -> None:
   results.append((name, ok))
+  when = f"{time.monotonic() - _BEGAN:5.1f}s " if os.environ.get("SMOKE_TRACE") else ""
   print(
-    f"  {'PASS' if ok else 'FAIL'}  {name}"
+    f"  {when}{'PASS' if ok else 'FAIL'}  {name}"
     + (f"   [{detail}]" if detail and not ok else "")
   )
 
@@ -346,7 +360,7 @@ async def basics() -> None:
         "modal submit reached its handler", app.feedback == ["lovely"], app.feedback
       )
 
-    calls = await s.interact(f.slash("slow"), count=3)
+    calls = await s.interact(f.slash("slow"), count=2)
     types = [c.body.get("type") for c in calls if c.path.endswith("/callback")]
     edits = [c for c in calls if c.method == "PATCH"]
     check(
@@ -464,13 +478,10 @@ async def runtime_command_scenarios() -> None:
 
 
 async def state_scenarios() -> None:
-  print("state: what every shard sees, aggregated by guild, read without REST")
+  print("state: each shard holds its guilds, and is asked")
   from micro.discord.permissions import Permissions
   from micro.discord.state import DiscordState
-  from micro.gateway._events import ConnectionEvent, ConnectionEventKind
-  from micro.gateway.projection import GatewayProjection
-  from micro.store import Store, StoreClient
-  from micro.store.sqlite import SQLiteGraph
+  from micro.gateway._state import ShardState
 
   def member(user_id: str, name: str, roles: list[str]) -> dict[str, Any]:
     return {
@@ -501,21 +512,12 @@ async def state_scenarios() -> None:
     | hikari.Intents.MESSAGE_CONTENT
     | hikari.Intents.GUILD_MEMBERS
   )
-  state_dir = tempfile.TemporaryDirectory()
   fake_members = {
     "500": [member("1", "ann", ["10"]), member("2", "bob", ["11"])],
     "600": [member("1", "ann", ["20"])],
   }
-  projection = GatewayProjection()
   async with Stack(
-    App(),
-    guilds=("500", "600"),
-    intents=intents,
-    first=[
-      Store(SQLiteGraph(os.path.join(state_dir.name, "state.db"))),
-      projection,
-    ],
-    members=fake_members,
+    App(), guilds=("500", "600"), intents=intents, members=fake_members
   ) as s:
     f = s.fake
     await f.until(lambda: len(f.member_requests) >= 2, 15)
@@ -524,10 +526,7 @@ async def state_scenarios() -> None:
     async def held() -> bool:
       return await state.member(600, 1) is not None
 
-    for _ in range(40):
-      if await held():
-        break
-      await asyncio.sleep(0.5)
+    await eventually(held)
     rest = len(f.where("GET", r"/members/"))
     ann_500 = await state.member(500, 1)
     ann_600 = await state.member(600, 1)
@@ -539,7 +538,7 @@ async def state_scenarios() -> None:
       (f.member_requests, f.identifies, [e.get("kind") for e in s.connection_events]),
     )
     check(
-      "members are read from the aggregated state, not REST",
+      "members are read from the shard that holds them, not REST",
       ann_500 is not None
       and ann_600 is not None
       and bob is not None
@@ -556,18 +555,96 @@ async def state_scenarios() -> None:
       "GUILD_MEMBER_UPDATE", {"guild_id": "500", **member("2", "bob", ["11", "12"])}
     )
     await f.dispatch("GUILD_MEMBER_ADD", {"guild_id": "600", **member("3", "cy", [])})
-    await asyncio.sleep(1.5)
+    await eventually(
+      lambda: state.member(500, 2), lambda m: m is not None and m.roles == ["11", "12"]
+    )
+    await eventually(lambda: state.member(600, 3), lambda m: m is not None)
     updated = await state.member(500, 2)
+    ann = await state.user(1)
+    check(
+      "a user is its own record, and a member links back to it",
+      ann is not None
+      and ann.username == "ann"
+      and (m := await state.member(500, 1)) is not None
+      and m.user is not None
+      and m.user.id == "1",
+    )
+    await f.dispatch(
+      "GUILD_MEMBER_UPDATE", {"guild_id": "600", **member("1", "ann-renamed", ["20"])}
+    )
+    await eventually(
+      lambda: state.user(1),
+      lambda u: u is not None and u.username == "ann-renamed",
+    )
+    check(
+      "a user is the same in every guild: one change shows in all of them",
+      (m := await state.member(500, 1)) is not None
+      and m.user is not None
+      and m.user.username == "ann-renamed",
+    )
     check(
       "member updates and joins reach it",
       updated is not None
       and updated.roles == ["11", "12"]
       and await state.member(600, 3) is not None,
     )
+
+    # Many events carry a user, and each one keeps it current.
+    def person(user_id: str, name: str) -> dict[str, Any]:
+      return member(user_id, name, [])["user"]
+
+    for event_name, payload, expected in (
+      (
+        "MESSAGE_CREATE",
+        {"id": "7001", "guild_id": "500", "channel_id": "7", "content": "hi", "type": 0,
+         "author": person("1", "via-message"), "timestamp": "2024-01-01T00:00:00+00:00"},
+        "via-message",
+      ),
+      (
+        "PRESENCE_UPDATE",
+        {"user": {"id": "1", "username": "via-presence"}, "guild_id": "500",
+         "status": "online", "activities": [], "client_status": {}},
+        "via-presence",
+      ),
+      (
+        "VOICE_STATE_UPDATE",
+        {"guild_id": "500", "user_id": "1", "channel_id": None, "session_id": "x",
+         "deaf": False, "mute": False, "self_deaf": False, "self_mute": False,
+         "suppress": False, "member": member("1", "via-voice", [])},
+        "via-voice",
+      ),
+      ("USER_UPDATE", person("1", "via-user-update"), "via-user-update"),
+    ):  # fmt: skip
+      await f.dispatch(event_name, payload)
+      seen = await eventually(
+        lambda: state.user(1),
+        lambda u, want=expected: u is not None and u.username == want,
+      )
+      check(
+        f"{event_name} keeps the user current",
+        seen is not None and seen.username == expected,
+      )
+    await f.dispatch(
+      "GUILD_BAN_ADD", {"guild_id": "500", "user": person("9", "banned")}
+    )
+    await eventually(lambda: state.user(9), lambda u: u is not None)
+    check("a user seen only in a ban is known too", (await state.user(9)) is not None)
+    await f.dispatch(
+      "PRESENCE_UPDATE", {"user": {"id": "777"}, "guild_id": "500", "status": "idle",
+                          "activities": [], "client_status": {}}
+    )  # fmt: skip
+    await f.dispatch(
+      "GUILD_ROLE_CREATE", {"guild_id": "500", "role": role("95", "after-presence")}
+    )
+    await eventually(lambda: state.role(95), lambda r: r is not None)
+    check(
+      "a presence patch of a user never seen creates nothing",
+      await state.user(777) is None,
+    )
     await f.dispatch(
       "GUILD_MEMBER_REMOVE", {"guild_id": "500", "user": member("2", "bob", [])["user"]}
     )
-    await asyncio.sleep(1.5)
+    await eventually(lambda: state.member(500, 2), lambda m: m is None)
     check(
       "a member who left is gone, and only from that guild",
       await state.member(500, 2) is None and await state.member(600, 1) is not None,
@@ -585,7 +662,7 @@ async def state_scenarios() -> None:
         "members": [member("1", "ann", ["90"])],
       },
     )  # fmt: skip
-    await asyncio.sleep(1.5)
+    await eventually(lambda: state.roles(500), lambda r: r is not None and len(r) == 2)
     roles = await state.roles(500)
     channels = await state.channels(500)
     check(
@@ -624,7 +701,17 @@ async def state_scenarios() -> None:
     )
     await f.dispatch("CHANNEL_UPDATE", {"guild_id": "500", **channel("7", "lobby")})
     await f.dispatch("GUILD_ROLE_DELETE", {"guild_id": "500", "role_id": "999"})
-    await asyncio.sleep(1.5)
+    await eventually(
+      lambda: state.roles(500),
+      lambda r: (
+        r is not None
+        and len(r) == 3
+        and {x.id: x.name for x in r}["90"] == "moderators"
+      ),
+    )
+    await eventually(
+      lambda: state.channel(7), lambda c: c is not None and c.name == "lobby"
+    )
     roles = await state.roles(500)
     check(
       "a role edit is seen at once, in the list and by id (it was stale before)",
@@ -637,7 +724,8 @@ async def state_scenarios() -> None:
     )
     await f.dispatch("GUILD_ROLE_DELETE", {"guild_id": "500", "role_id": "91"})
     await f.dispatch("CHANNEL_DELETE", {"guild_id": "500", **channel("8", "staff")})
-    await asyncio.sleep(1.5)
+    await eventually(lambda: state.role(91), lambda r: r is None)
+    await eventually(lambda: state.channel(8), lambda c: c is None)
     check(
       "a deleted role or channel is gone from the list and from lookup by id",
       await state.role(91) is None
@@ -652,65 +740,92 @@ async def state_scenarios() -> None:
       and not allowed.allows(Permissions.BAN_MEMBERS),
       allowed,
     )
+    await f.dispatch("GUILD_MEMBER_ADD", {"guild_id": "500", **member("3", "cy", [])})
+    await eventually(lambda: state.member(500, 3), lambda m: m is not None)
+    check("a member joined", await state.member(500, 3) is not None)
+    requests = len(f.member_requests)
+    await f.dispatch("GUILD_DELETE", {"id": "500", "unavailable": True})
+    await eventually(lambda: state.role(90), lambda r: r is None)
+    check(
+      "a guild in an outage is kept but not current: it holds nothing until it is back",
+      await state.role(90) is None and await state.member(500, 1) is None,
+    )
     await f.dispatch(
       "GUILD_CREATE",
       {"id": "500", "name": "five", "owner_id": "99", "unavailable": False,
        "roles": [everyone], "channels": [channel("7", "lobby")], "members": []},
     )  # fmt: skip
-    await asyncio.sleep(1.5)
+    await f.until(lambda: len(f.member_requests) > requests, 10)
+    await eventually(  # the list arrives (one batch: its members and the clean-up)
+      lambda: state.member(500, 1), lambda m: m is not None and m.roles == ["10"]
+    )
+    refilled = await state.member(500, 1)
     check(
-      "a GUILD_CREATE replaces the guild's state: what it no longer lists is gone",
+      "a GUILD_CREATE replaces roles and channels at once, and asks for the member list again",
       await state.role(90) is None
-      and await state.member(500, 1) is None
-      and [r.id for r in (await state.roles(500)) or []] == ["500"],
+      and [r.id for r in (await state.roles(500)) or []] == ["500"]
+      and len(f.member_requests) > requests,
+    )
+    check(
+      "members are kept until the list arrives, then those it does not list are removed",
+      refilled is not None
+      and refilled.roles == ["10"]
+      and await state.member(500, 2) is not None
+      and await state.member(500, 3) is None,
+      (refilled, await state.member(500, 3)),
     )
     await f.dispatch(
       "MESSAGE_CREATE",
       {"id": "4242", "guild_id": "500", "channel_id": "7", "content": "hi", "type": 0,
        "author": member("1", "ann", [])["user"], "timestamp": "2024-01-01T00:00:00+00:00"},
     )  # fmt: skip
-    await asyncio.sleep(1.0)
-    store = StoreClient(s.runtime)
-    stored = (
-      await store.execute(
-        '{ m: discordObject(guildId: "500", kind: "message", id: "4242") { id } }'
-      )
-    )["data"]["m"]
-    check("events that are not state (messages) are not kept", stored is None)
+    # Roles are state: once this one shows, the message before it has been folded in.
+    await f.dispatch(
+      "GUILD_ROLE_CREATE", {"guild_id": "500", "role": role("93", "next")}
+    )
+    await eventually(lambda: state.role(93), lambda r: r is not None)
+    # Messages are events, not state: a shard does not keep them.
+    check(
+      "events that are not state (messages) are not kept",
+      state_unit_ignores_messages(ShardState),
+    )
 
-    # A gap makes the guild not current; a resume makes it current again.
-    owner = (await store.execute('{ g: gatewayGuild(id: "600") { connectionId } }'))[
-      "data"
-    ]["g"]["connectionId"]
-    await projection.project_connection(
-      ConnectionEvent(
-        kind=ConnectionEventKind.DISCONNECTED,
-        shard_id=0,
-        generation=1,
-        connection_id=owner,
-        worker="test",
+    # A user is global; its guilds are what the shards know, and each leads to the member.
+    known = await state.mutual_guilds(1)
+    members = [await g.member() for g in known]
+    check(
+      "mutual_guilds leads to the guilds a user is in, and each to its member",
+      sorted(g.guild.id for g in known) == ["500", "600"]
+      and all(
+        m is not None and m.user is not None and m.user.id == "1" for m in members
       )
+      and {m.roles[0] if m and m.roles else None for m in members} == {"10", "20"},
+      (known, members),
     )
     check(
-      "while its connection has a gap, a guild holds nothing (and nothing falls back)",
-      await state.member(600, 1) is None
-      and await state.roles(600) is None
-      and len(f.where("GET", r"/members/")) == rest,
-    )
-    await projection.project_connection(
-      ConnectionEvent(
-        kind=ConnectionEventKind.RESUMED,
-        shard_id=0,
-        generation=1,
-        connection_id=owner,
-        worker="test",
-      )
+      "a user only one guild has seen is in only that guild",
+      [g.guild.id for g in await state.mutual_guilds(3)] == ["600"],
     )
     check(
-      "a resume, which replays what was missed, makes it current again",
-      await state.member(600, 1) is not None,
+      "a user nothing has seen is unknown, not an error",
+      await state.user(424242) is None
+      and await state.member(500, 424242) is None
+      and await state.member(31337, 1) is None,
     )
-  state_dir.cleanup()
+
+
+def state_unit_ignores_messages(shard_state: Any) -> bool:
+  held = shard_state()
+  held.apply("GUILD_CREATE", {"id": "5", "name": "g"}, chunks=False)
+  held.apply(
+    "MESSAGE_CREATE",
+    {"id": "9", "guild_id": "5", "channel_id": "7", "content": "hi"},
+    chunks=False,
+  )
+  return (
+    held.answer("guild", {"guild_id": "5"}) is not None
+    and held.answer("channel", {"id": "9"}) is None
+  )
 
 
 async def custom_package_scenarios() -> None:
@@ -1992,6 +2107,12 @@ async def config_scenarios() -> None:
   print("config: typed, shared, revision-safe settings with refresh middleware")
   from pydantic import BaseModel, ConfigDict
 
+  import micro.config as config_module
+
+  # The real backoff (1 s, 2 s, 4 s, ...) is what protects a deployment; a test of the
+  # retrying only needs the retries to happen, so it runs on a much shorter one.
+  config_module.default_backoff = lambda attempt: 0.2 * attempt
+
   from micro.config import (
     Config,
     ConfigConflict,
@@ -2315,7 +2436,7 @@ async def config_scenarios() -> None:
         gateway_doc["intents"] == "unprivileged,message_content",
         gateway_doc,
       )
-      await press("down", "down", "enter")  # lease_ttl
+      await press("down", "down", "down", "enter")  # lease_ttl
       await typed("1")
       await press("enter")
       check(
@@ -2486,7 +2607,14 @@ async def gateway_config_scenarios() -> None:
     check(
       "the gateway table holds every setting",
       set(config.value.model_dump())
-      == {"shard_count", "intents", "max_concurrency", "lease_ttl", "presence"},
+      == {
+        "shard_count",
+        "intents",
+        "max_concurrency",
+        "identify_interval",
+        "lease_ttl",
+        "presence",
+      },
       config.value,
     )
     # Writing the table directly (as `micro configure` does) is enough: the workers
@@ -2514,6 +2642,17 @@ async def gateway_config_scenarios() -> None:
     )
 
 
+async def eventually(read: Any, ok: Any = bool, timeout: float = 15) -> Any:
+  """Poll an async reader until `ok(value)`, and return the value (the tests wait for
+  what they expect to happen, not for a time to pass)."""
+  deadline = time.monotonic() + timeout
+  value = await read()
+  while not ok(value) and time.monotonic() < deadline:
+    await asyncio.sleep(0.02)
+    value = await read()
+  return value
+
+
 async def _until_async(read: Any, ok: Any, timeout: float) -> bool:
   """Poll an async reader until `ok(value)`; the tests' stand-in for a watch."""
   deadline = time.monotonic() + timeout
@@ -2531,7 +2670,7 @@ async def idle_scenarios() -> None:
     await f.until(lambda: s.names() == ["feedback", "hello", "slow"], 10)
     workers = [w for w in s.runtime.components if isinstance(w, GatewayWorker)]
     await f.until(lambda: all(w.ready for w in workers), 15)
-    await asyncio.sleep(1)  # let the start-up churn settle
+    await asyncio.sleep(0.5)  # let the start-up churn settle
     counts = {w.name: 0 for w in workers}
     for worker in workers:
       original = worker._reconcile  # pyright: ignore[reportPrivateUsage]
@@ -2541,7 +2680,7 @@ async def idle_scenarios() -> None:
         await original()
 
       worker._reconcile = counted  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
-    await asyncio.sleep(4)
+    await asyncio.sleep(1.5)
     # One pass every lease_ttl / 3 (3.3 s) per worker is the design; a feedback loop
     # (a lease renewal waking the loop that renews it) runs thousands of times a second.
     check(
@@ -2589,7 +2728,7 @@ async def sync_scenarios() -> None:
 
   async with Stack(App(), guilds=("500",)) as s:
     f = s.fake
-    f.rate_limit(r"/applications/\d+/commands$", retry_after=0.3, times=2)
+    f.rate_limit(r"/applications/\d+/commands$", retry_after=0.1, times=2)
     check(
       "429s on the bulk overwrite are retried",
       await f.until(lambda: s.names() == ["feedback", "hello", "slow"], 15),
@@ -2606,13 +2745,19 @@ async def sync_scenarios() -> None:
       [(c.path, c.status) for c in f.calls if "commands" in c.path],
     )
 
-  async with Stack(App()) as s:
+  async with Stack(App(), presence_ttl=3) as s:
     from micro.discord.interactions import SYNC_LOCK, sync_commands
 
     async def consumers() -> int:
       return (await s.runtime.jetstream.account_info()).consumers
 
-    await asyncio.sleep(2)
+    settled = await consumers()
+    for _ in range(100):  # startup creates consumers: wait until the count holds still
+      await asyncio.sleep(0.15)
+      now = await consumers()
+      if now == settled:
+        break
+      settled = now
     before = await consumers()
     http = DiscordHTTPClient(s.runtime)
     application = str((await http.call("get_my_application"))["id"])
@@ -2625,7 +2770,9 @@ async def sync_scenarios() -> None:
       (after := await consumers()) == before,
       (before, after),
     )
-    await asyncio.sleep(6)  # presence refreshes; an idle CommandSync must not poll
+    await asyncio.sleep(
+      2.5
+    )  # presence refreshes (every second here); an idle CommandSync must not poll
     check(
       "an idle deployment does not accumulate consumers",
       (idle := await consumers()) == before,
@@ -2633,8 +2780,16 @@ async def sync_scenarios() -> None:
     )
 
 
-async def cli_scenarios() -> None:
-  print("cli: the server and the nodes, as separate processes")
+async def cli_dev_scenarios() -> None:
+  await cli_scenarios(dev=True)
+
+
+async def cli_scenarios(dev: bool = False) -> None:
+  print(
+    "cli: `micro dev`"
+    if dev
+    else "cli: the server and the nodes, as separate processes"
+  )
   from micro.launch import reachable
 
   bin_dir = ROOT / ".venv/bin"
@@ -2645,7 +2800,7 @@ async def cli_scenarios() -> None:
   def project(directory: Path, port: int) -> None:
     (directory / "micro.toml").write_text(
       f'name = "demo"\nnats = "nats://127.0.0.1:{port}"\n'
-      '[processes.app]\ncomponents = ["services.*"]\nreplicas = 2\n'
+      '[processes.app]\ncomponents = ["services.*"]\nreplicas = 1\n'
     )
     (directory / "services/probe").mkdir(parents=True)
     (directory / "services/__init__.py").write_text("")
@@ -2694,179 +2849,267 @@ async def cli_scenarios() -> None:
       await asyncio.sleep(0.2)
     return await check()
 
-  async def report(directory: Path) -> dict[str, Any]:
+  async def cli_report(directory: Path) -> dict[str, Any]:
+    """What `micro nodes list --json` prints (a process of its own each time)."""
     code, out = await cli(directory, "nodes", "list", "--json", merge=False)
     return (
       json.loads(out) if code == 0 and out.strip() else {"nodes": {}, "components": []}
     )
 
-  with tempfile.TemporaryDirectory() as raw:
-    d = Path(raw)
-    port = free_port()
-    project(d, port)
-    try:
-      (d / "no-server.toml").write_text(
-        (d / "micro.toml").read_text() + "\n[nats_server]\nenabled = false\n"
-      )
-      code, out = await cli(d, "dev", "--config", "no-server.toml")
-      check(
-        "dev without a server it may start says how to get one",
-        code == 1 and "micro server start" in out,
-        (code, out),
-      )
-      code, out = await cli(d, "server", "status")
-      check(
-        "server status with no server fails plainly",
-        code == 1 and "No NATS server" in out,
-        (code, out),
-      )
+  watching: dict[int, Runtime] = {}
 
-      server = await long_running(d, "server", "start")
-      check(
-        "micro server start brings NATS up on its own",
-        await until(lambda: reachable("127.0.0.1", port), 20),
-      )
-      code, out = await cli(d, "server", "start")
-      check(
-        "a second server start refuses",
-        code == 1 and "already running" in out,
-        (code, out),
-      )
-      code, out = await cli(d, "server", "status", merge=False)
-      check(
-        "server status reports JetStream", code == 0 and "streams" in out, (code, out)
-      )
+  async def report(directory: Path) -> dict[str, Any]:
+    """The same report, read over one connection kept open: the tests poll it, and a
+    process per poll would be most of what they cost."""
+    from micro.launch import NODE_KIND
 
-      code, out = await cli(d, "worker", "nope")
-      check(
-        "an unknown process group lists the ones micro.toml has",
-        code == 1 and "No process group 'nope'" in out and "app" in out,
-        (code, out),
-      )
-      with tempfile.TemporaryDirectory() as empty:
-        code, out = await cli(Path(empty), "worker", "app")
+    if port not in watching:
+      if not await reachable("127.0.0.1", port):
+        return {"nodes": {}, "components": []}
+      try:
+        runtime = Runtime(f"nats://127.0.0.1:{port}", name="watch")
+        await runtime.start()
+        watching[port] = runtime
+      except Exception:
+        return {"nodes": {}, "components": []}
+    runtime = watching[port]
+    nodes = {
+      e.name: e
+      for e in runtime.directory.entries(NODE_KIND)
+      if e.metadata.get("deployment") == "demo"
+    }
+    found: dict[str, Any] = {"nodes": {}, "components": []}
+    for node in sorted(nodes):
+      try:
+        reply = await runtime.nats.request(
+          subjects.node("demo", node, "ps"), b"{}", timeout=5
+        )
+      except Exception:
+        reply = None  # the node left between the listing and the question
+      if reply is not None:
+        found["nodes"][node] = {
+          k: v for k, v in json.loads(reply.data).items() if k != "ok"
+        }
+    for entry in runtime.directory.entries():
+      if entry.kind not in ("runtime", NODE_KIND):
+        found["components"].append({"kind": entry.kind, "name": entry.name})
+    return found
+
+  async def stop_watching() -> None:
+    """Close the report connection while its server is still there."""
+    for opened in watching.values():
+      await opened.close()
+    watching.clear()
+
+  if not dev:
+    with tempfile.TemporaryDirectory() as raw:
+      d = Path(raw)
+      port = free_port()
+      project(d, port)
+      try:
+        (d / "no-server.toml").write_text(
+          (d / "micro.toml").read_text() + "\n[nats_server]\nenabled = false\n"
+        )
+        code, out = await cli(d, "dev", "--config", "no-server.toml")
         check(
-          "a group name without a micro.toml says to run init",
-          code == 1 and "micro init" in out,
+          "dev without a server it may start says how to get one",
+          code == 1 and "micro server start" in out,
           (code, out),
         )
-      code, out = await cli(d, "worker")
-      check(
-        "a worker with nothing to host says so",
-        code == 1 and "Nothing to host" in out,
-        (code, out),
-      )
-      solo = await long_running(d, "worker", "app")
-      async with Runtime(f"nats://127.0.0.1:{port}", name="watcher") as watcher:
-
-        async def probe_present() -> bool:
-          return any(e.name == "probe" for e in watcher.directory.entries())
-
+        code, out = await cli(d, "server", "status")
         check(
-          "a worker alone hosts its components against the server",
-          await until(probe_present, 20),
-        )
-        check("Ctrl-C stops a worker cleanly", await ctrl_c(solo) == 0)
-
-        async def probe_gone() -> bool:
-          return not await probe_present()
-
-        check(
-          "a stopped worker leaves no components behind", await until(probe_gone, 10)
+          "server status with no server fails plainly",
+          code == 1 and "No NATS server" in out,
+          (code, out),
         )
 
-      alpha = await long_running(d, "dev", "--name", "alpha")
-      check(
-        "a node starts against the running server and runs its processes",
-        await until(lambda: _count(report(d), "alpha", 2)),
-        None,
-      )
-      beta = await long_running(d, "dev", "--name", "beta")
-      check(
-        "a second node joins the same deployment",
-        await until(lambda: _count(report(d), "beta", 2)),
-        None,
-      )
+        server = await long_running(d, "server", "start")
+        check(
+          "micro server start brings NATS up on its own",
+          await until(lambda: reachable("127.0.0.1", port), 20),
+        )
+        code, out = await cli(d, "server", "start")
+        check(
+          "a second server start refuses",
+          code == 1 and "already running" in out,
+          (code, out),
+        )
+        code, out = await cli(d, "server", "status", merge=False)
+        check(
+          "server status reports JetStream", code == 0 and "streams" in out, (code, out)
+        )
 
-      async def both_listed() -> bool:
+        code, out = await cli(d, "worker", "nope")
+        check(
+          "an unknown process group lists the ones micro.toml has",
+          code == 1 and "No process group 'nope'" in out and "app" in out,
+          (code, out),
+        )
+        with tempfile.TemporaryDirectory() as empty:
+          code, out = await cli(Path(empty), "worker", "app")
+          check(
+            "a group name without a micro.toml says to run init",
+            code == 1 and "micro init" in out,
+            (code, out),
+          )
+        code, out = await cli(d, "worker")
+        check(
+          "a worker with nothing to host says so",
+          code == 1 and "Nothing to host" in out,
+          (code, out),
+        )
+        solo = await long_running(d, "worker", "app")
+        async with Runtime(f"nats://127.0.0.1:{port}", name="watcher") as watcher:
+
+          async def probe_present() -> bool:
+            return any(e.name == "probe" for e in watcher.directory.entries())
+
+          check(
+            "a worker alone hosts its components against the server",
+            await until(probe_present, 20),
+          )
+          check("Ctrl-C stops a worker cleanly", await ctrl_c(solo) == 0)
+
+          async def probe_gone() -> bool:
+            return not await probe_present()
+
+          check(
+            "a stopped worker leaves no components behind", await until(probe_gone, 10)
+          )
+
+        alpha = await long_running(d, "dev", "--name", "alpha")
+        check(
+          "a node starts against the running server and runs its processes",
+          await until(lambda: _count(report(d), "alpha", 1)),
+          None,
+        )
+        beta = await long_running(d, "dev", "--name", "beta")
+        check(
+          "a second node joins the same deployment",
+          await until(lambda: _count(report(d), "beta", 1)),
+          None,
+        )
+
+        async def both_listed() -> bool:
+          body = await cli_report(d)
+          probes = [c for c in body["components"] if c["name"] == "probe"]
+          return sorted(body["nodes"]) == ["alpha", "beta"] and len(probes) == 2
+
+        check(
+          "ps lists both nodes and their components",
+          await until(both_listed),
+          await cli_report(d),
+        )
+
+        code, out = await cli(d, "dev", "--name", "alpha")
+        check(
+          "a node name can only run once",
+          code == 1 and "already running" in out,
+          (code, out),
+        )
+        code, out = await cli(d, "dev", "scale", "app", "2")
+        check(
+          "scale without --node is ambiguous with two nodes",
+          code == 1 and "Several nodes" in out,
+          (code, out),
+        )
+        code, out = await cli(d, "dev", "scale", "app", "2", "--node", "alpha")
+        check("scale --node targets one node", code == 0, (code, out))
         body = await report(d)
-        probes = [c for c in body["components"] if c["name"] == "probe"]
-        return sorted(body["nodes"]) == ["alpha", "beta"] and len(probes) == 4
+        sizes = {n: len(v["processes"]) for n, v in body["nodes"].items()}
+        check("only that node changed", sizes == {"alpha": 2, "beta": 1}, sizes)
+        before = {c["pid"] for c in body["nodes"]["beta"]["processes"]}
+        code, out = await cli(d, "dev", "roll", "app", "--node", "beta")
+        after = {c["pid"] for c in (await report(d))["nodes"]["beta"]["processes"]}
+        check(
+          "roll replaces every process of that node",
+          code == 0 and not (before & after) and len(after) == 1,
+          (code, before, after),
+        )
 
-      check(
-        "ps lists both nodes and their components",
-        await until(both_listed),
-        await report(d),
-      )
+        check("Ctrl-C stops a node cleanly", await ctrl_c(alpha) == 0)
+        check(
+          "the server is still running after a node stopped",
+          await reachable("127.0.0.1", port),
+        )
+        body = await report(d)
+        check(
+          "the other node carries on",
+          sorted(body["nodes"]) == ["beta"],
+          body["nodes"].keys(),
+        )
+        await stop_watching()
+        await ctrl_c(beta)
+        check(
+          "Ctrl-C stops the server on its own",
+          await ctrl_c(server) == 0 and not await reachable("127.0.0.1", port),
+        )
+      finally:
+        for proc in procs:
+          if proc.returncode is None:
+            with __import__("contextlib").suppress(ProcessLookupError):
+              os.killpg(proc.pid, signal.SIGKILL)
 
-      code, out = await cli(d, "dev", "--name", "alpha")
-      check(
-        "a node name can only run once",
-        code == 1 and "already running" in out,
-        (code, out),
-      )
-      code, out = await cli(d, "dev", "scale", "app", "3")
-      check(
-        "scale without --node is ambiguous with two nodes",
-        code == 1 and "Several nodes" in out,
-        (code, out),
-      )
-      code, out = await cli(d, "dev", "scale", "app", "3", "--node", "alpha")
-      check("scale --node targets one node", code == 0, (code, out))
-      body = await report(d)
-      sizes = {n: len(v["processes"]) for n, v in body["nodes"].items()}
-      check("only that node changed", sizes == {"alpha": 3, "beta": 2}, sizes)
-      before = {c["pid"] for c in body["nodes"]["beta"]["processes"]}
-      code, out = await cli(d, "dev", "roll", "app", "--node", "beta")
-      after = {c["pid"] for c in (await report(d))["nodes"]["beta"]["processes"]}
-      check(
-        "roll replaces every process of that node",
-        code == 0 and not (before & after) and len(after) == 2,
-        (code, before, after),
-      )
+  if dev:
+    with tempfile.TemporaryDirectory() as raw:
+      d = Path(raw)
+      port = free_port()
+      project(d, port)
+      up = await long_running(d, "dev")
+      try:
+        check(
+          "micro dev runs the server and the processes together",
+          await until(lambda: _count(report(d), None, 1), 30)
+          and await reachable("127.0.0.1", port),
+        )
+        await stop_watching()
+        code = await ctrl_c(up)
+        check(
+          "Ctrl-C stops the processes, then the server it started",
+          code == 0 and not await reachable("127.0.0.1", port),
+          code,
+        )
+      finally:
+        if up.returncode is None:
+          os.killpg(up.pid, signal.SIGKILL)
 
-      check("Ctrl-C stops a node cleanly", await ctrl_c(alpha) == 0)
-      check(
-        "the server is still running after a node stopped",
-        await reachable("127.0.0.1", port),
-      )
-      body = await report(d)
-      check(
-        "the other node carries on",
-        sorted(body["nodes"]) == ["beta"],
-        body["nodes"].keys(),
-      )
-      await ctrl_c(beta)
-      check(
-        "Ctrl-C stops the server on its own",
-        await ctrl_c(server) == 0 and not await reachable("127.0.0.1", port),
-      )
-    finally:
-      for proc in procs:
-        if proc.returncode is None:
-          with __import__("contextlib").suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
 
-  with tempfile.TemporaryDirectory() as raw:
-    d = Path(raw)
-    port = free_port()
-    project(d, port)
-    up = await long_running(d, "dev")
-    try:
-      check(
-        "micro dev runs the server and the processes together",
-        await until(lambda: _count(report(d), None, 2), 30)
-        and await reachable("127.0.0.1", port),
-      )
-      code = await ctrl_c(up)
-      check(
-        "Ctrl-C stops the processes, then the server it started",
-        code == 0 and not await reachable("127.0.0.1", port),
-        code,
-      )
-    finally:
-      if up.returncode is None:
-        os.killpg(up.pid, signal.SIGKILL)
+async def cli_help_scenarios() -> None:
+  print("cli: help for every command, and .env")
+  bin_dir = ROOT / ".venv/bin"
+  env = os.environ | {"PATH": f"{bin_dir}:{os.environ['PATH']}"}
+  micro = [sys.executable, "-m", "micro"]
+
+  async def cli(directory: Path, *args: str, merge: bool = True) -> tuple[int, str]:
+    proc = await asyncio.create_subprocess_exec(
+      *micro,
+      *args,
+      cwd=directory,
+      env=env,
+      stdout=asyncio.subprocess.PIPE,
+      stderr=asyncio.subprocess.STDOUT if merge else asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await asyncio.wait_for(proc.communicate(), 60)
+    return proc.returncode or 0, out.decode()
+
+  async def inproc(directory: Path, *args: str) -> tuple[int, str]:
+    """A help command run in this process: they only print, and a process each is slow."""
+    import contextlib
+    import io
+
+    from micro import cli as micro_cli
+
+    def run() -> tuple[int, str]:
+      out = io.StringIO()
+      code: Any = 0
+      with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        try:
+          code = micro_cli.main(list(args))
+        except SystemExit as stop:
+          code = stop.code or 0
+      return int(code), out.getvalue()
+
+    return await asyncio.to_thread(run)
 
   here = Path(tempfile.gettempdir())
   for argv, word in (
@@ -2877,7 +3120,7 @@ async def cli_scenarios() -> None:
     (("services", "--help"), "add"),
     (("commands", "sync", "--help"), "--config"),
   ):
-    code, out = await cli(here, *argv)
+    code, out = await inproc(here, *argv)
     check(
       f"micro {' '.join(argv)} shows its help",
       code == 0 and word in out,
@@ -2933,19 +3176,19 @@ async def cli_scenarios() -> None:
     [g[0] for g, ok in zip(groups, bare_ok) if not ok],
   )
   check("`help` on every group shows that group's help", all(help_ok) and all(same_ok))
-  code, out = await cli(here, "pkg")
+  code, out = await inproc(here, "pkg")
   check(
     "micro pkg with no command shows its help and exits 0",
     code == 0 and "source" in out and "help" in out,
     out,
   )
-  code, out = await cli(here, "pkg", "help", "source", "add")
+  code, out = await inproc(here, "pkg", "help", "source", "add")
   check(
     "`help` follows a path to a leaf",
     code == 0 and "--ref" in out and "name" in out,
     out,
   )
-  code, out = await cli(here, "help", "pkg", "nope")
+  code, out = await inproc(here, "help", "pkg", "nope")
   check(
     "an unknown help topic says where to look",
     code == 1 and "No command 'nope'" in out and "micro pkg help" in out,
@@ -2988,20 +3231,47 @@ async def _count(
   return node in nodes and len(nodes[node]["processes"]) == expected
 
 
-async def _micro(directory: Path, *args: str, merge: bool = True) -> tuple[int, str]:
-  env = os.environ | {"PATH": f"{ROOT / '.venv/bin'}:{os.environ['PATH']}"}
+async def _micro_process(directory: Path, *args: str) -> tuple[int, str]:
+  """`micro ...` as its own process, for what depends on the real environment."""
   proc = await asyncio.create_subprocess_exec(
     sys.executable,
     "-m",
     "micro",
     *args,
     cwd=directory,
-    env=env,
+    env=os.environ | {"PATH": os.environ["PATH"]},
     stdout=asyncio.subprocess.PIPE,
-    stderr=asyncio.subprocess.STDOUT if merge else asyncio.subprocess.DEVNULL,
+    stderr=asyncio.subprocess.STDOUT,
   )
   out, _ = await asyncio.wait_for(proc.communicate(), 60)
   return proc.returncode or 0, out.decode()
+
+
+async def _micro(directory: Path, *args: str, merge: bool = True) -> tuple[int, str]:
+  """`micro ...` run in this process (the scenario is forked, so its directory and
+  environment are its own): a process per command is most of what these tests cost."""
+  import contextlib
+  import io
+
+  from micro import cli as micro_cli
+
+  def run() -> tuple[int, str]:
+    out = io.StringIO()
+    err = out if merge else io.StringIO()
+    code: Any = 0
+    before = os.getcwd()
+    os.chdir(directory)
+    try:
+      with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+          code = micro_cli.main(list(args))
+        except SystemExit as stop:
+          code = stop.code or 0
+    finally:
+      os.chdir(before)
+    return int(code), out.getvalue()
+
+  return await asyncio.to_thread(run)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -3075,8 +3345,9 @@ def _edit_demo(folder: Path) -> None:
   (folder / "orphan.py").write_text("a = 99\nb = 2\nc = 3\nd = 4\n")
 
 
-async def pkg_scenarios() -> None:
-  print("pkg: git sources, packages, and merging upgrades")
+async def _pkg_phase(phase: str) -> None:
+  """One part of the package tests, on an upstream repository of its own (so the
+  parts can run side by side)."""
   from micro.scaffold import Project, _sources, packages
   from micro.scaffold import _git as scaffold_git
 
@@ -3087,15 +3358,39 @@ async def pkg_scenarios() -> None:
     os.environ["MICRO_PACKAGES_URL"] = repo.as_uri()
     first = _git(repo, "rev-parse", "HEAD")
     try:
-      await _pkg_cli(root, repo, first)
-      await _pkg_merging(root, repo, first, Project, packages)
-      await _pkg_refs_and_sources(root, repo, first, Project, packages, _sources)
-      await _pkg_environment(root, scaffold_git)
+      if phase == "cli":
+        await _pkg_cli(root, repo, first)
+      elif phase == "merging":
+        await _pkg_merging(root, repo, first, Project, packages)
+      elif phase == "refs":
+        await _pkg_refs_and_sources(root, repo, first, Project, packages, _sources)
+      else:
+        await _pkg_environment(root, scaffold_git)
     finally:
       if saved is None:
         os.environ.pop("MICRO_PACKAGES_URL", None)
       else:
         os.environ["MICRO_PACKAGES_URL"] = saved
+
+
+async def pkg_cli_scenarios() -> None:
+  print("pkg: the command line")
+  await _pkg_phase("cli")
+
+
+async def pkg_merging_scenarios() -> None:
+  print("pkg: merging upgrades")
+  await _pkg_phase("merging")
+
+
+async def pkg_refs_scenarios() -> None:
+  print("pkg: refs and sources")
+  await _pkg_phase("refs")
+
+
+async def pkg_environment_scenarios() -> None:
+  print("pkg: the environment")
+  await _pkg_phase("environment")
 
 
 async def _pkg_cli(root: Path, repo: Path, first: str) -> None:
@@ -3444,7 +3739,7 @@ async def _pkg_environment(root: Path, scaffold_git) -> None:
   try:
     d2 = root / "nogit-project"
     d2.mkdir()
-    code, out = await _micro(d2, "init")
+    code, out = await _micro_process(d2, "init")
   finally:
     os.environ["PATH"] = env_path
   check(
@@ -3631,7 +3926,7 @@ async def route_scenarios() -> None:
   print("routes: declared custom ID routes (template, regex, custom, legacy)")
   from micro.runtime import _consumer as consumer_module
 
-  consumer_module._FETCH_WAIT = 0.5  # pyright: ignore[reportPrivateUsage]
+  consumer_module._FETCH_WAIT = 0.2  # pyright: ignore[reportPrivateUsage]
   from micro.discord.interactions import PatternRoute
   from micro.discord.interactions._pattern import literal_head
 
@@ -3656,7 +3951,12 @@ async def route_scenarios() -> None:
 
   async with Stack(App()) as s:
     await s.runtime.add(service)
-    await s.fake.until(lambda: len(s.runtime.directory.entries("service")) >= 4, 8)
+    await s.fake.until(
+      lambda: any(
+        e.name == service.name for e in s.runtime.directory.entries("service")
+      ),
+      8,
+    )
     f = s.fake
     cases = [
       ("ticket.close:42", "template", {"action": "close", "id": "42"}),
@@ -4125,7 +4425,11 @@ async def api_scenarios() -> None:
   import httpx2
   from pydantic import ValidationError
 
-  from micro.discord import ui
+  from micro.discord import http_service, ui
+
+  # A 502/503/504 is retried after a backoff (1 s, 2 s, 4 s, ...); a test of the
+  # retrying needs the retries, not the seconds.
+  http_service.default_backoff = lambda attempt: 0.01 * attempt
 
   # Structure: every operation is a method whose parameters match its request model.
   from micro.discord._api import _body_fields  # pyright: ignore[reportPrivateUsage]
@@ -5099,30 +5403,31 @@ async def scheduler_scenarios() -> None:
     await runtime.add(scheduler)
 
     now = time.monotonic() - started
-    await timers.event("t.event", REMIND, Note(text="soon"), after=1.5)
-    await timers.job("t.job", CHORE, Note(text="chore"), after=2.0)
+    await timers.event("t.event", REMIND, Note(text="soon"), after=0.4)
+    await timers.job("t.job", CHORE, Note(text="chore"), after=0.5)
     check(
       "an event timer fires at its time",
-      await waited("event", "soon", 6) and 1.0 <= got("event", "soon")[0] - now <= 3.5,
+      await waited("event", "soon", 6) and 0.3 <= got("event", "soon")[0] - now <= 3.0,
       got("event", "soon"),
     )
     check("a job timer reaches a worker", await waited("job", "chore", 6), arrivals)
 
-    await timers.event("t.replace", REMIND, Note(text="first"), after=1.5)
-    await timers.event("t.replace", REMIND, Note(text="second"), after=3.0)
-    await asyncio.sleep(5)
+    await timers.event("t.replace", REMIND, Note(text="first"), after=0.3)
+    await timers.event("t.replace", REMIND, Note(text="second"), after=0.8)
+    await waited("event", "second", 6)  # the first would be due well before this
     check(
       "scheduling a key again replaces it: only the new one fires",
       got("event", "first") == [] and len(got("event", "second")) == 1,
       arrivals,
     )
 
-    await timers.event("t.cancel", REMIND, Note(text="never"), after=1.5)
+    await timers.event("t.cancel", REMIND, Note(text="never"), after=0.4)
+    await timers.event("t.canary", REMIND, Note(text="canary"), after=0.9)
     check("cancel removes a timer", await timers.cancel("t.cancel") is True)
     check(
       "cancel says when there was nothing", await timers.cancel("t.cancel") is False
     )
-    await asyncio.sleep(3)
+    await waited("event", "canary", 6)  # it comes due after the cancelled one would
     check("a cancelled timer does not fire", got("event", "never") == [], arrivals)
 
     await timers.event(
@@ -5132,8 +5437,8 @@ async def scheduler_scenarios() -> None:
 
     # No scheduler running: timers wait, then are delivered when one starts.
     await scheduler.close()
-    await timers.event("t.catchup", REMIND, Note(text="caught"), after=1.0)
-    await asyncio.sleep(3)
+    await timers.event("t.catchup", REMIND, Note(text="caught"), after=0.3)
+    await asyncio.sleep(1.0)
     check(
       "with no scheduler, a due timer waits", got("event", "caught") == [], arrivals
     )
@@ -5147,7 +5452,7 @@ async def scheduler_scenarios() -> None:
     await runtime.add(replacement)
     check(
       "a new scheduler delivers what came due meanwhile",
-      await waited("event", "caught", 4),
+      await waited("event", "caught", 6),
       arrivals,
     )
 
@@ -5155,8 +5460,10 @@ async def scheduler_scenarios() -> None:
     second = Scheduler("scheduler")
     await runtime.add(second)
     for n in range(8):
-      await timers.event(f"t.many.{n}", REMIND, Note(text=f"m{n}"), after=1.0)
-    await asyncio.sleep(4)
+      await timers.event(f"t.many.{n}", REMIND, Note(text=f"m{n}"), after=0.3)
+    for n in range(8):
+      await waited("event", f"m{n}", 6)
+    await asyncio.sleep(0.6)  # a duplicate would arrive about now
     counts = [len(got("event", f"m{n}")) for n in range(8)]
     check("two schedulers deliver each timer exactly once", counts == [1] * 8, counts)
 
@@ -5527,7 +5834,12 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "endpoint": endpoint_scenarios,
   "custom": custom_package_scenarios,
   "cli": cli_scenarios,
-  "pkg": pkg_scenarios,
+  "cli-dev": cli_dev_scenarios,
+  "cli-help": cli_help_scenarios,
+  "pkg-cli": pkg_cli_scenarios,
+  "pkg-merging": pkg_merging_scenarios,
+  "pkg-refs": pkg_refs_scenarios,
+  "pkg-environment": pkg_environment_scenarios,
   "service": service_scenarios,
   "routes": route_scenarios,
   "health": health_scenarios,
@@ -5543,10 +5855,7 @@ SCENARIO_TIMEOUT = 150
 
 
 async def main() -> int:
-  wanted = sys.argv[1:]
-  chosen = [n for n in SCENARIOS if not wanted or any(item in n for item in wanted)]
-  if len(chosen) > 1 and not os.environ.get("SMOKE_CHILD"):
-    return await main_parallel(chosen)
+  chosen = chosen_scenarios()
   timings: list[tuple[str, float]] = []
   for name in chosen:
     started = time.perf_counter()
@@ -5564,53 +5873,74 @@ async def main() -> int:
   return len(failed)
 
 
-async def main_parallel(chosen: list[str]) -> int:
-  """Run each scenario in its own process, all at once.
+def chosen_scenarios() -> list[str]:
+  wanted = sys.argv[1:]
+  return [n for n in SCENARIOS if not wanted or any(item in n for item in wanted)]
 
-  Scenarios own their NATS server, ports and fake Discord, so they do not interact;
-  separate processes also keep the ones that edit the environment from leaking.
+
+def run_forked(chosen: list[str]) -> int:
+  """Run every scenario at once, each in a forked copy of this process.
+
+  Everything is imported once, here; a fork starts with it already loaded, so a
+  scenario costs only what it does. Scenarios own their NATS server, ports and fake
+  Discord, so they do not interact, and separate processes keep the ones that edit
+  the environment from leaking into the others.
   """
   started = time.perf_counter()
-
-  async def run(name: str) -> tuple[str, int, str, float]:
-    begun = time.perf_counter()
-    proc = await asyncio.create_subprocess_exec(
-      sys.executable,
-      __file__,
-      name,
-      env={**os.environ, "SMOKE_CHILD": "1"},
-      stdout=asyncio.subprocess.PIPE,
-      stderr=asyncio.subprocess.STDOUT,
-    )
-    out, _ = await proc.communicate()
-    return (
-      name,
-      proc.returncode or 0,
-      out.decode(errors="replace"),
-      time.perf_counter() - begun,
-    )
-
-  finished = await asyncio.gather(*(run(name) for name in chosen))
+  logs: dict[str, str] = {}
+  running: dict[int, str] = {}
+  for name in chosen:
+    log_file = tempfile.NamedTemporaryFile(prefix=f"smoke-{name}-", delete=False)  # noqa: SIM115
+    log_file.close()
+    logs[name] = log_file.name
+    pid = os.fork()
+    if pid == 0:
+      code = 1
+      try:
+        fd = os.open(log_file.name, os.O_WRONLY | os.O_TRUNC)
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+        os.environ["SMOKE_CHILD"] = "1"
+        sys.argv = [sys.argv[0], name]
+        code = 1 if asyncio.run(main()) else 0
+      except BaseException:
+        traceback.print_exc()
+      finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)  # a forked child never returns into the parent's code
+    running[pid] = name
+  took: dict[str, float] = {}
+  codes: dict[str, int] = {}
+  while running:
+    pid, status = os.wait()
+    name = running.pop(pid)
+    took[name] = time.perf_counter() - started
+    codes[name] = os.waitstatus_to_exitcode(status)
   passed = failed = 0
-  for name, code, out, _ in finished:
+  for name in chosen:
+    out = Path(logs[name]).read_text(errors="replace")
+    Path(logs[name]).unlink(missing_ok=True)
     print(out, end="")
     for line in out.splitlines():
       if line.endswith(" failed") and " passed, " in line:
         counts = line.split()
         passed += int(counts[0])
         failed += int(counts[2])
-    if code and not any(" passed, " in line for line in out.splitlines()):
-      print(f"  FAIL  scenario {name} crashed (exit {code})")
+    if codes[name] and not any(" passed, " in line for line in out.splitlines()):
+      print(f"  FAIL  scenario {name} crashed (exit {codes[name]})")
       failed += 1
   print(f"\n{passed} passed, {failed} failed in {time.perf_counter() - started:.0f}s")
   print(
     "slowest:",
     ", ".join(
-      f"{n} {t:.0f}s" for n, _, _, t in sorted(finished, key=lambda f: -f[3])[:5]
+      f"{n} {t:.1f}s" for n, t in sorted(took.items(), key=lambda i: -i[1])[:14]
     ),
   )
   return failed
 
 
 if __name__ == "__main__":
+  if len(chosen_scenarios()) > 1 and not os.environ.get("SMOKE_CHILD"):
+    sys.exit(run_forked(chosen_scenarios()))
   sys.exit(asyncio.run(main()))

@@ -445,24 +445,53 @@ class Config[T: BaseModel]:
     failures = 0
     while True:
       try:
-        async for change in table.watch(self.name, lenient=True):
-          failures = 0
-          if change is None:
-            continue
-          if change.error is not None:
-            self._report("invalid", change.revision, change.error)
-          elif change.value is None:
-            self._report("deleted", change.revision, "the stored document was deleted")
-          else:
-            self._observe(Versioned(change.value, change.revision))
-        reason: BaseException | str = "the watch ended"
+        reconnects = self.runtime.reconnects
+
+        async def follow() -> None:
+          nonlocal failures
+          async for change in table.watch(self.name, lenient=True):
+            failures = 0
+            if change is None:
+              continue
+            if change.error is not None:
+              self._report("invalid", change.revision, change.error)
+            elif change.value is None:
+              self._report(
+                "deleted", change.revision, "the stored document was deleted"
+              )
+            else:
+              self._observe(Versioned(change.value, change.revision))
+
+        # A watch whose server went away is dead, but only finds out after missed
+        # heartbeats: when the connection is back, start a new one at once.
+        following = asyncio.ensure_future(follow())
+        returned = asyncio.ensure_future(self.runtime.wait_reconnected(reconnects))
+        try:
+          await asyncio.wait({following, returned}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+          for task in (following, returned):
+            task.cancel()
+          await asyncio.gather(following, returned, return_exceptions=True)
+        if following.done() and not following.cancelled() and following.exception():
+          raise following.exception()  # pyright: ignore[reportGeneralTypeIssues]
+        reason: BaseException | str = (
+          "the connection was re-established"
+          if returned.done() and not returned.cancelled()
+          else "the watch ended"
+        )
       except asyncio.CancelledError:
         raise
       except Exception as error:
         reason = error
-      self._report("watch", None, reason)
-      await asyncio.sleep(default_backoff(failures + 1))
-      failures += 1
+      if reason == "the connection was re-established":
+        failures = 0  # nothing failed: the server came back, so watch again at once
+        log.info(
+          "Config %s: the connection was re-established; watching again", self.name
+        )
+      else:
+        self._report("watch", None, reason)
+        await asyncio.sleep(default_backoff(failures + 1))
+        failures += 1
       # Anything missed while the watch was down is in the stored document.
       with suppress(Exception):
         found = await table.get(self.name)

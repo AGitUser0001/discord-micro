@@ -8,7 +8,7 @@ from ._declarations import (
   declarations_metadata,
   digest,
 )
-from ._locks import LockHolder, LockLost, Locks
+from ._locks import Lease, LockHolder, LockLost, Locks
 from ._table import Change, Table, Versioned
 
 __all__ = (
@@ -17,6 +17,7 @@ __all__ = (
   "DeclarationState",
   "Declarations",
   "Declared",
+  "Lease",
   "LockHolder",
   "LockLost",
   "Locks",

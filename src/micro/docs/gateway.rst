@@ -9,7 +9,7 @@ connection, so you can restart, scale, or replace them without Discord noticing.
 
    Discord ⇄ websocket ⇄ GatewayWorker ──► MICRO_EVENTS stream ──► your services
                               │                                  ├► InteractionRouter
-                              ▼                                  └► GatewayProjection
+                              ▼
                     leases, generations, locks (NATS KV)
 
 :class:`GatewayWorker` is a plain component (see :doc:`runtime`). Start it from
@@ -80,6 +80,9 @@ the terminal with ``micro configure`` (open the ``gateway`` table), or from code
    * - ``max_concurrency``
      - 1
      - Identifies Discord allows per 5 seconds (your bot's ``max_concurrency``).
+   * - ``identify_interval``
+     - 5.0
+     - Seconds between identifies in one bucket (Discord allows one per 5 seconds).
    * - ``lease_ttl``
      - 10.0
      - Seconds a shard lease lives without renewal (at least 3).
@@ -90,7 +93,7 @@ the terminal with ``micro configure`` (open the ``gateway`` table), or from code
 
 How a change takes effect:
 
-* ``max_concurrency``, ``lease_ttl`` and ``presence`` apply to running workers at once.
+* ``max_concurrency``, ``identify_interval``, ``lease_ttl`` and ``presence`` apply to running workers at once.
 * ``shard_count`` and ``intents`` need fresh connections, so a change makes the workers connect a
   **new generation** beside the old one, which takes over only when every shard is READY (see
   Generations below). Every worker notices the change but only one generation is written.
@@ -130,9 +133,9 @@ a gate in ``micro_locks`` so that all workers together respect Discord's
 ``max_concurrency``.
 
 Only the **owner** of a shard publishes its dispatches. A connection that is not the
-owner (a standby while handing over, or a new generation warming up) publishes the same
-events to ``micro.discord.standby...``, which only :class:`GatewayProjection
-<micro.gateway.projection.GatewayProjection>` reads.
+owner (a standby while handing over, or a new generation warming up) publishes nothing, but
+still keeps what it hears of its guilds in memory (:doc:`state`), so it can answer as soon
+as it owns the shard.
 
 Generations
 ~~~~~~~~~~~
@@ -182,14 +185,14 @@ What it publishes
      - Meaning
    * - ``micro.discord.dispatch.<EVENT>.<guild or _>``
      - One Gateway dispatch, as Discord sent it.
-   * - ``micro.discord.standby.<EVENT>.<guild or _>``
-     - The same, from a connection that does not own the shard.
+   * - ``micro.discord.state.<shard>``
+     - Questions about the guilds of a shard (:doc:`state`), answered by its owner.
    * - ``micro.gateway.connection.<kind>``
      - Lifecycle: ready, connected, disconnected, resumed, invalidated.
 
-Both go to the ``MICRO_EVENTS`` stream with ``Micro-Shard``, ``Micro-Generation`` and
+Dispatches and lifecycle events go to the ``MICRO_EVENTS`` stream with ``Micro-Shard``, ``Micro-Generation`` and
 ``Micro-Connection`` headers. A connection id changes on every READY (a new session) and
-stays across resumes, which is what lets the :doc:`state` tell a gap in the stream from a continuation.
+stays across resumes.
 Use ``service.listen(...)`` rather than these subjects directly (see :doc:`events`).
 
 When a connection gets READY and has the ``guild_members`` intent it asks Discord for the

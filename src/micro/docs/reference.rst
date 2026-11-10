@@ -10,7 +10,7 @@ Subjects
 ``micro.req.<request_id>``                             requests (queue group ``<request_id>``)
 ``micro.evt.<event_id>``                               application events
 ``micro.discord.dispatch.<EVENT>.<guild or _>``        dispatches from the shard owner
-``micro.discord.standby.<EVENT>.<guild or _>``         other connections (projection only)
+``micro.discord.state.<shard>``                        questions about a shard's guilds
 ``micro.discord.interaction.<route>``                  routed interactions
 ``micro.gateway.connection.<shard>``                   connection lifecycle
 ``micro.gateway.ctl.<shard>.members|voice``            guild control (shard owner)
@@ -30,7 +30,7 @@ advertises them in its presence metadata: ``interactions`` lists its routes, and
 Streams and consumers
 ---------------------
 
-* ``MICRO_EVENTS`` (interest): events, dispatches, standby, connections.
+* ``MICRO_EVENTS`` (interest): events, dispatches, connections.
   Consumer ``svc_<service>`` per listening service.
 * ``MICRO_INTERACTIONS`` (work queue, per-message TTL, dedup by interaction
   ID): consumer ``ix_<route>`` per route.

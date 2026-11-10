@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict
 
@@ -17,6 +18,13 @@ class LockHolder(BaseModel):
 
 class LockLost(RuntimeError):
   """A held lock expired or was taken before its holder released it."""
+
+
+@dataclass(frozen=True, slots=True)
+class Lease:
+  """A lock being held by `Locks.hold`: `lost` is set if it was taken meanwhile."""
+
+  lost: asyncio.Event
 
 
 class Locks:
@@ -47,8 +55,9 @@ class Locks:
     await self.acquire(name, ttl=ttl)
 
   @asynccontextmanager
-  async def hold(self, name: str, *, ttl: float) -> AsyncIterator[None]:
-    """Hold the lease while the block runs, renewing it; raises `LockLost` afterwards if it was taken meanwhile."""
+  async def hold(self, name: str, *, ttl: float) -> AsyncIterator[Lease]:
+    """Hold the lease while the block runs, renewing it; raises `LockLost` afterwards if
+    it was taken meanwhile. The block can watch `lease.lost` to stop sooner."""
     revision = await self.acquire(name, ttl=ttl)
     lost = asyncio.Event()
 
@@ -74,7 +83,7 @@ class Locks:
 
     renewer = asyncio.create_task(renew(), name=f"micro.lock.{name}")
     try:
-      yield
+      yield Lease(lost)
     finally:
       renewer.cancel()
       with suppress(asyncio.CancelledError):

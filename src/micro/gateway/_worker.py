@@ -5,11 +5,11 @@ import os
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from micro import log, subjects
 from micro.config import Applied, Config, Refresh
@@ -32,6 +32,7 @@ from ._events import (
   ConnectionEventKind,
 )
 from ._settings import SETTINGS_NAME, GatewaySettings
+from ._state import GUILD_MEMBERS_INTENT, ShardState
 
 if TYPE_CHECKING:
   import hikari
@@ -56,6 +57,8 @@ class _Held:
   starter: asyncio.Task[None] | None = None
   controls: list[Subscription] = field(default_factory=list)
   publishing: bool = False
+  state: ShardState = field(default_factory=ShardState)
+  """What this connection knows of its guilds (answered while it publishes)."""
 
   @property
   def owned(self) -> bool:
@@ -176,6 +179,7 @@ class GatewayWorker(Component):
     defaults = GatewaySettings()
     self.max_concurrency = defaults.max_concurrency
     self.lease_ttl = defaults.lease_ttl
+    self.identify_interval = defaults.identify_interval
     self.settings: Config[GatewaySettings] | None = None
     """The shared settings every worker follows (set once started)."""
     self._generation_intents: dict[int, int | None] = {}
@@ -282,6 +286,7 @@ class GatewayWorker(Component):
     """Take the shared settings."""
     self.max_concurrency = settings.max_concurrency
     self.lease_ttl = settings.lease_ttl
+    self.identify_interval = settings.identify_interval
     self._status = settings.presence
 
   async def _follow_settings(
@@ -571,7 +576,7 @@ class GatewayWorker(Component):
 
   async def _start(self, held: _Held) -> None:
     bucket = held.session.shard_id % self.max_concurrency
-    await self._locks.gate(f"identify.{bucket}", ttl=5.0)
+    await self._locks.gate(f"identify.{bucket}", ttl=self.identify_interval)
     failures = 0
     while self._held.get(held.key) is held:
       try:
@@ -632,6 +637,7 @@ class GatewayWorker(Component):
             held, VoiceStateUpdate, lambda s, c: s.update_voice_state(c)
           ),
         ),
+        await nats.subscribe(subjects.state(shard_id), cb=self._answer(held)),
       ]
     else:
       controls, held.controls = held.controls, []
@@ -663,6 +669,26 @@ class GatewayWorker(Component):
 
     return callback
 
+  def _answer(self, held: _Held) -> Callable[[Msg], Any]:
+    """Answer a question about the guilds of this shard (`ShardState.answer`)."""
+
+    async def callback(message: Msg) -> None:
+      try:
+        question = json.loads(message.data)
+        value = (
+          held.state.answer(question["operation"], question)
+          if held.ready
+          else None  # reconnecting: what it holds may be behind
+        )
+      except Exception:
+        log.warning("A state question could not be answered", exc_info=True)
+        value = None
+      await self.runtime.respond(
+        message, json.dumps(value, separators=(",", ":")).encode()
+      )
+
+    return callback
+
   async def _apply_status(self, held: _Held) -> None:
     if self._status is None:
       return
@@ -676,22 +702,31 @@ class GatewayWorker(Component):
   async def on_dispatch(
     self, session: ShardSession, name: str, payload: Mapping[str, Any]
   ) -> None:
-    """Publish one Gateway dispatch (to the dispatch subject if this connection owns the shard, else standby)."""
+    """Fold a dispatch into what this connection knows, and publish it if this
+    connection owns the shard (one that is only waiting to take over just listens)."""
     held = self._held.get(lease_key(session.generation, session.shard_id))
-    publishing = held is not None and held.session is session and held.publishing
-    guild = guild_of(name, payload)
-    subject = (
-      subjects.dispatch(name, guild) if publishing else subjects.standby(name, guild)
+    if held is None or held.session is not session:
+      return  # a connection this worker has let go of
+    body = json.dumps(payload, separators=(",", ":"), default=_plain).encode()
+    held.state.apply(
+      name,
+      cast(dict[str, JsonValue], json.loads(body)),
+      chunks=bool(int(self.intents_for(session.generation)) & GUILD_MEMBERS_INTENT),
     )
+    if not held.publishing:
+      return
+    guild = guild_of(name, payload)
     headers = {
       SHARD_HEADER: str(session.shard_id),
       GENERATION_HEADER: str(session.generation),
     }
     if session.connection_id is not None:
       headers[CONNECTION_HEADER] = session.connection_id
-    body = json.dumps(payload, separators=(",", ":"), default=_plain).encode()
     await self.runtime.jetstream.publish(
-      subject, body, stream=subjects.EVENTS_STREAM, headers=headers
+      subjects.dispatch(name, guild),
+      body,
+      stream=subjects.EVENTS_STREAM,
+      headers=headers,
     )
 
   async def on_connection(
@@ -700,6 +735,8 @@ class GatewayWorker(Component):
     """Publish a connection lifecycle event and re-apply the bot's presence when it is ready."""
     held = self._held.get(lease_key(session.generation, session.shard_id))
     if held is not None and held.session is session:
+      if kind is ConnectionEventKind.READY:
+        held.state.clear()  # a new session: Discord sends every guild again
       if kind in (ConnectionEventKind.READY, ConnectionEventKind.RESUMED):
         held.ready = True
         await self._apply_status(held)

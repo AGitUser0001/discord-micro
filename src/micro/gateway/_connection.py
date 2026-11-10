@@ -181,6 +181,9 @@ class HikariShard:
       await self._request_initial_members(event.shard, event.payload)
     elif event.name == "RESUMED":
       await self.host.on_connection(self, ConnectionEventKind.RESUMED)
+    elif event.name == "GUILD_DELETE":
+      # An outage or a removal: if the guild comes back, its member list is asked for again.
+      self._chunked.discard(str(event.payload.get("id")))
     elif event.name == "GUILD_CREATE":
       # A guild joined after READY is never in READY's list.
       await self._request_members(event.shard, event.payload.get("id"))

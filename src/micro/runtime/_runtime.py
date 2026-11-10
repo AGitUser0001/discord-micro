@@ -92,6 +92,8 @@ class Runtime:
     self._started = False
     self._payloads: ObjectStore | None = None
     self._configs: list[Config[Any]] = []
+    self._reconnects = 0
+    self._reconnected = asyncio.Condition()
 
   @property
   def nats(self) -> NATS:
@@ -137,8 +139,18 @@ class Runtime:
       from micro._slim import restore_websocket_transport
 
       restore_websocket_transport()
+    options = dict(self._connect_options)
+    theirs = options.pop("reconnected_cb", None)
+
+    async def reconnected() -> None:
+      self._reconnects += 1
+      async with self._reconnected:
+        self._reconnected.notify_all()
+      if theirs is not None:
+        await theirs()
+
     self._nats = await nats.connect(
-      list(self.servers), name=self.name, **self._connect_options
+      list(self.servers), name=self.name, reconnected_cb=reconnected, **options
     )
     self._jetstream = self._nats.jetstream()
     await self.ensure_stream(
@@ -153,6 +165,20 @@ class Runtime:
     self._directory = Directory(presence)
     await self._directory.start()
     self._started = True
+
+  @property
+  def reconnects(self) -> int:
+    """How many times the NATS connection has been re-established (it starts at 0)."""
+    return self._reconnects
+
+  async def wait_reconnected(self, after: int) -> None:
+    """Wait until the connection has been re-established more than `after` times.
+
+    A watch on a key-value table does not learn that its server went away until it has
+    missed heartbeats; whoever holds one can race it against this and resubscribe at once.
+    """
+    async with self._reconnected:
+      await self._reconnected.wait_for(lambda: self._reconnects > after)
 
   async def add(self, *components: Component) -> None:
     """Start components in this runtime (starting the runtime if needed)."""

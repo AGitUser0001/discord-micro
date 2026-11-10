@@ -17,7 +17,7 @@ class ConnectionEventKind(StrEnum):
 
 
 class ConnectionEvent(BaseModel):
-  """A Gateway connection lifecycle transition, published for the projection."""
+  """A Gateway connection lifecycle transition, published for whatever follows the Gateway."""
 
   model_config = ConfigDict(extra="ignore", frozen=True)
 

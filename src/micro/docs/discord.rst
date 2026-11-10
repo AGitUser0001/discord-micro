@@ -6,7 +6,7 @@ any of them can be restarted, scaled or replaced independently.
 
 .. code-block:: text
 
-   Discord ⇄ GatewayWorker ──► events ──► your services, InteractionRouter, GatewayProjection
+   Discord ⇄ GatewayWorker ──► events ──► your services, InteractionRouter
    Discord ⇄ InteractionEndpoint (HTTP alternative to the Gateway) ──► InteractionRouter
    your services ──► DiscordHTTPClient ──► DiscordHTTPWorker ⇄ Discord (REST)
 
