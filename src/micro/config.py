@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
-from micro import subjects
+from micro import log, subjects
 from micro.coordination import Table, Versioned
 from micro.errors import MicroError
 from micro.middleware import Middleware, Middlewares
@@ -34,8 +34,6 @@ from micro.runtime import default_backoff
 
 if TYPE_CHECKING:
   from micro.runtime import Runtime
-
-logger = logging.getLogger("micro")
 
 
 class ConfigError(MicroError):
@@ -544,7 +542,7 @@ class Config[T: BaseModel]:
         if outcome is not None:
           await outcome
       except Exception:
-        logger.exception("Config %s change listener failed", self.name)
+        log.exception("Config %s change listener failed", self.name)
 
   def _release(self, revision: int, error: BaseException) -> None:
     for waiter in tuple(self._waiters):
@@ -557,7 +555,7 @@ class Config[T: BaseModel]:
     issue = ConfigIssue(kind, revision, error)
     self.last_error = issue
     level = logging.INFO if kind in {"deferred", "rejected"} else logging.WARNING
-    logger.log(level, "Config %s revision %s %s: %s", self.name, revision, kind, error)
+    log.log(level, "Config %s revision %s %s: %s", self.name, revision, kind, error)
     for listener in tuple(self._error_listeners):
       try:
         outcome = listener(issue)
@@ -565,7 +563,7 @@ class Config[T: BaseModel]:
           task = asyncio.ensure_future(outcome)
           task.add_done_callback(lambda t: t.exception())
       except Exception:
-        logger.exception("Config %s error listener failed", self.name)
+        log.exception("Config %s error listener failed", self.name)
 
 
 __all__ = (

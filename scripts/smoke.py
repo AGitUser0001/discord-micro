@@ -1369,6 +1369,214 @@ def _raises(action: Any, kind: type[Exception] = ValueError) -> str:
   return ""
 
 
+async def logging_scenarios() -> None:
+  print("logging: fields, call path, and error results nobody looked at")
+  import gc
+  import logging
+
+  from micro import log
+  from micro._handling import handling
+  from micro.result import Err, Ok, UnhandledResult
+  from micro.result import handling as watching
+
+  class Catch(logging.Handler):
+    def __init__(self) -> None:
+      super().__init__(logging.DEBUG)
+      self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+      self.records.append(record)
+
+  catch = Catch()
+  root = logging.getLogger()
+  previous = root.level
+  root.addHandler(catch)
+  root.setLevel(logging.DEBUG)
+  try:
+    log.info("sent report", guild=1, name="two words")
+    record = catch.records[-1]
+    check(
+      "a line shows its fields, and keeps them on the record",
+      record.getMessage() == "sent report  guild=1 name='two words'"
+      and record.fields == {"guild": 1, "name": "two words"}  # type: ignore[attr-defined]
+      and record.path == (),  # type: ignore[attr-defined]
+      record.getMessage(),
+    )
+    check(
+      "the logger is named for the calling module, and the line points at the caller",
+      record.name == __name__ and record.funcName == "logging_scenarios",
+      (record.name, record.funcName),
+    )
+    log.warning("retry in %.1fs", 0.5, route="x")
+    check(
+      "%-style arguments still work beside fields",
+      catch.records[-1].getMessage() == "retry in 0.5s  route=x",
+      catch.records[-1].getMessage(),
+    )
+    log.info("100% sure", note="50%")
+    check(
+      "a % in the message or a field does not break formatting",
+      catch.records[-1].getMessage() == "100% sure  note=50%",
+      catch.records[-1].getMessage(),
+    )
+
+    with log.context(interaction=77):
+      with log.step("outer"):
+
+        async def inner() -> None:
+          with log.step("inner"):
+            log.error("deep", error=ValueError("x"))
+
+        await asyncio.create_task(inner())
+        log.bind(user=3).info("bound")
+    deep = next(r for r in catch.records if r.getMessage().startswith("deep"))
+    bound = next(r for r in catch.records if r.getMessage().startswith("bound"))
+    check(
+      "the call path and context fields follow the work into a task it starts",
+      "path=outer > inner  interaction=77 error=ValueError('x')" in deep.getMessage()
+      and deep.path == ("outer", "inner"),  # type: ignore[attr-defined]
+      deep.getMessage(),
+    )
+    check(
+      "bind adds fields to a logger; leaving a step or context takes them off again",
+      "user=3" in bound.getMessage() and log.path() == () and log.fields() == {},
+      bound.getMessage(),
+    )
+
+    @log.step("decorated")
+    async def decorated() -> None:
+      log.info("in decorated")
+
+    await decorated()
+    check(
+      "step works as a decorator, and logs how long it took",
+      "path=decorated"
+      in next(
+        r for r in catch.records if r.getMessage().startswith("in decorated")
+      ).getMessage()
+      and any(r.getMessage().startswith("decorated done in") for r in catch.records),
+    )
+    try:
+      with log.step("risky"):
+        raise KeyError("boom")
+    except KeyError:
+      log.exception("it failed")
+    check(
+      "a step that raises says so, and exception() carries the traceback",
+      any(r.getMessage().startswith("risky failed in") for r in catch.records)
+      and catch.records[-1].exc_info is not None,
+    )
+
+    # Error results nobody looked at.
+    def made() -> Err[ValueError]:
+      return Err(ValueError("lost"))
+
+    def trips(body: Any) -> str:
+      try:
+        with watching():
+          body()
+      except UnhandledResult as error:
+        return str(error)
+      return ""
+
+    check(
+      "a handler that drops an Err fails, naming the error and where it was made",
+      "lost" in trips(made) and "made" in trips(made) and "smoke.py" in trips(made),
+      trips(made),
+    )
+    check(
+      "every way of looking at one counts",
+      all(
+        trips(lambda use=use: use(made())) == ""
+        for use in (
+          lambda r: r.unwrap_or(1),
+          lambda r: r.ok(),
+          lambda r: r.is_err,
+          lambda r: r.map(str),
+          lambda r: r.error,
+          lambda r: r.ignore(ValueError),
+        )
+      ),
+    )
+
+    def matched() -> None:
+      match made():
+        case Err(ValueError() as error):
+          assert str(error) == "lost"
+
+    check("so does matching on it", trips(matched) == "")
+    check("an Ok is never a problem", trips(lambda: Ok(1)) == "")
+
+    def raised() -> None:
+      made()
+      raise RuntimeError("the real failure")
+
+    try:
+      with watching():
+        raised()
+      kept = None
+    except RuntimeError as error:
+      kept = str(error)
+    check("a handler that raised keeps its own error", kept == "the real failure")
+
+    async def spawned() -> str:
+      try:
+        with watching():
+
+          async def child() -> None:
+            made()
+
+          await asyncio.create_task(child())
+      except UnhandledResult as error:
+        return str(error)
+      return ""
+
+    check(
+      "an Err made in a task the handler started counts too",
+      "lost" in await spawned(),
+    )
+
+    before = len(catch.records)
+    made()
+    gc.collect()
+    dropped = [
+      r
+      for r in catch.records[before:]
+      if "dropped without being looked at" in r.getMessage()
+    ]
+    check(
+      "outside a handler a dropped Err is logged when it is collected",
+      len(dropped) == 1
+      and dropped[0].levelno == logging.ERROR
+      and "lost" in dropped[0].getMessage(),
+      [r.getMessage() for r in catch.records[before:]],
+    )
+    before = len(catch.records)
+    made().unwrap_or(None)
+    gc.collect()
+    check(
+      "one that was looked at is not",
+      not any("dropped" in r.getMessage() for r in catch.records[before:]),
+    )
+
+    try:
+      with handling("svc", "event x", interaction=5):
+        log.info("inside")
+        made()
+    except UnhandledResult:
+      pass
+    inside = next(r for r in catch.records if r.getMessage().startswith("inside"))
+    check(
+      "Micro's handler wrapper sets the path and fields for everything inside",
+      "path=svc > event x" in inside.getMessage()
+      and "interaction=5" in inside.getMessage(),
+      inside.getMessage(),
+    )
+  finally:
+    root.removeHandler(catch)
+    root.setLevel(previous)
+
+
 async def colour_scenarios() -> None:
   print("colour: a helper, and colour spelled the Canadian way")
   from micro.discord import ui
@@ -3041,6 +3249,22 @@ async def service_scenarios() -> None:
   async def other(request: Say) -> str:
     return "unreachable"
 
+  DROPS = RequestSchema[Say, str](id="mw.drops", input=Say, output=str)
+  LOOKS = RequestSchema[Say, str](id="mw.looks", input=Say, output=str)
+
+  @service.handle(DROPS)
+  async def drops(request: Say) -> str:
+    from micro.result import Err
+
+    Err(ValueError("a failure nobody looked at"))
+    return "fine"
+
+  @service.handle(LOOKS)
+  async def looks(request: Say) -> str:
+    from micro.result import Err
+
+    return Err(ValueError("looked at")).unwrap_or("fine")
+
   @service.listen(HAPPENED)
   async def happened(event: Say) -> None:
     trace.append(f"event:{event.text}")
@@ -3072,6 +3296,23 @@ async def service_scenarios() -> None:
     except RemoteError as error:
       code = error.code
     check("end() with no output is an error", code == "ended_without_reply", code)
+    try:
+      await client.request(DROPS, Say(text="x"))
+      dropped = ""
+    except RemoteError as error:
+      dropped = f"{error.code} {error.message}"
+    check(
+      "a handler that drops an error result fails, naming it and where it was made",
+      "handler_failed" in dropped
+      and "never looked at" in dropped
+      and "a failure nobody looked at" in dropped
+      and "drops" in dropped,
+      dropped,
+    )
+    check(
+      "one that looked at it is fine",
+      await client.request(LOOKS, Say(text="x")) == "fine",
+    )
     check(
       "middleware nests in order",
       trace[:2] == ["outer>request:mw.echo", "outer<request:mw.echo"],
@@ -5010,6 +5251,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "ui-hooks": ui_hooks_scenarios,
   "ui-limits": ui_limits_scenarios,
   "colour": colour_scenarios,
+  "logging": logging_scenarios,
   "embed": embed_scenarios,
   "draft": draft_scenarios,
   "helpers": helper_scenarios,

@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import inspect
 import json
-import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -17,7 +16,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from pydantic_core import from_json, to_json
 
-from micro import subjects
+from micro import log, subjects
 from micro.errors import MicroError, RemoteError, RequestTimeoutError, RoutingError
 from micro.runtime import Component, Presence, Registration, Runtime, default_backoff
 
@@ -32,8 +31,6 @@ if TYPE_CHECKING:
   import httpx2  # Loaded at runtime only by the worker.
 
   from micro.discord.api import DiscordAPI
-
-logger = logging.getLogger("micro")
 
 WORKER_KIND = "discord.http"
 _NOT_CARRIED_OUT = frozenset((502, 503))
@@ -375,7 +372,7 @@ class DiscordHTTPWorker(Component):
         if inspect.isawaitable(outcome):
           await outcome
       except Exception:
-        logger.exception("HTTP hook failed")
+        log.exception("HTTP hook failed")
 
   async def _unsubscribe(self) -> None:
     subscriptions, self._subscriptions = self._subscriptions, []
@@ -383,7 +380,7 @@ class DiscordHTTPWorker(Component):
       try:
         await subscription.drain()
       except Exception:
-        logger.debug("HTTP worker subscription drain failed", exc_info=True)
+        log.debug("HTTP worker subscription drain failed", exc_info=True)
 
   async def _on_global_limit(self, message: Msg) -> None:
     try:
@@ -391,7 +388,7 @@ class DiscordHTTPWorker(Component):
         _GlobalLimit.model_validate_json(message.data).until
       )
     except ValueError:
-      logger.warning("Ignoring an invalid global rate-limit announcement")
+      log.warning("Ignoring an invalid global rate-limit announcement")
 
   async def _on_request(self, message: Msg) -> None:
     await self._slots.acquire()
@@ -407,7 +404,7 @@ class DiscordHTTPWorker(Component):
         body = (await self.execute(request)).model_dump_json().encode()
         headers = {_STATUS_HEADER: "ok"}
       except Exception as exc:
-        logger.exception("Discord HTTP request failed")
+        log.exception("Discord HTTP request failed")
         code = "invalid_input" if isinstance(exc, ValueError) else "handler_failed"
         body = json.dumps(
           {"code": code, "message": f"{type(exc).__name__}: {exc}"}

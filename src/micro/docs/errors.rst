@@ -105,6 +105,9 @@ raise. The interaction methods (``ctx.respond`` and friends) are the state machi
 API and raise: answering an interaction that was already answered is a mistake, not an
 outcome.
 
+An ``Err`` that nobody looks at is reported: it fails the handler it was made in with
+:class:`UnhandledResult`, and is logged when collected anywhere else (:doc:`logging`).
+
 Reference
 ---------
 
@@ -112,6 +115,8 @@ Reference
    micro.result.Ok
    micro.result.Err
    micro.result.Result
+   micro.result.UnhandledResult
+   micro.result.handling
    micro.errors.MicroError
    micro.errors.RoutingError
    micro.errors.TopologyError

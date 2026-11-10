@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
@@ -7,10 +6,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from micro import subjects
+from micro import log, subjects
 from micro.coordination import Table
-
-logger = logging.getLogger("micro")
 
 
 class Registration(BaseModel):
@@ -78,7 +75,7 @@ class Presence:
       except asyncio.CancelledError:
         raise
       except Exception:
-        logger.warning("Could not renew presence %s", self._key, exc_info=True)
+        log.warning("Could not renew presence %s", self._key, exc_info=True)
 
 
 class Directory:
@@ -161,7 +158,7 @@ class Directory:
       except asyncio.CancelledError:
         raise
       except Exception:
-        logger.warning("Presence watch failed; restarting", exc_info=True)
+        log.warning("Presence watch failed; restarting", exc_info=True)
         await asyncio.sleep(1)
 
   async def _notify(self) -> None:
@@ -171,7 +168,7 @@ class Directory:
       try:
         listener()
       except Exception:
-        logger.exception("Directory listener failed")
+        log.exception("Directory listener failed")
 
 
 def registration_id() -> str:

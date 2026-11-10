@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -11,7 +10,8 @@ from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
 from pydantic import JsonValue, ValidationError
 
-from micro import subjects
+from micro import log, subjects
+from micro._handling import handling
 from micro.coordination import DECLARATIONS_KEY, Declarations
 from micro.errors import ServiceError
 from micro.middleware import Middleware, Middlewares
@@ -25,8 +25,6 @@ from ._request import RequestSchema
 
 if TYPE_CHECKING:
   from micro.store import GraphModule
-
-logger = logging.getLogger("micro")
 
 type EventHandler[T] = Callable[[T], Awaitable[None]]
 type RequestHandler[InputT, OutputT] = Callable[[InputT], Awaitable[OutputT]]
@@ -333,14 +331,14 @@ class Service(Component):
       try:
         await subscription.drain()
       except Exception:
-        logger.debug("Subscription drain failed", exc_info=True)
+        log.debug("Subscription drain failed", exc_info=True)
     consumers, self._consumers = self._consumers, []
     await asyncio.gather(*(consumer.stop() for consumer in consumers))
     for extension in reversed(self._extensions):
       try:
         await extension.stop()
       except Exception:
-        logger.exception("Stopping an extension of %s failed", self.name)
+        log.exception("Stopping an extension of %s failed", self.name)
 
   def _report_conflicts(self) -> None:
     mine = set(self._requests)
@@ -349,7 +347,7 @@ class Service(Component):
         continue
       theirs = entry.metadata.get("requests")
       if isinstance(theirs, dict) and (overlap := mine & set(theirs)):
-        logger.error(
+        log.error(
           "Services %r and %r both handle %s; calls are split between them.",
           self.name,
           entry.name,
@@ -388,7 +386,7 @@ class Service(Component):
       except Exception as exc:
         # The answer could not be sent (too large to store, say). Tell the caller
         # why instead of leaving it to time out.
-        logger.exception("Could not send the reply to %s", schema.id)
+        log.exception("Could not send the reply to %s", schema.id)
         with suppress(Exception):
           await self.runtime.respond(
             message,
@@ -425,7 +423,8 @@ class Service(Component):
       call.output = await handler(call.input)
 
     try:
-      await self._call_middleware.run(call, final)
+      with handling(self.name, f"request {schema.id}"):
+        await self._call_middleware.run(call, final)
       if call.output is UNSET:
         raise ServiceError(
           "ended_without_reply",
@@ -435,7 +434,7 @@ class Service(Component):
     except ServiceError:
       raise
     except Exception as exc:
-      logger.exception("Request handler for %s failed", schema.id)
+      log.exception("Request handler for %s failed", schema.id)
       raise ServiceError("handler_failed", f"{type(exc).__name__}: {exc}") from exc
     try:
       return schema.encode_output_json(result)
@@ -494,7 +493,7 @@ class Service(Component):
       else:
         done.add(index)
     for listener, error in failures:
-      logger.error(
+      log.error(
         "Handler %s failed for event %s",
         listener.label,
         listener.event.id,
@@ -525,7 +524,8 @@ class Service(Component):
     async def final(call: Call) -> None:
       await handler(call.input)
 
-    await self._call_middleware.run(Call(kind, key, self, message, payload), final)
+    with handling(self.name, f"{kind} {key}"):
+      await self._call_middleware.run(Call(kind, key, self, message, payload), final)
 
   def _undecodable(
     self, kind: str, key: str, mine: str, error: ValidationError
@@ -537,13 +537,13 @@ class Service(Component):
       if entry.name == self.name and isinstance(declared, dict):
         versions.add(str(declared.get(key)))
     if versions - {mine}:
-      logger.warning(
+      log.warning(
         "%s %s does not match this replica's schema; leaving it for another version",
         kind,
         key,
       )
       raise Retry(1.0) from error
-    logger.error("%s %s does not match its schema: %s", kind, key, error)
+    log.error("%s %s does not match its schema: %s", kind, key, error)
     raise Reject from error
 
   def _work_callback[T](

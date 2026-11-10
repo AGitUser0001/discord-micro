@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING
@@ -7,12 +6,11 @@ from typing import TYPE_CHECKING
 from nats.aio.msg import Msg
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 
+from micro import log
 from micro.errors import DrainingError
 
 if TYPE_CHECKING:
   from ._component import Component
-
-logger = logging.getLogger("micro")
 
 _FETCH_WAIT = 5.0
 """How long one pull waits for messages before the loop re-checks draining."""
@@ -127,7 +125,7 @@ class StreamConsumer:
           self._slots.release()
           raise
         except Exception:
-          logger.warning("Fetch from %s failed", self.durable, exc_info=True)
+          log.warning("Fetch from %s failed", self.durable, exc_info=True)
           messages = []
           await asyncio.sleep(1)
         if not messages:
@@ -153,11 +151,11 @@ class StreamConsumer:
     except Retry as retry:
       await _settle(message.nak(delay=retry.delay or None))
     except Reject:
-      logger.warning("Rejected %s from %s", message.subject, self.durable)
+      log.warning("Rejected %s from %s", message.subject, self.durable)
       await _settle(message.term())
     except Exception:
       deliveries = message.metadata.num_delivered or 1
-      logger.exception(
+      log.exception(
         "Handler for %s in %s failed (delivery %d)",
         message.subject,
         self.durable,
@@ -177,7 +175,7 @@ class StreamConsumer:
       async with self._component.tracked():
         await self._handler(message)
     except Exception:
-      logger.exception("Handler for %s in %s failed", message.subject, self.durable)
+      log.exception("Handler for %s in %s failed", message.subject, self.durable)
     finally:
       self._slots.release()
 
@@ -192,4 +190,4 @@ async def _settle(operation: Awaitable[object]) -> None:
   try:
     await operation
   except Exception:
-    logger.warning("Could not settle a stream message", exc_info=True)
+    log.warning("Could not settle a stream message", exc_info=True)

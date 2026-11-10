@@ -2,18 +2,15 @@
 
 import asyncio
 import json
-import logging
 import os
 from contextlib import suppress
 from typing import Any
 
-from micro import subjects
+from micro import log, subjects
 from micro._ed25519 import verify
 from micro.runtime import Component
 
 from ._context import REPLY_KEY
-
-logger = logging.getLogger("micro")
 
 PING = 1
 PONG = {"type": 1}
@@ -152,7 +149,7 @@ class InteractionEndpoint(Component):
           await asyncio.wait({answer, gone}, return_when=asyncio.FIRST_COMPLETED)
           if answer.done():
             return Response(answer.result(), media_type="application/json")
-          logger.warning(
+          log.warning(
             "Discord gave up on interaction %s before anything answered it",
             payload.get("id"),
           )

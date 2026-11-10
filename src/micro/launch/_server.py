@@ -1,15 +1,16 @@
 """The NATS server nodes connect to, run on its own: `micro server start`."""
 
 import asyncio
-import logging
 import shutil
 import signal
 from contextlib import suppress
 from pathlib import Path
 
+from micro.log import Logger
+
 from ._config import DeploymentConfig
 
-logger = logging.getLogger("micro.server")
+log = Logger("micro.server")
 
 
 async def reachable(host: str, port: int) -> bool:
@@ -84,7 +85,7 @@ class NatsServer:
         "`brew install nats-server`) or set [nats_server] binary in micro.toml."
       ) from error
     host, port = self.address
-    logger.info(
+    log.info(
       "Started nats-server on %s:%d (store %s)",
       host,
       port,

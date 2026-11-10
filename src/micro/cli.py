@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import json
-import logging
 import math
 import os
 import re
@@ -15,7 +14,7 @@ from typing import Any
 
 from nats.errors import NoServersError
 
-from micro import subjects
+from micro import log, subjects
 from micro.runtime import Runtime, event_loop_factory
 
 DEFAULT_CONFIG = "micro.toml"
@@ -728,9 +727,7 @@ async def _dev_start(args: argparse.Namespace) -> int:
   started = False
   if config.local_nats() is not None and config.nats_server.enabled:
     if await server.reachable():
-      logging.getLogger("micro").info(
-        "Using the NATS server already running at %s:%d", *server.address
-      )
+      log.info("Using the NATS server already running at %s:%d", *server.address)
     else:
       await server.start()
       started = True

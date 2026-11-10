@@ -19,6 +19,8 @@ from typing import Any, Self, cast
 
 from pydantic import JsonValue
 
+from micro import log
+
 _PLACEHOLDER = re.compile(r"\{(\w+)(?::([^{}]+))?\}")
 _META = set(".^$*+?{}[]|()\\")
 
@@ -218,8 +220,7 @@ _warned: set[str] = set()
 
 
 def _warn_once(key: str, message: str) -> None:
-  import logging
 
   if key not in _warned:
     _warned.add(key)
-    logging.getLogger("micro").warning(message)
+    log.warning(message)

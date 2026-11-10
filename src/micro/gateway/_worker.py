@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import math
 import os
 from collections.abc import Callable, Mapping
@@ -12,7 +11,7 @@ from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
 from pydantic import BaseModel, ValidationError
 
-from micro import subjects
+from micro import log, subjects
 from micro.config import Applied, Config, Refresh
 from micro.coordination import Locks, Table, Versioned
 from micro.runtime import Component, Presence, default_backoff
@@ -36,8 +35,6 @@ from ._settings import SETTINGS_NAME, GatewaySettings
 
 if TYPE_CHECKING:
   import hikari
-
-logger = logging.getLogger("micro")
 
 WORKER_KIND = "gateway"
 DESIRED_KEY = "generation.desired"
@@ -361,13 +358,11 @@ class GatewayWorker(Component):
       started = asyncio.get_running_loop().time()
       try:
         await follow()
-        logger.warning("The Gateway's watch on %s ended; restarting", what)
+        log.warning("The Gateway's watch on %s ended; restarting", what)
       except asyncio.CancelledError:
         raise
       except Exception:
-        logger.warning(
-          "The Gateway's watch on %s failed; restarting", what, exc_info=True
-        )
+        log.warning("The Gateway's watch on %s failed; restarting", what, exc_info=True)
       # A watch that ran for a while failed for a new reason: start the backoff over.
       if asyncio.get_running_loop().time() - started > 60:
         failures = 0
@@ -387,7 +382,7 @@ class GatewayWorker(Component):
       except asyncio.CancelledError:
         raise
       except Exception:
-        logger.exception("Gateway reconciliation failed")
+        log.exception("Gateway reconciliation failed")
       self._released.set()
 
   def _peers(self) -> list[str]:
@@ -439,7 +434,7 @@ class GatewayWorker(Component):
         continue
       current = self._leases.get(held.key)
       if current is not None and current.value.owner != self.address:
-        logger.info("Lease %s was taken over", held.key)
+        log.info("Lease %s was taken over", held.key)
         await self._stop(held, delete_lease=False)
         continue
       releasing = held.releasing or not self.accepting
@@ -454,7 +449,7 @@ class GatewayWorker(Component):
         held.key, lease, revision=held.revision, ttl=self.lease_ttl
       )
       if revision is None:
-        logger.info("Lease %s was taken over", held.key)
+        log.info("Lease %s was taken over", held.key)
         await self._stop(held, delete_lease=False)
         continue
       held.revision = revision
@@ -559,7 +554,7 @@ class GatewayWorker(Component):
       ACTIVE_KEY, desired, revision=current.revision
     )
     if revision is not None:
-      logger.info("Gateway generation %d is now publishing", desired.id)
+      log.info("Gateway generation %d is now publishing", desired.id)
     return revision is not None
 
   # Sessions --------------------------------------------------------------------
@@ -590,7 +585,7 @@ class GatewayWorker(Component):
         # the worker restarted.
         failures += 1
         delay = default_backoff(failures)
-        logger.exception(
+        log.exception(
           "Shard %s could not connect (attempt %d); trying again in %.0fs",
           held.key,
           failures,
@@ -609,7 +604,7 @@ class GatewayWorker(Component):
     try:
       await held.session.close()
     except Exception:
-      logger.exception("Closing shard %s failed", held.key)
+      log.exception("Closing shard %s failed", held.key)
     if delete_lease and held.revision is not None:
       with suppress(Exception):
         await self._shards.delete(held.key, revision=held.revision)
@@ -674,7 +669,7 @@ class GatewayWorker(Component):
     try:
       await held.session.update_presence(self._status)
     except Exception:
-      logger.warning("Could not apply presence to %s", held.key, exc_info=True)
+      log.warning("Could not apply presence to %s", held.key, exc_info=True)
 
   # ShardHost -------------------------------------------------------------------
 

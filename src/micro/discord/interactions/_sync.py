@@ -8,14 +8,12 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from micro import subjects
+from micro import log, subjects
 from micro.coordination import Declarations
 from micro.errors import MicroError
 from micro.runtime import Component, default_backoff
 
 from ._runtime_commands import PREFIX, _Stored, runtime_definitions
-
-logger = logging.getLogger("micro")
 
 SYNC_LOCK = "commands.sync"
 SYNCED_PREFIX = "synced.commands."
@@ -90,7 +88,7 @@ class CommandSync(Component):
       except asyncio.CancelledError:
         raise
       except Exception:
-        logger.warning("The watch on runtime commands failed", exc_info=True)
+        log.warning("The watch on runtime commands failed", exc_info=True)
       failures += 1
       await asyncio.sleep(default_backoff(failures))
       self._changed.set()  # whatever changed meanwhile is picked up by a pass
@@ -108,7 +106,7 @@ class CommandSync(Component):
       try:
         await self.sync()
         if reported is not None:
-          logger.info("Command sync recovered")
+          log.info("Command sync recovered")
           reported = None
         delay = 0.5
       except asyncio.CancelledError:
@@ -117,10 +115,10 @@ class CommandSync(Component):
         message = str(exc)
         if message != reported:
           level = logging.WARNING if isinstance(exc, SyncFailed) else logging.INFO
-          logger.log(level, "Command sync will retry: %s", message)
+          log.log(level, "Command sync will retry: %s", message)
           reported = message
         else:
-          logger.debug("Command sync is still failing: %s", message)
+          log.debug("Command sync is still failing: %s", message)
         await asyncio.sleep(delay)
         delay = min(delay * 2, 30.0)
         self._changed.set()
@@ -176,7 +174,7 @@ async def sync_commands(
     guilds = cast(list[Any], definition.pop("guild_ids", None) or [])
     base = key.partition("#")[0]
     if base in view:
-      logger.warning("Runtime command %s is also declared in code; using that", base)
+      log.warning("Runtime command %s is also declared in code; using that", base)
       continue
     for scope in [str(guild) for guild in guilds] if guilds else ["global"]:
       scopes.setdefault(scope, {}).setdefault(base, definition)
@@ -215,7 +213,7 @@ async def sync_commands(
       await synced.put(SYNCED_PREFIX + scope, _Synced(hash=digest))
     else:
       await synced.delete(SYNCED_PREFIX + scope)
-    logger.info("Synced %d commands for %s", len(commands), scope)
+    log.info("Synced %d commands for %s", len(commands), scope)
   for key, declared in view.items():
     if not any(scope in failed for scope in scopes_of.get(key, [])):
       await declarations.mark_applied(key, declared.hash)

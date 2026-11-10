@@ -1,13 +1,12 @@
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
 from pydantic import BaseModel, ConfigDict
 
-from ._table import Table
+from micro import log
 
-logger = logging.getLogger("micro")
+from ._table import Table
 
 
 class LockHolder(BaseModel):
@@ -66,7 +65,7 @@ class Locks:
         except Exception:
           # Could not reach NATS: try again. If the lease expires meanwhile the
           # next successful attempt finds it gone and reports the loss.
-          logger.warning("Could not renew lock %s", name, exc_info=True)
+          log.warning("Could not renew lock %s", name, exc_info=True)
           continue
         if renewed is None:
           lost.set()
@@ -84,7 +83,7 @@ class Locks:
         try:
           released = await self._table.delete(name, revision=revision)
         except Exception:
-          logger.warning("Could not release lock %s; it expires by itself", name)
+          log.warning("Could not release lock %s; it expires by itself", name)
         else:
           if not released:
             lost.set()  # someone else holds it now: it expired while we worked

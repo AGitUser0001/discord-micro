@@ -1,7 +1,6 @@
 """Typed reads of Discord state: the projection when it can answer, else HTTP."""
 
 import asyncio
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -14,8 +13,6 @@ from micro.errors import MicroError
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
   from micro.runtime import Runtime
-
-logger = logging.getLogger("micro")
 
 ADMINISTRATOR = Permissions.ADMINISTRATOR
 ALL_PERMISSIONS = Permissions((1 << 53) - 1)

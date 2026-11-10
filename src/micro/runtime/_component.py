@@ -1,16 +1,14 @@
 import asyncio
-import logging
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from micro import log
 from micro.errors import DrainingError
 
 if TYPE_CHECKING:
   from ._runtime import Runtime
-
-logger = logging.getLogger("micro")
 
 
 class ComponentState(StrEnum):
@@ -140,7 +138,7 @@ class Component:
   def _task_done(self, task: asyncio.Task[Any]) -> None:
     self._tasks.discard(task)
     if not task.cancelled() and (error := task.exception()) is not None:
-      logger.error("Background task %s failed", task.get_name(), exc_info=error)
+      log.error("Background task %s failed", task.get_name(), exc_info=error)
 
   async def _cancel_tasks(self) -> None:
     tasks = tuple(self._tasks)

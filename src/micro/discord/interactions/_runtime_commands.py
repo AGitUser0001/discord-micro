@@ -1,7 +1,6 @@
 """Commands created while the bot runs (custom commands, per-guild commands)."""
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -9,7 +8,7 @@ from nats.errors import Error as NatsError
 from nats.js.errors import NotFoundError
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from micro import subjects
+from micro import log, subjects
 from micro.coordination import Table
 from micro.discord.routes import AUTOCOMPLETE, SLASH, command_route
 from micro.runtime import StreamConsumer, default_backoff
@@ -26,8 +25,6 @@ from ._templates import (
 
 if TYPE_CHECKING:
   from micro.service import Service
-
-logger = logging.getLogger("micro")
 
 PREFIX = "rtcmd."
 """Table keys of runtime commands: `rtcmd.<type>.<name>`."""
@@ -285,11 +282,11 @@ class RuntimeCommands(InteractionTemplate):
                 replayed.add(change.key)
               await self._serve(change.key)
           except Exception:
-            logger.exception("Could not update runtime commands")
+            log.exception("Could not update runtime commands")
       except asyncio.CancelledError:
         raise
       except Exception:
-        logger.warning("The watch on runtime commands failed", exc_info=True)
+        log.warning("The watch on runtime commands failed", exc_info=True)
       failures += 1
       await asyncio.sleep(default_backoff(failures))
 

@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -12,7 +11,8 @@ from nats.aio.msg import Msg
 from nats.js.api import RetentionPolicy
 from pydantic import JsonValue
 
-from micro import subjects
+from micro import log, subjects
+from micro._handling import handling
 from micro.discord.objects import Member, Message, User
 from micro.discord.routes import (
   AUTOCOMPLETE,
@@ -44,8 +44,6 @@ from ._pattern import Route, as_route, route_id, wire_of
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
   from micro.service import Service
-
-logger = logging.getLogger("micro")
 
 INTERACTIONS_KEY = "interactions"
 """Presence metadata: the interaction routes a service handles."""
@@ -180,7 +178,7 @@ class InteractionTemplate:
     )
     age = flow.interaction.age
     if age > LATE_WARNING:
-      logger.warning(
+      log.warning(
         "Interaction %s reached a handler %.1f s after Discord created it "
         "(Discord allows %d s to answer); the delay is before the handler "
         "(gateway, NATS, or this machine's clock).",
@@ -193,9 +191,12 @@ class InteractionTemplate:
   async def handle(self, flow: Flow) -> None:
     """Run one interaction through the middleware and the template's handler."""
     try:
-      await self._middleware.run(flow, self._dispatch)
+      with handling(
+        self.service.name, f"interaction {flow.key}", interaction=flow.interaction.id
+      ):
+        await self._middleware.run(flow, self._dispatch)
     except Exception as error:
-      logger.exception(
+      log.exception(
         "Interaction handler failed in %s (%.1f s after Discord created it)",
         self.service.name,
         flow.interaction.age,
@@ -203,7 +204,7 @@ class InteractionTemplate:
       await report_failure(flow, error)
       return
     if not flow.reached and not flow.interaction.responded:
-      logger.warning(
+      log.warning(
         "Middleware ended %r without responding; Discord will show a failure.",
         flow.key,
       )
@@ -211,9 +212,7 @@ class InteractionTemplate:
   async def _dispatch(self, flow: Flow) -> None:
     call = self.resolve(flow.interaction)
     if call is None:
-      logger.warning(
-        "%s received an interaction it does not handle", type(self).__name__
-      )
+      log.warning("%s received an interaction it does not handle", type(self).__name__)
       return
     await call()
 
@@ -230,7 +229,7 @@ async def report_failure(flow: Flow, error: BaseException) -> None:
       text = "Something went wrong."
     await interaction.respond(Draft(text, ephemeral=True))
   except Exception:
-    logger.warning("Could not report an interaction error", exc_info=True)
+    log.warning("Could not report an interaction error", exc_info=True)
 
 
 class Commands(InteractionTemplate):

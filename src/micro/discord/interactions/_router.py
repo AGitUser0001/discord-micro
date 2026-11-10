@@ -1,13 +1,12 @@
 """The interaction router: raw INTERACTION_CREATE in, one routed queue item out."""
 
 import json
-import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, overload
 
 from nats.js.errors import NotFoundError
 
-from micro import subjects
+from micro import log, subjects
 from micro.discord.routes import (
   AUTOCOMPLETE,
   MESSAGE_COMPONENT,
@@ -29,8 +28,6 @@ from ._templates import (
 
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
-
-logger = logging.getLogger("micro")
 
 RAW_INTERACTION = DispatchSchema[dict[str, Any]](
   id="INTERACTION_CREATE", payload=dict[str, Any]
@@ -208,7 +205,7 @@ class InteractionRouter(Service):
     except Exception as error:
       if infrastructure and error is infrastructure[0]:
         raise  # NATS trouble: let the event be redelivered
-      logger.exception("Interaction middleware failed in %s", self.name)
+      log.exception("Interaction middleware failed in %s", self.name)
       await report_failure(flow, error)
 
   async def _publish(self, flow: Flow) -> None:
@@ -217,11 +214,11 @@ class InteractionRouter(Service):
     if route is None:
       return
     if not await self.owned(route):
-      logger.warning("No worker handles interaction route %s", route)
+      log.warning("No worker handles interaction route %s", route)
       try:
         await self.unroutable(payload)
       except Exception:
-        logger.warning("Could not answer an unroutable interaction", exc_info=True)
+        log.warning("Could not answer an unroutable interaction", exc_info=True)
       return
     await self.runtime.jetstream.publish(
       subjects.interaction(route),

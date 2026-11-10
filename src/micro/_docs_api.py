@@ -298,6 +298,7 @@ PUBLIC_MODULES = (
   "micro.config",
   "micro.service",
   "micro.errors",
+  "micro.log",
   "micro.result",
   "micro.scheduler",
   "micro.gateway",

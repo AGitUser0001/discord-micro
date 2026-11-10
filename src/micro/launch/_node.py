@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import os
 import re
 import signal
@@ -17,12 +16,13 @@ from nats.errors import NoServersError
 from pydantic import JsonValue
 
 from micro import subjects
+from micro.log import Logger
 from micro.runtime import RUNTIME_KIND, Runtime
 
 from ._config import DeploymentConfig
 from ._server import reachable
 
-logger = logging.getLogger("micro.node")
+log = Logger("micro.node")
 
 NODE_KIND = "node"
 """Presence kind of a node: `name` is the node, `metadata` its deployment and groups."""
@@ -133,7 +133,7 @@ class Node:
       for group, replicas in self.desired.items():
         for _ in range(replicas):
           await self._spawn(group)
-      logger.info("Node %s of %s is up", self.name, self.config.name)
+      log.info("Node %s of %s is up", self.name, self.config.name)
       await stop.wait()
     finally:
       await self.shutdown()
@@ -187,7 +187,7 @@ class Node:
     task = asyncio.create_task(self._monitor(child))
     self._monitors.add(task)
     task.add_done_callback(self._monitors.discard)
-    logger.info("Started %s (pid %d)", group, process.pid)
+    log.info("Started %s (pid %d)", group, process.pid)
     return child
 
   async def _monitor(self, child: Child) -> None:
@@ -199,7 +199,7 @@ class Node:
     lived = time.monotonic() - child.started
     delay = self._delays.get(child.group, _RESTART_DELAY)
     delay = _RESTART_DELAY if lived > _STABLE_AFTER else delay
-    logger.warning(
+    log.warning(
       "%s (pid %d) exited with %s; restarting in %.0fs",
       child.group,
       child.pid,

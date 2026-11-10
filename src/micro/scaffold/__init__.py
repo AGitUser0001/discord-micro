@@ -9,13 +9,14 @@ fetched from a git source, copied in, yours to edit, upgradable.
     micro services add tickets   # services/tickets/ (a new, empty service)
 """
 
-import logging
 import re
 import tomllib
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from string import Template
+
+from micro import log
 
 from . import packages
 
@@ -125,7 +126,7 @@ def init(start: Path | None = None) -> Project:
     try:
       packages.add("builtin/hello", project)
     except (packages.FETCH_ERRORS, ValueError, OSError) as error:
-      logging.getLogger("micro").warning(
+      log.warning(
         "Could not add the hello package (%s). Add it when you are online: "
         "`micro pkg add builtin/hello`.",
         error,

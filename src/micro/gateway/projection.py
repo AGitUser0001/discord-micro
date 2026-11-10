@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -10,7 +9,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from pydantic import JsonValue, ValidationError
 from pydantic_core import from_json
 
-from micro import subjects
+from micro import log, subjects
 from micro.schemas.gateway import GATEWAY_PROJECTION
 from micro.service import Service
 from micro.store import StoreClient
@@ -21,8 +20,6 @@ from ._events import (
   ConnectionEvent,
   ConnectionEventKind,
 )
-
-logger = logging.getLogger("micro")
 
 PROJECTION_SUBJECTS = (
   "micro.discord.dispatch.>",
@@ -98,14 +95,14 @@ class GatewayProjection(Service):
         raise
       except Exception:
         # NATS trouble: keep projecting once it is back, do not stop for good.
-        logger.warning("The projection could not fetch dispatches", exc_info=True)
+        log.warning("The projection could not fetch dispatches", exc_info=True)
         await asyncio.sleep(1)
         continue
       async with self.tracked():
         try:
           await self.project_messages(messages)
         except Exception:
-          logger.exception("Projection batch failed; it will be redelivered")
+          log.exception("Projection batch failed; it will be redelivered")
           for message in messages:
             await message.nak(delay=1)
         else:
@@ -125,7 +122,7 @@ class GatewayProjection(Service):
         try:
           event = ConnectionEvent.model_validate_json(message.data)
         except ValidationError:
-          logger.error("Ignoring an invalid connection event")
+          log.error("Ignoring an invalid connection event")
           continue
         await self.project_connection(event)
         continue

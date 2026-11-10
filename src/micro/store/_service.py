@@ -1,11 +1,11 @@
 import asyncio
-import logging
 import os
 from collections.abc import Sequence
 from typing import Any
 
 from pydantic import JsonValue
 
+from micro import log
 from micro.coordination import Declarations
 from micro.runtime import Runtime, default_backoff
 from micro.service import Client, RequestSchema, Service
@@ -13,8 +13,6 @@ from micro.service import Client, RequestSchema, Service
 from ._module import GraphModule
 from ._store import GraphEngine, GraphExecutor, GraphQLBody
 from .composer import DirectiveMetadata, TypeDirectiveMetadata
-
-logger = logging.getLogger("micro")
 
 DEFAULT_STORE_URL = "sqlite:.micro/store.db"
 
@@ -108,7 +106,7 @@ class Store(Service):
       modules = await self.declared_modules()
       await self.engine.apply_modules(modules)
     except Exception:
-      logger.exception("Store keeps its last good graph; the new module set failed")
+      log.exception("Store keeps its last good graph; the new module set failed")
       return
     declarations = Declarations(self.runtime, "modules")
     for key, value in self._pending.items():
@@ -127,7 +125,7 @@ class Store(Service):
       except Exception:
         # Recording what was applied failed (NATS trouble): try the pass again.
         failures += 1
-        logger.warning("The store could not record its modules", exc_info=True)
+        log.warning("The store could not record its modules", exc_info=True)
         await asyncio.sleep(default_backoff(failures))
         self._compose_requested.set()
 

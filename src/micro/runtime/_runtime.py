@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import os
 import signal
 import socket
@@ -19,7 +18,7 @@ from nats.js.errors import BadRequestError
 from nats.js.object_store import ObjectStore
 from pydantic import BaseModel, JsonValue
 
-from micro import subjects
+from micro import log, subjects
 from micro.coordination import LockHolder, Locks, Table
 
 if TYPE_CHECKING:
@@ -27,8 +26,6 @@ if TYPE_CHECKING:
 
 from ._component import Component, ComponentState
 from ._presence import Directory, Presence, Registration, registration_id
-
-logger = logging.getLogger("micro")
 
 DEFAULT_NATS_URL = "nats://127.0.0.1:4222"
 RUNTIME_KIND = "runtime"
@@ -170,7 +167,7 @@ class Runtime:
       try:
         await component.drain()
       except Exception:
-        logger.exception("Draining %s failed", component.name)
+        log.exception("Draining %s failed", component.name)
 
   async def close(self) -> None:
     """Close hosted components and disconnect."""
@@ -178,7 +175,7 @@ class Runtime:
       try:
         await component.close()
       except Exception:
-        logger.exception("Closing %s failed", component.name)
+        log.exception("Closing %s failed", component.name)
     self._components.clear()
     for config in reversed(self._configs):
       await config.close()
@@ -233,7 +230,7 @@ class Runtime:
           "components": [component.name for component in self._components],
         },
       )
-      logger.info(
+      log.info(
         "Micro runtime %s hosting %s",
         self.instance,
         ", ".join(component.name for component in self._components),
