@@ -1,11 +1,12 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
 from typing_extensions import TypeAliasType
 
+from ._message_embed_audio_response import MessageEmbedAudioResponse
 from ._message_embed_author_response import MessageEmbedAuthorResponse
 from ._message_embed_field_response import MessageEmbedFieldResponse
 from ._message_embed_footer_response import MessageEmbedFooterResponse
@@ -31,6 +32,7 @@ class MessageEmbedResponse(DiscordModel):
     image: MessageEmbedImageResponse | None = None
     thumbnail: MessageEmbedImageResponse | None = None
     video: MessageEmbedVideoResponse | None = None
+    audio: MessageEmbedAudioResponse | None = None
     footer: MessageEmbedFooterResponse | None = None
     flags: int | None = None
     components: list[ContainerComponentResponse] | None = None

@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -52,7 +52,7 @@ class APIAuditLogOptions(BaseModel):
     count: Annotated[
         str | None,
         Field(
-            description='Number of entities that were targeted\n\nPresent from:\n- MESSAGE_DELETE\n- MESSAGE_BULK_DELETE\n- MEMBER_DISCONNECT\n- MEMBER_MOVE'
+            description='Number of entities that were targeted\n\nPresent from:\n- MESSAGE_DELETE\n- MESSAGE_BULK_DELETE\n- MEMBER_DISCONNECT\n- MEMBER_MOVE\n- CHANNEL_POSITION_UPDATE\n- ROLE_POSITION_UPDATE'
         ),
     ] = None
     id: Annotated[

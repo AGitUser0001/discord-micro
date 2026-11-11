@@ -32,6 +32,7 @@ from ._commands import (
 from ._context import Interaction
 from ._custom_id import CustomId
 from ._flow import Flow, Middleware, Middlewares, flow_key
+from ._inject import call
 from ._pattern import Route, as_route, route_id, wire_of
 
 if TYPE_CHECKING:
@@ -242,7 +243,10 @@ async def report_failure(flow: Flow, error: BaseException) -> None:
   """The default error hook: tell the user, in an ephemeral reply, that it failed."""
   try:
     interaction = flow.interaction
-    if interaction.expired or interaction.is_autocomplete:
+    if (
+      interaction.expired
+      or interaction.type is InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE
+    ):
       return
     if isinstance(error, CommandOutdated):
       text = "This command was just updated. Please try again."
@@ -296,7 +300,7 @@ class Commands(InteractionTemplate):
         _validate_name(name),
         handler,
         description,
-        CommandType.SLASH,
+        CommandType.CHAT,
         parse_options(handler),
         guild_ids=tuple(guild_ids) if guild_ids is not None else self.guild_ids,
         default_member_permissions=default_member_permissions,
@@ -407,7 +411,7 @@ class Commands(InteractionTemplate):
   def _find(self, ctx: Interaction) -> tuple[Command, list[dict[str, Any]]] | None:
     data = ctx.data
     declared = self._commands.get(
-      (data.get("type", CommandType.SLASH), data.get("name", ""))
+      (data.get("type", CommandType.CHAT), data.get("name", ""))
     )
     if declared is None:
       return None
@@ -432,9 +436,13 @@ class Commands(InteractionTemplate):
     self, ctx: Interaction, command: Command, options: list[dict[str, Any]]
   ) -> None:
     resolved = ctx.data.get("resolved") or {}
-    if command.type == CommandType.SLASH:
-      await command.handler(
-        ctx, **convert_options(command.options, options, resolved, ctx.guild_id)
+    if command.type == CommandType.CHAT:
+      await call(
+        command.handler,
+        ctx,
+        **convert_options(
+          command.options, options, resolved, ctx.guild_id, ctx.context
+        ),
       )
       return
     target = ctx.data.get("target_id")
@@ -445,22 +453,26 @@ class Commands(InteractionTemplate):
         member = Member.model_validate(
           {**members[target], "user": users.get(target), "guild_id": ctx.guild_id}
         )
-        await command.handler(ctx, member)
+        await call(command.handler, ctx, member.bind(ctx.context))
       else:
-        await command.handler(
-          ctx, User.model_validate(users.get(target, {"id": target}))
+        await call(
+          command.handler,
+          ctx,
+          User.model_validate(users.get(target, {"id": target})).bind(ctx.context),
         )
       return
     messages = resolved.get("messages") or {}
     message = messages.get(target, {"id": target, "channel_id": ctx.channel_id})
-    await command.handler(ctx, Message.model_validate(message))
+    await call(command.handler, ctx, Message.model_validate(message).bind(ctx.context))
 
   async def _autocomplete(
     self, ctx: Interaction, command: Command, options: list[dict[str, Any]]
   ) -> None:
     focused = next((item for item in options if item.get("focused")), None)
     handler = command.autocompleters.get(focused.get("name", "")) if focused else None
-    choices = await handler(ctx, focused.get("value")) if handler and focused else []
+    choices = (
+      await call(handler, ctx, focused.get("value")) if handler and focused else []
+    )
     if not ctx.responded:
       await ctx.autocomplete(list(choices or [])[:25])
 
@@ -520,8 +532,8 @@ class _CustomIdTemplate(InteractionTemplate):
       ctx.route = params
       if isinstance(route, CustomId) and route.state is not None:
         state = route.decode(custom_id)
-        return lambda handler=handler: handler(ctx, state)
-      return lambda handler=handler: handler(ctx)
+        return lambda handler=handler: call(handler, ctx, state)
+      return lambda handler=handler: call(handler, ctx)
     return None
 
 

@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
@@ -16,6 +16,7 @@ class AuditLogActionTypes(IntEnum):
     CHANNEL_OVERWRITE_CREATE = 13
     CHANNEL_OVERWRITE_UPDATE = 14
     CHANNEL_OVERWRITE_DELETE = 15
+    CHANNEL_POSITION_UPDATE = 16
     MEMBER_KICK = 20
     MEMBER_PRUNE = 21
     MEMBER_BAN_ADD = 22
@@ -28,6 +29,7 @@ class AuditLogActionTypes(IntEnum):
     ROLE_CREATE = 30
     ROLE_UPDATE = 31
     ROLE_DELETE = 32
+    ROLE_POSITION_UPDATE = 33
     INVITE_CREATE = 40
     INVITE_UPDATE = 41
     INVITE_DELETE = 42

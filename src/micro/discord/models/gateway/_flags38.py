@@ -11,4 +11,7 @@ class Flags38(IntFlag):
     integer_2 = 2
     integer_4 = 4
     integer_8 = 8
+    integer_16 = 16
     integer_32 = 32
+    integer_64 = 64
+    integer_128 = 128

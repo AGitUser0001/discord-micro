@@ -4,7 +4,7 @@ Messages and components
 ``micro.discord.ui`` builds everything you send: embeds, mention rules, and **every
 component Discord has** (classic buttons and selects, the layout components of "components
 v2", and modal inputs). Builders are plain, frozen objects with a ``to_dict()``; every
-place that takes a message (``ctx.respond``, ``api.create_message``, ``channel.send``)
+place that takes a message (``interaction.respond``, ``api.create_message``, ``channel.send``)
 accepts them, and anything a builder lacks can be passed as a plain dict instead.
 
 .. code-block:: python
@@ -64,8 +64,8 @@ and flags that make it, held as a value. Nothing is sent until you hand it to so
      ephemeral=True,
    )
 
-   await ctx.respond(report)                       # an interaction
-   await ctx.edit_response(replace(report, content="Updated"))   # dataclasses.replace
+   await interaction.respond(report)                       # an interaction
+   await interaction.edit_response(replace(report, content="Updated"))   # dataclasses.replace
    await channel.send(report)                      # a channel, a message edit, the API:
    await api.create_message(channel_id, report)    # every message method takes a Draft
 
@@ -194,7 +194,7 @@ A :class:`Modal` has a ``custom_id``, a title and components: :class:`Label` wra
      Label("Confirm", Checkbox("sure")),
    ])
 
-Open it with ``ctx.modal(...)`` and read the submission as described in :doc:`responding`.
+Open it with ``interaction.modal(...)`` and read the submission as described in :doc:`responding`.
 
 Checking a message
 ------------------
@@ -318,12 +318,12 @@ a row without sending anything:
 ``hooks.serialize``: when a component is serialized it raises ``ValueError`` naming every count
 that is out of bounds (``ActionRow: components is 6; Discord allows 5.``). Building a component
 never fails, so you can assemble and then fix. The message-wide totals are checked when a message
-is assembled (``ctx.respond``, ``channel.send``, the API methods) and by :func:`validate`.
+is assembled (``interaction.respond``, ``channel.send``, the API methods) and by :func:`validate`.
 ``hooks.remove(check_limits)`` turns it off, for sending what Discord might one day accept.
 
 :func:`validate` checks components against Discord's own generated request models, limits
 included, and raises ``pydantic.ValidationError``. :func:`message_body` is what
-``ctx.respond`` and the API use to assemble content, embeds, components and flags into a
+``interaction.respond`` and the API use to assemble content, embeds, components and flags into a
 body (it enforces the v2 rule above); :func:`is_v2` and :func:`rows` are its parts.
 
 Intercepting construction and serialization

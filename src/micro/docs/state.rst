@@ -89,6 +89,41 @@ a server whose member list was never received (no ``guild_members`` intent) only
 the user has done something in it. If the shard of a server is down, that server is missing
 from the answer.
 
+Everything the shards hold
+--------------------------
+
+``DiscordState`` reads every kind of state a connection keeps, and what it returns is bound to
+the context (:doc:`objects`), so it can act and navigate:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Read
+     - Gives
+   * - ``guild``, ``guilds``
+     - one guild by id, or every guild the bot is in
+   * - ``roles``, ``role``
+     - a guild's roles, or one role by id
+   * - ``channels``, ``channel``, ``threads``
+     - a guild's channels, one channel by id, a guild's active threads
+   * - ``members``, ``member``
+     - everyone the shard holds for a guild, or one member
+   * - ``user``, ``me``
+     - a user (the newest copy any shard holds), and the bot's own user
+   * - ``voice_states``, ``voice_state``
+     - who is in voice, and where
+   * - ``presence``
+     - a user's status and activities (needs the ``guild_presences`` intent)
+   * - ``emojis``, ``stickers``
+     - a guild's custom emojis and stickers
+   * - ``stage_instances``, ``scheduled_events``
+     - live stages, and events scheduled in a guild
+   * - ``mutual_guilds``
+     - the guilds we know a user is in
+   * - ``permissions``
+     - a member's effective permissions, in a channel if given
+
 What a miss means
 -----------------
 

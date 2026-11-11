@@ -1,10 +1,11 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from ._loading_state import LoadingState
+from ._unfurled_media_item_content_scan_metadata import UnfurledMediaItemContentScanMetadata
 
 
 class APIUnfurledMediaItem(BaseModel):
@@ -42,6 +43,10 @@ class APIUnfurledMediaItem(BaseModel):
     flags: Annotated[
         Literal[1] | None,
         Field(description='Unfurled media item flags combined as a bitfield'),
+    ] = None
+    content_scan_metadata: Annotated[
+        UnfurledMediaItemContentScanMetadata | None,
+        Field(description='Content scan metadata object'),
     ] = None
     attachment_id: Annotated[
         str | None, Field(description='The id of the uploaded attachment.')

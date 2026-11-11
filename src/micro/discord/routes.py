@@ -48,7 +48,7 @@ def interaction_route(payload: Mapping[str, Any]) -> str | None:
     InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE,
   ):
     name = data.get("name")
-    command_type = data.get("type", CommandType.SLASH)
+    command_type = data.get("type", CommandType.CHAT)
     if isinstance(name, str) and isinstance(command_type, int):
       return command_route(command_type, name)
   elif kind in (InteractionType.MESSAGE_COMPONENT, InteractionType.MODAL_SUBMIT):

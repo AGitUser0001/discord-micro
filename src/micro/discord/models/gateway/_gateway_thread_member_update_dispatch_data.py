@@ -1,10 +1,10 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
-from ._flags62 import Flags62
+from ._flags64 import Flags64
 from ._api_guild_member import APIGuildMember
 
 
@@ -27,7 +27,7 @@ class GatewayThreadMemberUpdateDispatchData(BaseModel):
     join_timestamp: Annotated[
         str, Field(description='An ISO8601 timestamp for when the member last joined')
     ]
-    flags: Annotated[Flags62, Field(description='Member flags combined as a bitfield')]
+    flags: Annotated[Flags64, Field(description='Member flags combined as a bitfield')]
     member: Annotated[
         APIGuildMember | None,
         Field(

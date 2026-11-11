@@ -1,14 +1,14 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 
 
 class UpdateGuildIncidentActionsHTTPResponseBody(
-  RootModel[
-    http.GuildIncidentsDataResponse | http.RatelimitedResponse | http.ErrorResponse
-  ]
+    RootModel[
+        http.GuildIncidentsDataResponse | http.RatelimitedResponse | http.ErrorResponse
+    ]
 ):
-  pass
+    pass

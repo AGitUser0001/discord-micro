@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
@@ -98,5 +98,6 @@ class MessageResponse(DiscordModel):
     ) = None
     message_snapshots: list[MessageSnapshotResponse] | None = None
     lobby_member: MessageLobbyMemberResponse | None = None
+    actor: UserResponse | None = None
     reactions: list[MessageReactionResponse] | None = None
     referenced_message: BasicMessageResponse | None = None

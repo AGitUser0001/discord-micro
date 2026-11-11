@@ -271,22 +271,32 @@ if TYPE_CHECKING:
   from ._api_application_install_params import APIApplicationInstallParams as APIApplicationInstallParams
   from ._api_application_integration_type_configuration import APIApplicationIntegrationTypeConfiguration as APIApplicationIntegrationTypeConfiguration
   from ._type9 import Type9 as Type9
+  from ._flags40 import Flags40 as Flags40
   from ._api_embed_footer import APIEmbedFooter as APIEmbedFooter
   from ._api_embed_image import APIEmbedImage as APIEmbedImage
   from ._api_embed_video import APIEmbedVideo as APIEmbedVideo
   from ._api_embed_provider import APIEmbedProvider as APIEmbedProvider
   from ._api_embed_author import APIEmbedAuthor as APIEmbedAuthor
   from ._api_embed_field import APIEmbedField as APIEmbedField
+  from ._api_message_component_emoji import APIMessageComponentEmoji as APIMessageComponentEmoji
+  from ._api_button_component_with_url_type_o1 import APIButtonComponentWithURLTypeO1 as APIButtonComponentWithURLTypeO1
+  from ._loading_state import LoadingState as LoadingState
+  from ._flags41 import Flags41 as Flags41
+  from ._unfurled_media_item_content_scan_metadata import UnfurledMediaItemContentScanMetadata as UnfurledMediaItemContentScanMetadata
+  from ._api_text_display_component import APITextDisplayComponent as APITextDisplayComponent
+  from ._spacing import Spacing as Spacing
+  from ._api_separator_component import APISeparatorComponent as APISeparatorComponent
   from ._api_reaction_count_details import APIReactionCountDetails as APIReactionCountDetails
   from ._api_partial_emoji import APIPartialEmoji as APIPartialEmoji
   from ._type10 import Type10 as Type10
   from ._api_message_activity import APIMessageActivity as APIMessageActivity
+  from ._flags42 import Flags42 as Flags42
   from ._type11 import Type11 as Type11
   from ._api_message_reference import APIMessageReference as APIMessageReference
   from ._api_authorizing_integration_owners_map import APIAuthorizingIntegrationOwnersMap as APIAuthorizingIntegrationOwnersMap
   from ._type12 import Type12 as Type12
   from ._partial_api_message_interaction_guild_member import PartialAPIMessageInteractionGuildMember as PartialAPIMessageInteractionGuildMember
-  from ._flags41 import Flags41 as Flags41
+  from ._flags43 import Flags43 as Flags43
   from ._api_guild_category_channel import APIGuildCategoryChannel as APIGuildCategoryChannel
   from ._default_sort_order6_enum import DefaultSortOrder6Enum as DefaultSortOrder6Enum
   from ._default_sort_order6 import DefaultSortOrder6 as DefaultSortOrder6
@@ -299,7 +309,7 @@ if TYPE_CHECKING:
   from ._api_news_channel import APINewsChannel as APINewsChannel
   from ._api_text_channel import APITextChannel as APITextChannel
   from ._style import Style as Style
-  from ._api_message_component_emoji import APIMessageComponentEmoji as APIMessageComponentEmoji
+  from ._api_button_component_with_custom_id import APIButtonComponentWithCustomId as APIButtonComponentWithCustomId
   from ._api_button_component_with_sku_id import APIButtonComponentWithSKUId as APIButtonComponentWithSKUId
   from ._api_button_component_with_url import APIButtonComponentWithURL as APIButtonComponentWithURL
   from ._channel_type import ChannelType as ChannelType
@@ -309,16 +319,9 @@ if TYPE_CHECKING:
   from ._api_select_menu_default_value_role_user import APISelectMenuDefaultValueRoleUser as APISelectMenuDefaultValueRoleUser
   from ._api_select_menu_default_value_role import APISelectMenuDefaultValueRole as APISelectMenuDefaultValueRole
   from ._api_select_menu_default_value_user import APISelectMenuDefaultValueUser as APISelectMenuDefaultValueUser
-  from ._loading_state import LoadingState as LoadingState
-  from ._api_unfurled_media_item import APIUnfurledMediaItem as APIUnfurledMediaItem
-  from ._api_media_gallery_item import APIMediaGalleryItem as APIMediaGalleryItem
-  from ._api_text_display_component import APITextDisplayComponent as APITextDisplayComponent
-  from ._api_thumbnail_component import APIThumbnailComponent as APIThumbnailComponent
-  from ._spacing import Spacing as Spacing
-  from ._api_separator_component import APISeparatorComponent as APISeparatorComponent
   from ._api_sticker_item import APIStickerItem as APIStickerItem
   from ._api_message_role_subscription_data import APIMessageRoleSubscriptionData as APIMessageRoleSubscriptionData
-  from ._flags53 import Flags53 as Flags53
+  from ._flags55 import Flags55 as Flags55
   from ._type14 import Type14 as Type14
   from ._api_interaction_data_resolved_channel_base_guild_text_dm_guild_voice_group_dm_guild_category_guild_announcement_guild_stage_voice_guild_directory_guild_forum_guild_media import APIInteractionDataResolvedChannelBaseGuildTextDMGuildVoiceGroupDMGuildCategoryGuildAnnouncementGuildStageVoiceGuildDirectoryGuildForumGuildMedia as APIInteractionDataResolvedChannelBaseGuildTextDMGuildVoiceGroupDMGuildCategoryGuildAnnouncementGuildStageVoiceGuildDirectoryGuildForumGuildMedia
   from ._thread_channel_type import ThreadChannelType as ThreadChannelType
@@ -326,7 +329,7 @@ if TYPE_CHECKING:
   from ._api_poll_answer import APIPollAnswer as APIPollAnswer
   from ._api_poll_answer_count import APIPollAnswerCount as APIPollAnswerCount
   from ._type15 import Type15 as Type15
-  from ._flags54 import Flags54 as Flags54
+  from ._flags56 import Flags56 as Flags56
   from ._api_message_call import APIMessageCall as APIMessageCall
   from ._base_theme_enum import BaseThemeEnum as BaseThemeEnum
   from ._base_theme import BaseTheme as BaseTheme
@@ -492,8 +495,8 @@ if TYPE_CHECKING:
   from ._target_type import TargetType as TargetType
   from ._gateway_invite_delete_dispatch_data import GatewayInviteDeleteDispatchData as GatewayInviteDeleteDispatchData
   from ._channel_type1 import ChannelType1 as ChannelType1
-  from ._flags56 import Flags56 as Flags56
-  from ._flags57 import Flags57 as Flags57
+  from ._flags58 import Flags58 as Flags58
+  from ._flags59 import Flags59 as Flags59
   from ._gateway_message_delete_bulk_dispatch_data import GatewayMessageDeleteBulkDispatchData as GatewayMessageDeleteBulkDispatchData
   from ._gateway_message_delete_dispatch_data import GatewayMessageDeleteDispatchData as GatewayMessageDeleteDispatchData
   from ._gateway_message_poll_vote_dispatch_data import GatewayMessagePollVoteDispatchData as GatewayMessagePollVoteDispatchData
@@ -501,10 +504,10 @@ if TYPE_CHECKING:
   from ._type17 import Type17 as Type17
   from ._gateway_message_reaction_remove_data import GatewayMessageReactionRemoveData as GatewayMessageReactionRemoveData
   from ._type19 import Type19 as Type19
-  from ._flags58 import Flags58 as Flags58
+  from ._flags60 import Flags60 as Flags60
   from ._gateway_request_guild_member_rate_limit_metadata import GatewayRequestGuildMemberRateLimitMetadata as GatewayRequestGuildMemberRateLimitMetadata
   from ._api_unavailable_guild import APIUnavailableGuild as APIUnavailableGuild
-  from ._flags59 import Flags59 as Flags59
+  from ._flags61 import Flags61 as Flags61
   from ._pick_api_applicationflagsflags_newid import PickAPIApplicationflagsflagsNewid as PickAPIApplicationflagsflagsNewid
   from ._gateway_resumed_dispatch import GatewayResumedDispatch as GatewayResumedDispatch
   from ._gateway_stage_instance_create_dispatch import GatewayStageInstanceCreateDispatch as GatewayStageInstanceCreateDispatch
@@ -514,11 +517,11 @@ if TYPE_CHECKING:
   from ._api_subscription import APISubscription as APISubscription
   from ._gateway_subscription_delete_dispatch import GatewaySubscriptionDeleteDispatch as GatewaySubscriptionDeleteDispatch
   from ._gateway_subscription_update_dispatch import GatewaySubscriptionUpdateDispatch as GatewaySubscriptionUpdateDispatch
-  from ._flags60 import Flags60 as Flags60
+  from ._flags62 import Flags62 as Flags62
   from ._type20 import Type20 as Type20
   from ._gateway_thread_delete_dispatch_data import GatewayThreadDeleteDispatchData as GatewayThreadDeleteDispatchData
-  from ._flags62 import Flags62 as Flags62
-  from ._flags63 import Flags63 as Flags63
+  from ._flags64 import Flags64 as Flags64
+  from ._flags65 import Flags65 as Flags65
   from ._animation_type_enum import AnimationTypeEnum as AnimationTypeEnum
   from ._animation_type import AnimationType as AnimationType
   from ._gateway_voice_channel_start_time_update_dispatch_data import GatewayVoiceChannelStartTimeUpdateDispatchData as GatewayVoiceChannelStartTimeUpdateDispatchData
@@ -572,17 +575,16 @@ if TYPE_CHECKING:
   from ._gateway_integration_delete_dispatch import GatewayIntegrationDeleteDispatch as GatewayIntegrationDeleteDispatch
   from ._api_partial_guild import APIPartialGuild as APIPartialGuild
   from ._api_application_integration_types_config_map import APIApplicationIntegrationTypesConfigMap as APIApplicationIntegrationTypesConfigMap
-  from ._api_embed import APIEmbed as APIEmbed
+  from ._api_button_component_with_url_type import APIButtonComponentWithURLType as APIButtonComponentWithURLType
+  from ._api_unfurled_media_item import APIUnfurledMediaItem as APIUnfurledMediaItem
+  from ._api_media_gallery_item import APIMediaGalleryItem as APIMediaGalleryItem
   from ._api_reaction import APIReaction as APIReaction
-  from ._api_button_component_with_custom_id import APIButtonComponentWithCustomId as APIButtonComponentWithCustomId
   from ._api_channel_select_component import APIChannelSelectComponent as APIChannelSelectComponent
   from ._api_string_select_component import APIStringSelectComponent as APIStringSelectComponent
   from ._api_mentionable_select_component import APIMentionableSelectComponent as APIMentionableSelectComponent
   from ._api_role_select_component import APIRoleSelectComponent as APIRoleSelectComponent
   from ._api_user_select_component import APIUserSelectComponent as APIUserSelectComponent
   from ._api_file_component import APIFileComponent as APIFileComponent
-  from ._api_media_gallery_component import APIMediaGalleryComponent as APIMediaGalleryComponent
-  from ._api_section_accessory_component import APISectionAccessoryComponent as APISectionAccessoryComponent
   from ._recordstring_api_role import RecordstringAPIRole as RecordstringAPIRole
   from ._api_interaction_data_resolved_guild_member import APIInteractionDataResolvedGuildMember as APIInteractionDataResolvedGuildMember
   from ._api_interaction_data_resolved_channel_base_thread_channel_type_pick_api_thread_channel_thread_channel_typeparent_idthread_metadata import APIInteractionDataResolvedChannelBaseThreadChannelTypePickAPIThreadChannelThreadChannelTypeparentIdthreadMetadata as APIInteractionDataResolvedChannelBaseThreadChannelTypePickAPIThreadChannelThreadChannelTypeparentIdthreadMetadata
@@ -655,6 +657,9 @@ if TYPE_CHECKING:
   from ._partial_api_private_thread_channel_pick_api_channelidtype import PartialAPIPrivateThreadChannelPickAPIChannelidtype as PartialAPIPrivateThreadChannelPickAPIChannelidtype
   from ._api_interaction_guild_member import APIInteractionGuildMember as APIInteractionGuildMember
   from ._api_team_member import APITeamMember as APITeamMember
+  from ._api_component_embed_button import APIComponentEmbedButton as APIComponentEmbedButton
+  from ._api_thumbnail_component import APIThumbnailComponent as APIThumbnailComponent
+  from ._api_media_gallery_component import APIMediaGalleryComponent as APIMediaGalleryComponent
   from ._api_application_command_interaction_metadata import APIApplicationCommandInteractionMetadata as APIApplicationCommandInteractionMetadata
   from ._api_message_component_interaction_metadata import APIMessageComponentInteractionMetadata as APIMessageComponentInteractionMetadata
   from ._api_modal_submit_interaction_metadata import APIModalSubmitInteractionMetadata as APIModalSubmitInteractionMetadata
@@ -666,7 +671,7 @@ if TYPE_CHECKING:
   from ._api_public_thread_channel import APIPublicThreadChannel as APIPublicThreadChannel
   from ._api_component_in_message_action_row import APIComponentInMessageActionRow as APIComponentInMessageActionRow
   from ._api_action_row_component_api_component_in_message_action_row_o1 import APIActionRowComponentAPIComponentInMessageActionRowO1 as APIActionRowComponentAPIComponentInMessageActionRowO1
-  from ._api_section_component import APISectionComponent as APISectionComponent
+  from ._api_section_accessory_component import APISectionAccessoryComponent as APISectionAccessoryComponent
   from ._recordstring_api_user import RecordstringAPIUser as RecordstringAPIUser
   from ._recordstring_api_interaction_data_resolved_guild_member import RecordstringAPIInteractionDataResolvedGuildMember as RecordstringAPIInteractionDataResolvedGuildMember
   from ._api_interaction_data_resolved_channel import APIInteractionDataResolvedChannel as APIInteractionDataResolvedChannel
@@ -719,9 +724,11 @@ if TYPE_CHECKING:
   from ._gateway_integration_create_dispatch_data import GatewayIntegrationCreateDispatchData as GatewayIntegrationCreateDispatchData
   from ._gateway_integration_update_dispatch import GatewayIntegrationUpdateDispatch as GatewayIntegrationUpdateDispatch
   from ._api_team import APITeam as APITeam
+  from ._api_action_row_component_api_component_embed_button import APIActionRowComponentAPIComponentEmbedButton as APIActionRowComponentAPIComponentEmbedButton
+  from ._api_component_embed_section import APIComponentEmbedSection as APIComponentEmbedSection
   from ._partial_api_application import PartialAPIApplication as PartialAPIApplication
   from ._api_action_row_component_api_component_in_message_action_row import APIActionRowComponentAPIComponentInMessageActionRow as APIActionRowComponentAPIComponentInMessageActionRow
-  from ._api_component_in_container import APIComponentInContainer as APIComponentInContainer
+  from ._api_section_component import APISectionComponent as APISectionComponent
   from ._recordstring_api_interaction_data_resolved_channel import RecordstringAPIInteractionDataResolvedChannel as RecordstringAPIInteractionDataResolvedChannel
   from ._api_application_command_interaction_data_subcommand_group_option_application_command_autocomplete import APIApplicationCommandInteractionDataSubcommandGroupOptionApplicationCommandAutocomplete as APIApplicationCommandInteractionDataSubcommandGroupOptionApplicationCommandAutocomplete
   from ._api_application_command_interaction_data_option_interaction_type_application_command import APIApplicationCommandInteractionDataOptionInteractionTypeApplicationCommand as APIApplicationCommandInteractionDataOptionInteractionTypeApplicationCommand
@@ -750,7 +757,8 @@ if TYPE_CHECKING:
   from ._gateway_guild_create_dispatch_data import GatewayGuildCreateDispatchData as GatewayGuildCreateDispatchData
   from ._gateway_integration_create_dispatch import GatewayIntegrationCreateDispatch as GatewayIntegrationCreateDispatch
   from ._api_application import APIApplication as APIApplication
-  from ._api_container_component import APIContainerComponent as APIContainerComponent
+  from ._api_component_in_embed_container import APIComponentInEmbedContainer as APIComponentInEmbedContainer
+  from ._api_component_in_container import APIComponentInContainer as APIComponentInContainer
   from ._api_application_command_interaction_data_option_interaction_type_application_command_autocomplete import APIApplicationCommandInteractionDataOptionInteractionTypeApplicationCommandAutocomplete as APIApplicationCommandInteractionDataOptionInteractionTypeApplicationCommandAutocomplete
   from ._api_message_channel_select_interaction_data import APIMessageChannelSelectInteractionData as APIMessageChannelSelectInteractionData
   from ._gateway_invite_create_dispatch import GatewayInviteCreateDispatch as GatewayInviteCreateDispatch
@@ -759,14 +767,17 @@ if TYPE_CHECKING:
   from ._gateway_guild_audit_log_entry_create_dispatch import GatewayGuildAuditLogEntryCreateDispatch as GatewayGuildAuditLogEntryCreateDispatch
   from ._gateway_guild_create_dispatch import GatewayGuildCreateDispatch as GatewayGuildCreateDispatch
   from ._api_attachment import APIAttachment as APIAttachment
-  from ._api_message_top_level_component import APIMessageTopLevelComponent as APIMessageTopLevelComponent
+  from ._api_component_embed_container import APIComponentEmbedContainer as APIComponentEmbedContainer
+  from ._api_container_component import APIContainerComponent as APIContainerComponent
   from ._recordstring_api_attachment import RecordstringAPIAttachment as RecordstringAPIAttachment
-  from ._api_message_snapshot_fields import APIMessageSnapshotFields as APIMessageSnapshotFields
+  from ._api_embed import APIEmbed as APIEmbed
+  from ._api_message_top_level_component import APIMessageTopLevelComponent as APIMessageTopLevelComponent
   from ._api_interaction_data_resolved import APIInteractionDataResolved as APIInteractionDataResolved
-  from ._api_message_snapshot import APIMessageSnapshot as APIMessageSnapshot
+  from ._api_message_snapshot_fields import APIMessageSnapshotFields as APIMessageSnapshotFields
   from ._api_autocomplete_application_command_interaction_data_required_pick_api_autocomplete_application_command_interaction_dataoptions import APIAutocompleteApplicationCommandInteractionDataRequiredPickAPIAutocompleteApplicationCommandInteractionDataoptions as APIAutocompleteApplicationCommandInteractionDataRequiredPickAPIAutocompleteApplicationCommandInteractionDataoptions
   from ._api_chat_input_application_command_interaction_data import APIChatInputApplicationCommandInteractionData as APIChatInputApplicationCommandInteractionData
   from ._api_modal_submission import APIModalSubmission as APIModalSubmission
+  from ._api_message_snapshot import APIMessageSnapshot as APIMessageSnapshot
   from ._api_message import APIMessage as APIMessage
   from ._api_application_command_autocomplete_interaction import APIApplicationCommandAutocompleteInteraction as APIApplicationCommandAutocompleteInteraction
   from ._api_chat_input_application_command_interaction import APIChatInputApplicationCommandInteraction as APIChatInputApplicationCommandInteraction
@@ -1056,22 +1067,32 @@ _MODULES: dict[str, str] = {
   "APIApplicationInstallParams": "_api_application_install_params",
   "APIApplicationIntegrationTypeConfiguration": "_api_application_integration_type_configuration",
   "Type9": "_type9",
+  "Flags40": "_flags40",
   "APIEmbedFooter": "_api_embed_footer",
   "APIEmbedImage": "_api_embed_image",
   "APIEmbedVideo": "_api_embed_video",
   "APIEmbedProvider": "_api_embed_provider",
   "APIEmbedAuthor": "_api_embed_author",
   "APIEmbedField": "_api_embed_field",
+  "APIMessageComponentEmoji": "_api_message_component_emoji",
+  "APIButtonComponentWithURLTypeO1": "_api_button_component_with_url_type_o1",
+  "LoadingState": "_loading_state",
+  "Flags41": "_flags41",
+  "UnfurledMediaItemContentScanMetadata": "_unfurled_media_item_content_scan_metadata",
+  "APITextDisplayComponent": "_api_text_display_component",
+  "Spacing": "_spacing",
+  "APISeparatorComponent": "_api_separator_component",
   "APIReactionCountDetails": "_api_reaction_count_details",
   "APIPartialEmoji": "_api_partial_emoji",
   "Type10": "_type10",
   "APIMessageActivity": "_api_message_activity",
+  "Flags42": "_flags42",
   "Type11": "_type11",
   "APIMessageReference": "_api_message_reference",
   "APIAuthorizingIntegrationOwnersMap": "_api_authorizing_integration_owners_map",
   "Type12": "_type12",
   "PartialAPIMessageInteractionGuildMember": "_partial_api_message_interaction_guild_member",
-  "Flags41": "_flags41",
+  "Flags43": "_flags43",
   "APIGuildCategoryChannel": "_api_guild_category_channel",
   "DefaultSortOrder6Enum": "_default_sort_order6_enum",
   "DefaultSortOrder6": "_default_sort_order6",
@@ -1084,7 +1105,7 @@ _MODULES: dict[str, str] = {
   "APINewsChannel": "_api_news_channel",
   "APITextChannel": "_api_text_channel",
   "Style": "_style",
-  "APIMessageComponentEmoji": "_api_message_component_emoji",
+  "APIButtonComponentWithCustomId": "_api_button_component_with_custom_id",
   "APIButtonComponentWithSKUId": "_api_button_component_with_sku_id",
   "APIButtonComponentWithURL": "_api_button_component_with_url",
   "ChannelType": "_channel_type",
@@ -1094,16 +1115,9 @@ _MODULES: dict[str, str] = {
   "APISelectMenuDefaultValueRoleUser": "_api_select_menu_default_value_role_user",
   "APISelectMenuDefaultValueRole": "_api_select_menu_default_value_role",
   "APISelectMenuDefaultValueUser": "_api_select_menu_default_value_user",
-  "LoadingState": "_loading_state",
-  "APIUnfurledMediaItem": "_api_unfurled_media_item",
-  "APIMediaGalleryItem": "_api_media_gallery_item",
-  "APITextDisplayComponent": "_api_text_display_component",
-  "APIThumbnailComponent": "_api_thumbnail_component",
-  "Spacing": "_spacing",
-  "APISeparatorComponent": "_api_separator_component",
   "APIStickerItem": "_api_sticker_item",
   "APIMessageRoleSubscriptionData": "_api_message_role_subscription_data",
-  "Flags53": "_flags53",
+  "Flags55": "_flags55",
   "Type14": "_type14",
   "APIInteractionDataResolvedChannelBaseGuildTextDMGuildVoiceGroupDMGuildCategoryGuildAnnouncementGuildStageVoiceGuildDirectoryGuildForumGuildMedia": "_api_interaction_data_resolved_channel_base_guild_text_dm_guild_voice_group_dm_guild_category_guild_announcement_guild_stage_voice_guild_directory_guild_forum_guild_media",
   "ThreadChannelType": "_thread_channel_type",
@@ -1111,7 +1125,7 @@ _MODULES: dict[str, str] = {
   "APIPollAnswer": "_api_poll_answer",
   "APIPollAnswerCount": "_api_poll_answer_count",
   "Type15": "_type15",
-  "Flags54": "_flags54",
+  "Flags56": "_flags56",
   "APIMessageCall": "_api_message_call",
   "BaseThemeEnum": "_base_theme_enum",
   "BaseTheme": "_base_theme",
@@ -1277,8 +1291,8 @@ _MODULES: dict[str, str] = {
   "TargetType": "_target_type",
   "GatewayInviteDeleteDispatchData": "_gateway_invite_delete_dispatch_data",
   "ChannelType1": "_channel_type1",
-  "Flags56": "_flags56",
-  "Flags57": "_flags57",
+  "Flags58": "_flags58",
+  "Flags59": "_flags59",
   "GatewayMessageDeleteBulkDispatchData": "_gateway_message_delete_bulk_dispatch_data",
   "GatewayMessageDeleteDispatchData": "_gateway_message_delete_dispatch_data",
   "GatewayMessagePollVoteDispatchData": "_gateway_message_poll_vote_dispatch_data",
@@ -1286,10 +1300,10 @@ _MODULES: dict[str, str] = {
   "Type17": "_type17",
   "GatewayMessageReactionRemoveData": "_gateway_message_reaction_remove_data",
   "Type19": "_type19",
-  "Flags58": "_flags58",
+  "Flags60": "_flags60",
   "GatewayRequestGuildMemberRateLimitMetadata": "_gateway_request_guild_member_rate_limit_metadata",
   "APIUnavailableGuild": "_api_unavailable_guild",
-  "Flags59": "_flags59",
+  "Flags61": "_flags61",
   "PickAPIApplicationflagsflagsNewid": "_pick_api_applicationflagsflags_newid",
   "GatewayResumedDispatch": "_gateway_resumed_dispatch",
   "GatewayStageInstanceCreateDispatch": "_gateway_stage_instance_create_dispatch",
@@ -1299,11 +1313,11 @@ _MODULES: dict[str, str] = {
   "APISubscription": "_api_subscription",
   "GatewaySubscriptionDeleteDispatch": "_gateway_subscription_delete_dispatch",
   "GatewaySubscriptionUpdateDispatch": "_gateway_subscription_update_dispatch",
-  "Flags60": "_flags60",
+  "Flags62": "_flags62",
   "Type20": "_type20",
   "GatewayThreadDeleteDispatchData": "_gateway_thread_delete_dispatch_data",
-  "Flags62": "_flags62",
-  "Flags63": "_flags63",
+  "Flags64": "_flags64",
+  "Flags65": "_flags65",
   "AnimationTypeEnum": "_animation_type_enum",
   "AnimationType": "_animation_type",
   "GatewayVoiceChannelStartTimeUpdateDispatchData": "_gateway_voice_channel_start_time_update_dispatch_data",
@@ -1357,17 +1371,16 @@ _MODULES: dict[str, str] = {
   "GatewayIntegrationDeleteDispatch": "_gateway_integration_delete_dispatch",
   "APIPartialGuild": "_api_partial_guild",
   "APIApplicationIntegrationTypesConfigMap": "_api_application_integration_types_config_map",
-  "APIEmbed": "_api_embed",
+  "APIButtonComponentWithURLType": "_api_button_component_with_url_type",
+  "APIUnfurledMediaItem": "_api_unfurled_media_item",
+  "APIMediaGalleryItem": "_api_media_gallery_item",
   "APIReaction": "_api_reaction",
-  "APIButtonComponentWithCustomId": "_api_button_component_with_custom_id",
   "APIChannelSelectComponent": "_api_channel_select_component",
   "APIStringSelectComponent": "_api_string_select_component",
   "APIMentionableSelectComponent": "_api_mentionable_select_component",
   "APIRoleSelectComponent": "_api_role_select_component",
   "APIUserSelectComponent": "_api_user_select_component",
   "APIFileComponent": "_api_file_component",
-  "APIMediaGalleryComponent": "_api_media_gallery_component",
-  "APISectionAccessoryComponent": "_api_section_accessory_component",
   "RecordstringAPIRole": "_recordstring_api_role",
   "APIInteractionDataResolvedGuildMember": "_api_interaction_data_resolved_guild_member",
   "APIInteractionDataResolvedChannelBaseThreadChannelTypePickAPIThreadChannelThreadChannelTypeparentIdthreadMetadata": "_api_interaction_data_resolved_channel_base_thread_channel_type_pick_api_thread_channel_thread_channel_typeparent_idthread_metadata",
@@ -1440,6 +1453,9 @@ _MODULES: dict[str, str] = {
   "PartialAPIPrivateThreadChannelPickAPIChannelidtype": "_partial_api_private_thread_channel_pick_api_channelidtype",
   "APIInteractionGuildMember": "_api_interaction_guild_member",
   "APITeamMember": "_api_team_member",
+  "APIComponentEmbedButton": "_api_component_embed_button",
+  "APIThumbnailComponent": "_api_thumbnail_component",
+  "APIMediaGalleryComponent": "_api_media_gallery_component",
   "APIApplicationCommandInteractionMetadata": "_api_application_command_interaction_metadata",
   "APIMessageComponentInteractionMetadata": "_api_message_component_interaction_metadata",
   "APIModalSubmitInteractionMetadata": "_api_modal_submit_interaction_metadata",
@@ -1451,7 +1467,7 @@ _MODULES: dict[str, str] = {
   "APIPublicThreadChannel": "_api_public_thread_channel",
   "APIComponentInMessageActionRow": "_api_component_in_message_action_row",
   "APIActionRowComponentAPIComponentInMessageActionRowO1": "_api_action_row_component_api_component_in_message_action_row_o1",
-  "APISectionComponent": "_api_section_component",
+  "APISectionAccessoryComponent": "_api_section_accessory_component",
   "RecordstringAPIUser": "_recordstring_api_user",
   "RecordstringAPIInteractionDataResolvedGuildMember": "_recordstring_api_interaction_data_resolved_guild_member",
   "APIInteractionDataResolvedChannel": "_api_interaction_data_resolved_channel",
@@ -1504,9 +1520,11 @@ _MODULES: dict[str, str] = {
   "GatewayIntegrationCreateDispatchData": "_gateway_integration_create_dispatch_data",
   "GatewayIntegrationUpdateDispatch": "_gateway_integration_update_dispatch",
   "APITeam": "_api_team",
+  "APIActionRowComponentAPIComponentEmbedButton": "_api_action_row_component_api_component_embed_button",
+  "APIComponentEmbedSection": "_api_component_embed_section",
   "PartialAPIApplication": "_partial_api_application",
   "APIActionRowComponentAPIComponentInMessageActionRow": "_api_action_row_component_api_component_in_message_action_row",
-  "APIComponentInContainer": "_api_component_in_container",
+  "APISectionComponent": "_api_section_component",
   "RecordstringAPIInteractionDataResolvedChannel": "_recordstring_api_interaction_data_resolved_channel",
   "APIApplicationCommandInteractionDataSubcommandGroupOptionApplicationCommandAutocomplete": "_api_application_command_interaction_data_subcommand_group_option_application_command_autocomplete",
   "APIApplicationCommandInteractionDataOptionInteractionTypeApplicationCommand": "_api_application_command_interaction_data_option_interaction_type_application_command",
@@ -1535,7 +1553,8 @@ _MODULES: dict[str, str] = {
   "GatewayGuildCreateDispatchData": "_gateway_guild_create_dispatch_data",
   "GatewayIntegrationCreateDispatch": "_gateway_integration_create_dispatch",
   "APIApplication": "_api_application",
-  "APIContainerComponent": "_api_container_component",
+  "APIComponentInEmbedContainer": "_api_component_in_embed_container",
+  "APIComponentInContainer": "_api_component_in_container",
   "APIApplicationCommandInteractionDataOptionInteractionTypeApplicationCommandAutocomplete": "_api_application_command_interaction_data_option_interaction_type_application_command_autocomplete",
   "APIMessageChannelSelectInteractionData": "_api_message_channel_select_interaction_data",
   "GatewayInviteCreateDispatch": "_gateway_invite_create_dispatch",
@@ -1544,14 +1563,17 @@ _MODULES: dict[str, str] = {
   "GatewayGuildAuditLogEntryCreateDispatch": "_gateway_guild_audit_log_entry_create_dispatch",
   "GatewayGuildCreateDispatch": "_gateway_guild_create_dispatch",
   "APIAttachment": "_api_attachment",
-  "APIMessageTopLevelComponent": "_api_message_top_level_component",
+  "APIComponentEmbedContainer": "_api_component_embed_container",
+  "APIContainerComponent": "_api_container_component",
   "RecordstringAPIAttachment": "_recordstring_api_attachment",
-  "APIMessageSnapshotFields": "_api_message_snapshot_fields",
+  "APIEmbed": "_api_embed",
+  "APIMessageTopLevelComponent": "_api_message_top_level_component",
   "APIInteractionDataResolved": "_api_interaction_data_resolved",
-  "APIMessageSnapshot": "_api_message_snapshot",
+  "APIMessageSnapshotFields": "_api_message_snapshot_fields",
   "APIAutocompleteApplicationCommandInteractionDataRequiredPickAPIAutocompleteApplicationCommandInteractionDataoptions": "_api_autocomplete_application_command_interaction_data_required_pick_api_autocomplete_application_command_interaction_dataoptions",
   "APIChatInputApplicationCommandInteractionData": "_api_chat_input_application_command_interaction_data",
   "APIModalSubmission": "_api_modal_submission",
+  "APIMessageSnapshot": "_api_message_snapshot",
   "APIMessage": "_api_message",
   "APIApplicationCommandAutocompleteInteraction": "_api_application_command_autocomplete_interaction",
   "APIChatInputApplicationCommandInteraction": "_api_chat_input_application_command_interaction",
@@ -1591,6 +1613,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = (
+  "APIActionRowComponentAPIComponentEmbedButton",
   "APIActionRowComponentAPIComponentInMessageActionRow",
   "APIActionRowComponentAPIComponentInMessageActionRowO1",
   "APIAnnouncementThreadChannel",
@@ -1726,12 +1749,18 @@ __all__ = (
   "APIButtonComponentWithCustomId",
   "APIButtonComponentWithSKUId",
   "APIButtonComponentWithURL",
+  "APIButtonComponentWithURLType",
+  "APIButtonComponentWithURLTypeO1",
   "APIChannelMention",
   "APIChannelSelectComponent",
   "APIChatInputApplicationCommandInteraction",
   "APIChatInputApplicationCommandInteractionData",
   "APICollectibles",
+  "APIComponentEmbedButton",
+  "APIComponentEmbedContainer",
+  "APIComponentEmbedSection",
   "APIComponentInContainer",
+  "APIComponentInEmbedContainer",
   "APIComponentInMessageActionRow",
   "APIContainerComponent",
   "APIDMChannel",
@@ -1936,16 +1965,19 @@ __all__ = (
   "Flags37",
   "Flags38",
   "Flags39",
+  "Flags40",
   "Flags41",
-  "Flags53",
-  "Flags54",
+  "Flags42",
+  "Flags43",
+  "Flags55",
   "Flags56",
-  "Flags57",
   "Flags58",
   "Flags59",
   "Flags60",
+  "Flags61",
   "Flags62",
-  "Flags63",
+  "Flags64",
+  "Flags65",
   "Flags7",
   "Flags8",
   "Flags9",
@@ -2370,6 +2402,7 @@ __all__ = (
   "Type7",
   "Type8",
   "Type9",
+  "UnfurledMediaItemContentScanMetadata",
   "VerificationLevel",
   "VideoQualityMode",
   "Vr",

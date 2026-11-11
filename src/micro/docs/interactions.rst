@@ -12,7 +12,7 @@ queue per route, so the right service handles it no matter which process receive
                               ├─► InteractionRouter ─► route queue (3 s TTL)
    Discord ──► InteractionEndpoint ┘                        │
                                       Commands / Components / Modals / RuntimeCommands
-                                      on any service ─► Interaction (ctx) ─► HTTP worker
+                                      on any service ─► Interaction (interaction) ─► HTTP worker
 
 What each part is for
 ---------------------
@@ -29,7 +29,7 @@ What each part is for
      - ``Components`` and ``Modals``: buttons, selects and modals, matched by custom ID
        (``CustomId`` carries typed state).
    * - :doc:`responding`
-     - ``Interaction`` (``ctx``): respond, defer, edit, follow up, modal, autocomplete, and
+     - ``Interaction`` (``interaction``): respond, defer, edit, follow up, modal, autocomplete, and
        read what was submitted.
    * - :doc:`middleware`
      - ``use``: authorization, deferral, logging and error replies around every handler.
@@ -54,8 +54,8 @@ A minimal bot
    commands = Commands(service)
 
    @commands.slash("hello", description="Say hello")
-   async def hello(ctx: Interaction, name: str = "world") -> None:
-     await ctx.respond(f"Hello, {name}!")
+   async def hello(interaction: Interaction, name: str = "world") -> None:
+     await interaction.respond(f"Hello, {name}!")
 
 and in ``micro.toml``, once per deployment:
 
@@ -82,7 +82,7 @@ Guarantees
 * **Deduplicated** by interaction id, so a replayed Gateway event does not run twice.
 * **Nothing handles it?** The router answers with an ephemeral "isn't available right now"
   so the user does not see a failure.
-* **Timing is visible.** ``ctx.age`` is the seconds since Discord created the interaction.
+* **Timing is visible.** ``interaction.age`` is the seconds since Discord created the interaction.
   A handler that starts more than 2 s into Discord's 3 s logs a warning, and a failure logs
   its age, so an ``Unknown interaction`` error shows whether the time went before the
   handler (gateway, NATS, a skewed clock) or inside it.

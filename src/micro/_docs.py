@@ -7,7 +7,9 @@ memory and served on 127.0.0.1 only while the command runs.
 
 import asyncio
 import html
+import inspect
 import io
+import json
 import re
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -52,6 +54,13 @@ li > p { margin: .15rem 0; }
 pre code { background: none; padding: 0; }
 table { border-collapse: collapse; margin: 1rem 0; display: block; overflow: auto; }
 th, td { border: 1px solid var(--line); padding: .35rem .7rem; text-align: left; vertical-align: top; }
+nav input { width: 100%; padding: .35rem .5rem; margin: .5rem 0; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+nav details { margin: 0; } nav summary { cursor: pointer; padding: .2rem .5rem; border-radius: 6px; }
+nav summary a { display: inline; padding: 0; } nav summary:hover { background: var(--line); }
+nav .sub a { padding: .05rem .5rem .05rem 1.4rem; font-size: .85rem; color: var(--muted); }
+#results { margin: 0 0 .5rem; } #results a { padding: .25rem .5rem; }
+#results small { display: block; color: var(--muted); font-size: .75rem; }
 @media (max-width: 760px) { body { display: block; } nav { width: auto; height: auto;
   position: static; border-right: 0; border-bottom: 1px solid var(--line); }
   main { padding: 1.5rem 1rem 3rem; } }
@@ -62,10 +71,86 @@ _PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · Micro</title><style>{style}</style></head>
 <body><nav><a class="brand" href="index.html">Micro</a><span class="version">{version}</span>
-{links}</nav><main>{body}</main></body></html>
+<input id="q" type="search" placeholder="Search the manual   ( / )" autocomplete="off">
+<div id="results"></div>{links}</nav><main>{body}</main><script>{script}</script></body></html>
 """
 
 _TITLES: dict[str, str] = {}
+
+_SCRIPT = """
+const q = document.getElementById('q'), out = document.getElementById('results');
+let index = null;
+async function load() { return index ??= await (await fetch('search.json')).json(); }
+function rank(e, t) {
+  const n = e.n.toLowerCase(), f = e.f.toLowerCase();
+  if (n === t) return 0; if (n.startsWith(t)) return 1; if (n.includes(t)) return 2;
+  if (f.includes(t)) return 3; if (e.s.toLowerCase().includes(t)) return 4; return 9;
+}
+q.addEventListener('input', async () => {
+  const t = q.value.trim().toLowerCase(); out.textContent = ''; if (!t) return;
+  const hits = (await load()).map(e => [rank(e, t), e]).filter(x => x[0] < 9)
+    .sort((a, b) => a[0] - b[0] || a[1].n.length - b[1].n.length).slice(0, 30);
+  for (const [, e] of hits) {
+    const a = document.createElement('a'); a.href = e.u; a.textContent = e.n + ' ';
+    const k = document.createElement('small'); k.textContent = e.k + ' · ' + e.f + (e.s ? ' — ' + e.s : '');
+    a.append(k); out.append(a);
+  }
+});
+q.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const a = out.querySelector('a'); if (a) location = a.href; }
+  if (e.key === 'Escape') { q.value = ''; out.textContent = ''; q.blur(); }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === '/' && document.activeElement !== q) { e.preventDefault(); q.focus(); }
+});
+"""
+
+_MANUAL = {
+  "micro.discord.interactions": "Interactions",
+  "micro.discord.ui": "UI kit",
+  "micro.discord.objects": "Objects",
+  "micro.discord.enums": "Enumerations",
+  "micro.discord.asset": "Assets",
+  "micro.discord.colour": "Colours",
+  "micro.discord.permissions": "Permissions",
+  "micro.discord.state": "State",
+  "micro.discord.refs": "Refs",
+  "micro.discord.api": "API operations",
+  "micro.discord.http_service": "HTTP worker and client",
+  "micro.discord.filters": "Filters",
+  "micro.discord.text": "Text helpers",
+  "micro.discord.invite": "Invites",
+  "micro.service": "Services",
+  "micro.runtime": "Runtime",
+  "micro.coordination": "Coordination",
+  "micro.config": "Config",
+  "micro.scheduler": "Scheduler",
+  "micro.gateway": "Gateway",
+  "micro.store": "Store",
+  "micro.middleware": "Middleware",
+  "micro.errors": "Errors",
+  "micro.log": "Logging",
+  "micro.result": "Results",
+}
+"""The manual: one page per module, generated from the code and its docstrings."""
+
+
+def _manual_page(module: str) -> str:
+  return "manual-" + module.removeprefix("micro.").replace(".", "-")
+
+
+def _manual_sources() -> dict[str, str]:
+  """`{page: ReST}` for the manual, written from what each module exports."""
+  import importlib
+
+  pages: dict[str, str] = {}
+  for module, title in _MANUAL.items():
+    intro = (importlib.import_module(module).__doc__ or "").strip().split("\n\n")[0]
+    names = "\n".join(f"   {module}.{n}" for n in _docs_api.public_names(module))
+    pages[_manual_page(module)] = (
+      f"{title}\n{'=' * len(title)}\n\n``{module}``\n\n{intro}\n\n.. api::\n{names}\n"
+    )
+  return pages
 
 
 def _source() -> Any:
@@ -73,6 +158,8 @@ def _source() -> Any:
 
 
 def _title(name: str) -> str:
+  if name.startswith("manual-"):
+    return next(t for m, t in _MANUAL.items() if _manual_page(m) == name)
   if name not in _TITLES:
     text = (_source() / f"{name}.rst").read_text()
     lines = [line for line in text.splitlines() if line.strip()]
@@ -152,6 +239,67 @@ def _pages() -> list[str]:
   return ["index", *(page for _, pages in _groups() for page in pages)]
 
 
+def _link(caption: str | None, name: str, page: str, tree: dict[str, list[str]]) -> str:
+  """One sidebar line: a group title, a page link, or a manual page with its names."""
+  if caption:
+    return f'<span class="group">{html.escape(caption)}</span>'
+  current = " class=current" if name == page else ""
+  link = f'<a href="{name}.html"{current}>{html.escape(_title(name))}</a>'
+  if name not in tree:
+    return link
+  opened = " open" if name == page else ""
+  inner = "".join(tree[name])
+  return f'<details{opened}><summary>{link}</summary><div class="sub">{inner}</div></details>'
+
+
+def _tree(manual: dict[str, str]) -> dict[str, list[str]]:
+  """`{manual page: its top-level names as links}`, from what each page registered."""
+  found: dict[str, list[str]] = {page: [] for page in manual}
+  for module in _MANUAL:
+    page = _manual_page(module)
+    depth = module.count(".") + 2
+    for full, (where, ident) in _docs_api._registry.items():  # pyright: ignore[reportPrivateUsage]
+      if where == page and full.count(".") + 1 == depth:
+        found[page].append(
+          f'<a href="{page}.html#{ident}">{html.escape(full.rpartition(".")[2])}</a>'
+        )
+  return found
+
+
+def _search_index(manual: dict[str, str]) -> list[dict[str, str]]:
+  """Everything documented, for the search box: name, full name, kind, summary, link."""
+  entries: list[dict[str, str]] = []
+  seen: set[str] = set()
+  for full, (page, ident) in sorted(_docs_api._registry.items()):  # pyright: ignore[reportPrivateUsage]
+    if full in seen:
+      continue
+    seen.add(full)
+    try:
+      value = _docs_api.locate(full)
+    except LookupError:
+      continue
+    doc = (
+      _docs_api._docstring(value) if callable(value) or inspect.isclass(value) else ""
+    )  # pyright: ignore[reportPrivateUsage]
+    summary = re.split(r"(?<=[.!?])\s|\n\n", doc.strip(), maxsplit=1)[0].replace(
+      "\n", " "
+    )[:140]
+    entries.append(
+      {
+        "n": full.rpartition(".")[2],
+        "f": full,
+        "k": _docs_api._kind(value),  # pyright: ignore[reportPrivateUsage]
+        "s": summary,
+        "u": f"{page}.html#{ident}",
+      }
+    )
+  for page in [*_pages(), *manual]:
+    entries.append(
+      {"n": _title(page), "f": page, "k": "page", "s": "", "u": f"{page}.html"}
+    )
+  return entries
+
+
 def render(*, strict: bool = False) -> dict[str, bytes]:
   """Every page as HTML, in memory: `{"index.html": ..., ...}`.
 
@@ -164,16 +312,21 @@ def render(*, strict: bool = False) -> dict[str, bytes]:
     release = version("discord-micro")
   except PackageNotFoundError:
     release = "development"
-  pages = _pages()
-  sources = {page: (_source() / f"{page}.rst").read_text() for page in pages}
+  manual = _manual_sources()
+  pages = [*_pages(), *manual]
+  sources = {
+    page: manual[page] if page in manual else (_source() / f"{page}.rst").read_text()
+    for page in pages
+  }
   for page, text in sources.items():
     _docs_api.register(page, text)
-  groups = _groups()
+  groups = [*_groups(), ("Manual", list(manual))]
   nav: list[tuple[str | None, str]] = []  # (group caption, "") or (None, page)
   for caption, members in [(None, ["index"]), *groups]:
     if caption:
       nav.append((caption, ""))
     nav.extend((None, name) for name in members)
+  tree = _tree(manual)
   problems: list[str] = []
   rendered: dict[str, bytes] = {}
   for page in pages:
@@ -195,20 +348,16 @@ def render(*, strict: bool = False) -> dict[str, bytes]:
     problems += [
       f"{page}: {line}" for line in warnings.getvalue().splitlines() if line.strip()
     ]
-    links = "\n".join(
-      f'<span class="group">{html.escape(caption)}</span>'
-      if caption
-      else f'<a href="{name}.html"{" class=current" if name == page else ""}>'
-      f"{html.escape(_title(name))}</a>"
-      for caption, name in nav
-    )
+    links = "\n".join(_link(caption, name, page, tree) for caption, name in nav)
     rendered[f"{page}.html"] = _PAGE.format(
       title=html.escape(_title(page)),
       style=_STYLE,
       version=html.escape(release),
       links=links,
       body=str(parts.get("body", "")),
+      script=_SCRIPT,
     ).encode()
+  rendered["search.json"] = json.dumps(_search_index(manual)).encode()
   if strict and problems:
     raise DocsError(problems)
   return rendered
@@ -234,7 +383,10 @@ async def serve(*, browser: bool = True) -> None:
         self.send_error(404)
         return
       self.send_response(200)
-      self.send_header("Content-Type", "text/html; charset=utf-8")
+      kind = (
+        "application/json" if name.endswith(".json") else "text/html; charset=utf-8"
+      )
+      self.send_header("Content-Type", kind)
       self.send_header("Content-Length", str(len(body)))
       self.end_headers()
       self.wfile.write(body)

@@ -1,11 +1,11 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
-from ._style import Style
 from ._api_message_component_emoji import APIMessageComponentEmoji
+from ._style import Style
 
 
 class APIButtonComponentWithCustomId(BaseModel):

@@ -25,10 +25,10 @@ says "Discord gave this an id".
 Where views come from
 ---------------------
 
-* event payloads annotated with a view, and ``ctx.user``, ``ctx.member``, ``ctx.message``;
+* event payloads annotated with a view, and ``interaction.user``, ``interaction.member``, ``interaction.message``;
 * command options (``user: User``, ``role: Role``, ``channel: Channel``, ``file: Attachment``);
 * ``DiscordState`` reads (:doc:`state`);
-* resolved entities of a component or modal (``ctx.users()``, ``ctx.roles(...)``, see
+* resolved entities of a component or modal (``interaction.submitted.users()``, ``interaction.submitted.roles(...)``, see
   :doc:`responding`).
 
 ``User.display_name`` is the global name, or the username without one; ``mention`` on a
@@ -58,6 +58,42 @@ is its URL. It is sent back as the bare hash. ``created_at`` on a ``User`` or ``
 read from its id. ``member.display_name`` is the server
 nickname, else the user's display name.
 
+Objects act
+-----------
+
+An object that reaches a handler, or that you read from ``ctx.state``, is **bound to the
+context**: it carries every action that makes sense for it, with the same arguments as the
+matching :doc:`api` call.
+
+.. code-block:: python
+
+   await message.reply("pong")
+   await message.react("👍")
+   await member.timeout(until, reason="spam")
+   await member.add_role(role_id)
+   await member.send("You were warned.")
+   await guild.ban(user_id, reason="raid")
+   await channel.send(Draft("hi", embeds=[...]))
+   await channel.bulk_delete(message_ids)
+
+The actions are generated from the API, so there is one for each (``Guild`` has 62, ``Channel``
+34, ``Message`` 16, ``Member`` 10 and ``User`` ``send`` and ``dm``), and a new operation shows up
+on its object when the API is regenerated. Two naming rules:
+
+* ``get`` becomes ``fetch``: ``await member.fetch()`` asks Discord for a fresh copy.
+* A name the object already has gets ``fetch_`` in front. ``guild.roles`` is the roles the
+  object carries; ``await guild.fetch_roles()`` asks Discord for them.
+
+Objects also **navigate** through what the Gateway holds (:doc:`state`), with ``get_*``:
+``await member.get_guild()``, ``get_roles()`` and ``get_permissions(channel_id)``;
+``await message.get_channel()`` and ``get_guild()``; ``await channel.get_guild()``, ``get_parent()``
+and ``permissions_for(user_id)``; ``await guild.get_members()``, ``get_member(id)``,
+``get_channels()`` and ``get_roles()``. They never call Discord and return ``None`` when the
+Gateway does not hold the answer.
+
+An object you build by hand (``Message(id=..., channel_id=...)``) has no context, and its actions
+raise a clear error; ``obj.bind(ctx)`` ties it to one.
+
 Permissions
 -----------
 
@@ -70,15 +106,15 @@ channel).
 
    from micro.discord.permissions import Permissions
 
-   if not ctx.member.permissions.allows(Permissions.MANAGE_MESSAGES):
-     await ctx.respond(Draft("You need Manage Messages.", ephemeral=True))
+   if not interaction.member.permissions.allows(Permissions.MANAGE_MESSAGES):
+     await interaction.respond(Draft("You need Manage Messages.", ephemeral=True))
 
    needed = Permissions.KICK_MEMBERS | Permissions.BAN_MEMBERS
    needed in role.permissions            # exactly these bits
    role.permissions.names                # ["kick_members", "ban_members", ...]
 
    @commands.slash("purge", default_member_permissions=Permissions.MANAGE_MESSAGES)
-   async def purge(ctx): ...
+   async def purge(interaction): ...
 
 ``allows`` is true for an administrator whatever else is set; ``in`` tests the bits
 themselves. A ``Permissions`` is an ``int``, so it goes anywhere a number is wanted, and

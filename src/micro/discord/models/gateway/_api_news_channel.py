@@ -1,12 +1,12 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from ._api_overwrite import APIOverwrite
 from ._default_auto_archive_duration import DefaultAutoArchiveDuration
-from ._flags41 import Flags41
+from ._flags43 import Flags43
 
 
 class APINewsChannel(BaseModel):
@@ -20,7 +20,7 @@ class APINewsChannel(BaseModel):
             description='A channel that users can follow and crosspost into their own guild'
         ),
     ]
-    flags: Flags41 | None = None
+    flags: Flags43 | None = None
     rate_limit_per_user: Annotated[
         float | None,
         Field(

@@ -1,12 +1,11 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
 from typing_extensions import TypeAliasType
 
-from ._guild_liveliness_response import GuildLivelinessResponse
 from ._invite_target_types import InviteTargetTypes
 from ._invite_types import InviteTypes
 from ._snowflake_type import SnowflakeType
@@ -39,7 +38,6 @@ class GuildInviteResponse(DiscordModel):
     guild_scheduled_event: ScheduledEventResponse | None = None
     target_channel_id: SnowflakeType | None = None
     target_message_id: SnowflakeType | None = None
-    liveliness: GuildLivelinessResponse | None = None
     uses: int | None = None
     max_uses: int | None = None
     temporary: bool | None = None

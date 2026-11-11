@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
@@ -19,4 +19,5 @@ class InviteChannelResponse(DiscordModel):
     type: ChannelTypes
     name: str | None
     icon: str | None = None
+    nsfw: bool | None = None
     recipients: list[InviteChannelRecipientResponse] | None = None

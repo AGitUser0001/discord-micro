@@ -16,5 +16,8 @@ class Flags56(IntFlag):
     integer_64 = 64
     integer_128 = 128
     integer_256 = 256
-    integer_512 = 512
     integer_1024 = 1024
+    integer_4096 = 4096
+    integer_8192 = 8192
+    integer_16384 = 16384
+    integer_32768 = 32768

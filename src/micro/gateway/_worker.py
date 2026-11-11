@@ -708,7 +708,7 @@ class GatewayWorker(Component):
     if held is None or held.session is not session:
       return  # a connection this worker has let go of
     body = json.dumps(payload, separators=(",", ":"), default=_plain).encode()
-    held.state.apply(
+    before = held.state.apply(
       name,
       cast(dict[str, JsonValue], json.loads(body)),
       chunks=bool(int(self.intents_for(session.generation)) & GUILD_MEMBERS_INTENT),
@@ -722,6 +722,8 @@ class GatewayWorker(Component):
     }
     if session.connection_id is not None:
       headers[CONNECTION_HEADER] = session.connection_id
+    if before is not None:
+      headers[subjects.BEFORE_HEADER] = json.dumps(before, separators=(",", ":"))
     await self.runtime.jetstream.publish(
       subjects.dispatch(name, guild),
       body,

@@ -77,28 +77,42 @@ class ShardState:
   def __init__(self) -> None:
     self._guilds: dict[str, _Guild] = {}
     self._users: dict[str, tuple[int, dict[str, JsonValue]]] = {}
+    self._me: dict[str, JsonValue] | None = None
 
   def clear(self) -> None:
     """Forget everything (a connection that starts over is handed it all again)."""
     self._guilds.clear()
     self._users.clear()
+    self._me = None
 
   # Folding dispatches in ----------------------------------------------------------
 
-  def apply(self, name: str, payload: dict[str, JsonValue], *, chunks: bool) -> None:
+  def apply(
+    self, name: str, payload: dict[str, JsonValue], *, chunks: bool
+  ) -> dict[str, JsonValue] | None:
     """Fold one dispatch in. `chunks` is whether the member list follows each
     `GUILD_CREATE` (the members intent): members it does not list are kept until the
-    list is complete, then removed."""
+    list is complete, then removed.
+
+    Returns:
+      What the object this event is about was before it (an update or a removal of a
+      member, channel, role, guild, voice state or presence the shard held), ready to be
+      read as that object; `None` when there was nothing before or the event is not one.
+    """
+    if name == "READY":
+      user = payload.get("user")
+      self._me = user if isinstance(user, dict) else None
+      return None
     if name == "GUILD_DELETE":
       guild_id = _string_id(payload.get("id"))
       if guild_id is None:
-        return
+        return None
       if payload.get("unavailable") is True:
         if guild_id in self._guilds:
           self._guilds[guild_id].available = False  # an outage, not a removal
       else:
         self._guilds.pop(guild_id, None)
-      return
+      return None
     if name == "GUILD_CREATE":
       guild_id = _string_id(payload.get("id"))
       if guild_id is not None:
@@ -110,7 +124,11 @@ class ShardState:
             for kind in _MEMBER_KINDS:
               fresh.objects[kind] = dict(old.objects.get(kind, {}))
         self._guilds[guild_id] = fresh
+    before: dict[str, JsonValue] | None = None
+    root = _dispatch_kind(name)
     for item in _project_dispatch(name, payload):
+      if before is None and item.kind == root and item.guild_id is not None:
+        before = self._previous(item)
       self._apply(item)
     if name == "GUILD_MEMBERS_CHUNK" and _finishes_member_list(payload):
       guild = self._guilds.get(_string_id(payload.get("guild_id")) or "")
@@ -120,6 +138,21 @@ class ShardState:
           for object_id in [i for i in held if i not in guild.expecting]:
             del held[object_id]
         guild.expecting = None
+    return before
+
+  def _previous(self, item: ProjectedObject) -> dict[str, JsonValue] | None:
+    """What an object held was before an event changes it, as the object it is."""
+    guild = self._guilds.get(item.guild_id or "")
+    held = None if guild is None else guild.objects.get(item.kind, {}).get(item.id)
+    if held is None or guild is None:
+      return None
+    gid = item.guild_id
+    if item.kind == "member":
+      user = self._users.get(item.id.rpartition(":")[2])
+      return None if user is None else {**held, "user": user[1], "guild_id": gid}
+    if item.kind == "voice_state":
+      return {**held, "guild_id": gid}
+    return {"guild_id": gid, **held}
 
   def _apply(self, item: ProjectedObject) -> None:
     if item.guild_id is None:
@@ -160,6 +193,28 @@ class ShardState:
       case "user":
         found = self._users.get(str(arguments.get("user_id")))
         return None if found is None else {"stamp": found[0], "payload": found[1]}
+      case "me":
+        return self._me
+      case "members":
+        return self._members(guild_id)
+      case (
+        "threads" | "stickers" | "stage_instances" | "scheduled_events" | "voice_states"
+      ):
+        kind = {
+          "threads": "thread",
+          "stickers": "sticker",
+          "stage_instances": "stage_instance",
+          "scheduled_events": "scheduled_event",
+          "voice_states": "voice_state",
+        }[operation]
+        return self._all(guild_id, kind)
+      case "voice_state" | "presence":
+        user = str(arguments.get("user_id"))
+        return self._one(guild_id, operation, f"{guild_id}:{user}")
+      case "guilds":
+        return self._all_guilds()
+      case "emojis":
+        return self._all(guild_id, "emoji")
       case "guilds_of":
         return self._guilds_of(str(arguments.get("user_id")))
     return None
@@ -183,7 +238,19 @@ class ShardState:
     if not isinstance(payload, dict):
       return None
     user = self._users.get(user_id)
-    return payload if user is None else {**payload, "user": user[1]}
+    return None if user is None else {**payload, "user": user[1]}
+
+  def _members(self, guild_id: str) -> JsonValue:
+    """Every member the guild holds, each with its user."""
+    guild = self._served(guild_id)
+    if guild is None:
+      return None
+    found: list[JsonValue] = []
+    for object_id, payload in guild.objects.get("member", {}).items():
+      user = self._users.get(object_id.rpartition(":")[2])
+      if user is not None:  # a member needs its user
+        found.append({**payload, "user": user[1]})
+    return found
 
   def _where(self, kind: str, object_id: str) -> JsonValue:
     """An object with a globally unique id (a channel, a role): its guild and payload."""
@@ -191,6 +258,17 @@ class ShardState:
       if guild.available and (payload := guild.objects.get(kind, {}).get(object_id)):
         return {"guild_id": guild_id, "payload": payload}
     return None
+
+  def _all_guilds(self) -> JsonValue:
+    """Every guild this connection holds, themselves (without their lists)."""
+    return cast(
+      JsonValue,
+      [
+        guild.objects["guild"][guild_id]
+        for guild_id, guild in self._guilds.items()
+        if guild.available and guild_id in guild.objects.get("guild", {})
+      ],
+    )
 
   def _guilds_of(self, user_id: str) -> JsonValue:
     """The guilds (themselves, not just ids) this shard knows the user to be in."""

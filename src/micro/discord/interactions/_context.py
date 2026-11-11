@@ -32,13 +32,15 @@ from micro.discord.ui import (
 )
 from micro.errors import MicroError
 
+from ._application import Context
+from ._commands import Choice
+
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
-  from micro.discord.api import DiscordAPI
   from micro.discord.http_service import DiscordHTTPFile
   from micro.discord.refs import ChannelRef, GuildRef, MemberRef, MessageRef, UserRef
+  from micro.service import Service
 
-  from ._commands import Choice
 
 TOKEN_LIFETIME = 15 * 60
 _DISCORD_EPOCH_MS = 1420070400000
@@ -105,7 +107,10 @@ class Resolved:
     return cls(
       users=users,
       members=members,
-      roles={k: Role.model_validate(v) for k, v in (data.get("roles") or {}).items()},
+      roles={
+        k: Role.model_validate({**v, "guild_id": guild_id})
+        for k, v in (data.get("roles") or {}).items()
+      },
       channels={
         k: Channel.model_validate(v) for k, v in (data.get("channels") or {}).items()
       },
@@ -205,66 +210,26 @@ class InvalidResponse(MicroError, RuntimeError):
   """This response does not fit the interaction's type or state."""
 
 
-class Interaction:
-  """One routed interaction plus its response API.
-
-  `respond` answers it: the first call is the initial response, a call after a
-  message-mode `defer(thinking=True)` fills in the deferred message, and later
-  calls are follow-ups. `defer()` acknowledges silently for components (update
-  mode) and shows "thinking..." for commands. `update_message` edits the message
-  a component sits on, and fails if the interaction was deferred in message
-  mode, because the pending message is then a new one.
-  """
+class Submitted:
+  """What the user sent with an interaction: the options of a command, the values of a
+  select, the fields of a modal, and the users, roles, channels and files they refer to.
+  Read it from `ctx.submitted`."""
 
   def __init__(
-    self,
-    payload: Mapping[str, Any],
-    http: DiscordHTTPClient,
-    *,
-    received: float | None = None,
+    self, data: Mapping[str, Any], guild_id: str | None, context: Any = None
   ) -> None:
-    self.payload = payload
-    self.http = http
-    self.received = time.monotonic() if received is None else received
-    self.created_at: float = ((int(payload["id"]) >> 22) + _DISCORD_EPOCH_MS) / 1000
-    """When Discord created the interaction (from its ID), as a Unix time."""
-    self.route: Mapping[str, Any] = {}
-    """What the matched `Route` extracted from the custom ID (`components.match`)."""
-    self.id: str = payload["id"]
-    self.token: str = payload["token"]
-    self.application_id: str = payload["application_id"]
-    self.type = InteractionType(payload["type"])
-    self.data: Mapping[str, Any] = payload.get("data") or {}
-    self.guild_id: str | None = payload.get("guild_id")
-    self.channel_id: str | None = payload.get("channel_id") or (
-      (payload.get("channel") or {}).get("id")
-    )
-    self.locale: str | None = payload.get("locale")
-    member = payload.get("member")
-    self.member: Member | None = (
-      Member.model_validate({**member, "guild_id": self.guild_id}) if member else None
-    )
-    user = payload.get("user") or (member or {}).get("user")
-    self.user: User = User.model_validate(user or {"id": "0"})
-    message = payload.get("message")
-    self.message: Message | None = Message.model_validate(message) if message else None
-    self.state = InteractionState.NEW
-    self._lock = asyncio.Lock()
+    self._data = data
+    self._guild_id = guild_id
+    self._context = context
 
-  # Introspection ---------------------------------------------------------------
+  def _bound[T](self, items: list[T]) -> list[T]:
+    """The objects, bound to the context so their actions work."""
+    if self._context is None:
+      return items
+    return [item.bind(self._context) for item in items]  # type: ignore[attr-defined]
 
   @property
-  def custom_id(self) -> str | None:
-    """The custom id of the component or modal, or None for a command."""
-    return self.data.get("custom_id")
-
-  @property
-  def command_name(self) -> str | None:
-    """The invoked command's name (the top-level one for subcommands)."""
-    return self.data.get("name") if self.is_command or self.is_autocomplete else None
-
-  @property
-  def option_values(self) -> dict[str, str | int | float | bool]:
+  def options(self) -> dict[str, str | int | float | bool]:
     """A command's submitted options by name (subcommand options included).
 
     Raw values: ids stay strings, see `resolved` for the entities they name.
@@ -278,53 +243,13 @@ class Interaction:
         else:
           collect(item.get("options"))
 
-    collect(self.data.get("options"))
+    collect(self._data.get("options"))
     return values
-
-  # The rest of Discord, from here ----------------------------------------------------
-
-  @property
-  def api(self) -> DiscordAPI:
-    """Every Discord operation as a method (`await ctx.api.create_message(...)`)."""
-    return self.http.api
-
-  @property
-  def channel_ref(self) -> ChannelRef:
-    """This interaction's channel, to send to, pin in, start a thread from, ..."""
-    if self.channel_id is None:
-      raise ValueError("This interaction has no channel.")
-    return self.api.channel(self.channel_id)
-
-  @property
-  def guild_ref(self) -> GuildRef:
-    """This interaction's server: ban, roles, channels, emojis, events, ..."""
-    if self.guild_id is None:
-      raise ValueError("This interaction did not happen in a server.")
-    return self.api.guild(self.guild_id)
-
-  @property
-  def user_ref(self) -> UserRef:
-    """The user who triggered this, to direct-message and so on."""
-    return self.api.user(self.user.id)
-
-  @property
-  def member_ref(self) -> MemberRef:
-    """The triggering user as a member of this server: kick, timeout, roles, ..."""
-    if self.guild_id is None:
-      raise ValueError("This interaction did not happen in a server.")
-    return self.api.member(self.guild_id, self.user.id)
-
-  @property
-  def message_ref(self) -> MessageRef:
-    """The message a component is on (edit it, pin it, react, start a thread, ...)."""
-    if self.message is None or self.channel_id is None:
-      raise ValueError("This interaction did not come from a message.")
-    return self.api.message(self.channel_id, self.message.id)
 
   @property
   def values(self) -> list[str]:
     """Selected values of a select menu interaction."""
-    return list(self.data.get("values") or [])
+    return list(self._data.get("values") or [])
 
   @property
   def inputs(self) -> dict[str, InputValue]:
@@ -335,7 +260,7 @@ class Interaction:
     and uploads: see `users`, `roles`, `channels`, `attachments`), a checkbox a bool.
     """
     found: dict[str, InputValue] = {}
-    for component in _submitted(self.data.get("components")):
+    for component in _submitted(self._data.get("components")):
       key = component["custom_id"]
       kind = component.get("type")
       if kind in _MULTI:
@@ -369,44 +294,184 @@ class Interaction:
   def resolved(self) -> Resolved:
     """The users, members, roles, channels, attachments and messages the
     interaction's selected values or options refer to."""
-    return Resolved.parse(self.data.get("resolved"), self.guild_id)
+    return Resolved.parse(self._data.get("resolved"), self._guild_id)
 
   def users(self, custom_id: str | None = None) -> list[User]:
     """The users picked in a user or mentionable select."""
-    return [
-      self.resolved.users[i]
-      for i in self.choices(custom_id)
-      if i in self.resolved.users
-    ]
+    return self._bound(
+      [
+        self.resolved.users[i]
+        for i in self.choices(custom_id)
+        if i in self.resolved.users
+      ]
+    )
 
   def members(self, custom_id: str | None = None) -> list[Member]:
     """The picked users as guild members, where Discord resolved them."""
-    return [
-      self.resolved.members[i]
-      for i in self.choices(custom_id)
-      if i in self.resolved.members
-    ]
+    return self._bound(
+      [
+        self.resolved.members[i]
+        for i in self.choices(custom_id)
+        if i in self.resolved.members
+      ]
+    )
 
   def roles(self, custom_id: str | None = None) -> list[Role]:
     """The roles picked in a role or mentionable select."""
-    return [
-      self.resolved.roles[i]
-      for i in self.choices(custom_id)
-      if i in self.resolved.roles
-    ]
+    return self._bound(
+      [
+        self.resolved.roles[i]
+        for i in self.choices(custom_id)
+        if i in self.resolved.roles
+      ]
+    )
 
   def channels(self, custom_id: str | None = None) -> list[Channel]:
     """The channels picked in a channel select."""
-    return [
-      self.resolved.channels[i]
-      for i in self.choices(custom_id)
-      if i in self.resolved.channels
-    ]
+    return self._bound(
+      [
+        self.resolved.channels[i]
+        for i in self.choices(custom_id)
+        if i in self.resolved.channels
+      ]
+    )
 
   def attachments(self, custom_id: str | None = None) -> list[Attachment]:
     """The files uploaded to a file upload field."""
     found = self.resolved.attachments
-    return [found[i] for i in self.choices(custom_id) if i in found]
+    return self._bound([found[i] for i in self.choices(custom_id) if i in found])
+
+
+class Interaction:
+  """One routed interaction plus its response API.
+
+  `respond` answers it: the first call is the initial response, a call after a
+  message-mode `defer(thinking=True)` fills in the deferred message, and later
+  calls are follow-ups. `defer()` acknowledges silently for components (update
+  mode) and shows "thinking..." for commands. `update_message` edits the message
+  a component sits on, and fails if the interaction was deferred in message
+  mode, because the pending message is then a new one.
+  """
+
+  def __init__(
+    self,
+    payload: Mapping[str, Any],
+    http: DiscordHTTPClient,
+    *,
+    received: float | None = None,
+    service: Service | None = None,
+  ) -> None:
+    self.payload = payload
+    """The interaction exactly as Discord sent it (a dict)."""
+    self.http = http
+    """The HTTP client this interaction answers through."""
+    self.context = Context(
+      http, service=service, application_id=payload.get("application_id")
+    )
+    """The `Context`: `interaction.context.api` calls Discord and `.state` reads what the
+    Gateway knows. Handlers usually ask for it directly: `(ctx: Context, interaction: Interaction)`."""
+    self.received = time.monotonic() if received is None else received
+    """When Micro received it (a monotonic clock): what `expired` measures from."""
+    self.created_at: float = ((int(payload["id"]) >> 22) + _DISCORD_EPOCH_MS) / 1000
+    """When Discord created the interaction (from its ID), as a Unix time."""
+    self.route: Mapping[str, Any] = {}
+    """What the matched `Route` extracted from the custom ID (`components.match`)."""
+    self.id: str = payload["id"]
+    """The interaction's id."""
+    self.token: str = payload["token"]
+    """Its token, valid for 15 minutes: what answers it."""
+    self.application_id: str = payload["application_id"]
+    """The application (your bot) it is for."""
+    self.type = InteractionType(payload["type"])
+    """What the user did: a command, a component, a modal submit, an autocomplete."""
+    self.data: Mapping[str, Any] = payload.get("data") or {}
+    """Discord's raw `data` for it: `ctx.submitted` reads this for you."""
+    self.guild_id: str | None = payload.get("guild_id")
+    """The server it happened in (None in a DM)."""
+    self.channel_id: str | None = payload.get("channel_id") or (
+      (payload.get("channel") or {}).get("id")
+    )
+    """The channel it happened in."""
+    self.locale: str | None = payload.get("locale")
+    """The user's language, e.g. `en-US`."""
+    member = payload.get("member")
+    self.member: Member | None = (
+      Member.model_validate({**member, "guild_id": self.guild_id}) if member else None
+    )
+    """Who acted, as a member of the server (None in a DM)."""
+    user = payload.get("user") or (member or {}).get("user")
+    self.user: User = User.model_validate(user or {"id": "0"})
+    """Who acted: the same person in every server."""
+    message = payload.get("message")
+    self.message: Message | None = Message.model_validate(message) if message else None
+    """The message a component sits on (None for commands and modals)."""
+    self.member = self.member.bind(self.context) if self.member else None
+    self.user = self.user.bind(self.context)
+    self.message = self.message.bind(self.context) if self.message else None
+    self.state = InteractionState.NEW
+    """What has been sent so far: `NEW` until the first response, then `MESSAGE`,
+    `DEFERRED_MESSAGE`, `UPDATED`, `MODAL` and so on. `responded` and `deferred` read it."""
+    self._lock = asyncio.Lock()
+
+  # Introspection ---------------------------------------------------------------
+
+  @property
+  def custom_id(self) -> str | None:
+    """The custom id of the component or modal, or None for a command."""
+    return self.data.get("custom_id")
+
+  @property
+  def command_name(self) -> str | None:
+    """The invoked command's name (the top-level one for subcommands)."""
+    return (
+      self.data.get("name")
+      if self.type
+      in (
+        InteractionType.APPLICATION_COMMAND,
+        InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE,
+      )
+      else None
+    )
+
+  @cached_property
+  def submitted(self) -> Submitted:
+    """What the user sent: `options`, `values`, `fields`, `choices()`, `users()`, ..."""
+    return Submitted(self.data, self.guild_id, self.context)
+
+  # The rest of Discord, from here ----------------------------------------------------
+
+  @property
+  def channel_ref(self) -> ChannelRef:
+    """This interaction's channel, to send to, pin in, start a thread from, ..."""
+    if self.channel_id is None:
+      raise ValueError("This interaction has no channel.")
+    return self.context.api.channel(self.channel_id)
+
+  @property
+  def guild_ref(self) -> GuildRef:
+    """This interaction's server: ban, roles, channels, emojis, events, ..."""
+    if self.guild_id is None:
+      raise ValueError("This interaction did not happen in a server.")
+    return self.context.api.guild(self.guild_id)
+
+  @property
+  def user_ref(self) -> UserRef:
+    """The user who triggered this, to direct-message and so on."""
+    return self.context.api.user(self.user.id)
+
+  @property
+  def member_ref(self) -> MemberRef:
+    """The triggering user as a member of this server: kick, timeout, roles, ..."""
+    if self.guild_id is None:
+      raise ValueError("This interaction did not happen in a server.")
+    return self.context.api.member(self.guild_id, self.user.id)
+
+  @property
+  def message_ref(self) -> MessageRef:
+    """The message a component is on (edit it, pin it, react, start a thread, ...)."""
+    if self.message is None or self.channel_id is None:
+      raise ValueError("This interaction did not come from a message.")
+    return self.context.api.message(self.channel_id, self.message.id)
 
   @property
   def age(self) -> float:
@@ -431,58 +496,6 @@ class Interaction:
       InteractionState.DEFERRED_UPDATE,
     )
 
-  @property
-  def is_command(self) -> bool:
-    """True for slash, user and message commands."""
-    return self.type == InteractionType.APPLICATION_COMMAND
-
-  @property
-  def is_component(self) -> bool:
-    """True for button clicks and select choices."""
-    return self.type == InteractionType.MESSAGE_COMPONENT
-
-  @property
-  def is_modal(self) -> bool:
-    """True for modal submissions."""
-    return self.type == InteractionType.MODAL_SUBMIT
-
-  @property
-  def is_autocomplete(self) -> bool:
-    """True for autocomplete requests."""
-    return self.type == InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE
-
-  # Low level: one Discord request each -----------------------------------------
-
-  async def create_initial_response(
-    self,
-    kind: ResponseType,
-    data: Json | None = None,
-    *,
-    files: Sequence[Upload] = (),
-  ) -> None:
-    """Create Interaction Response: the one callback an interaction gets."""
-    async with self._lock:
-      await self._initial(kind, data, files)
-
-  async def create_followup(
-    self, body: Json, *, files: Sequence[Upload] = ()
-  ) -> Message:
-    """Create Followup Message (a new message after the initial response)."""
-    async with self._lock:
-      return await self._followup(body, files)
-
-  async def edit_initial_response(
-    self, body: Json, *, files: Sequence[Upload] = ()
-  ) -> None:
-    """Edit Original Interaction Response (the @original webhook message)."""
-    async with self._lock:
-      await self._edit(body, files)
-
-  async def delete_initial_response(self) -> None:
-    """Delete Original Interaction Response."""
-    async with self._lock:
-      await self._delete()
-
   # High level: state-aware -----------------------------------------------------
 
   async def respond(self, message: Draft | str | None = None) -> Message | None:
@@ -491,6 +504,17 @@ class Interaction:
     The initial response when nothing was sent, the deferred message after a
     `defer(thinking=True)`, and a follow-up (returned) otherwise. An `Upload` shown
     by a component or an embed is attached by itself.
+
+    Args:
+      message: What to send: a `Draft`, or a string for plain text.
+
+    Returns:
+      `None` for the initial response and for the deferred message; the follow-up
+      `Message` that was sent otherwise.
+
+    Raises:
+      AlreadyResponded: The interaction was answered with a modal or autocomplete
+        suggestions, which leave nothing to follow up on.
     """
     draft = Draft.of(message)
     files = draft.uploads
@@ -516,12 +540,27 @@ class Interaction:
     "thinking..." and the next `respond` fills it in. Commands always think.
     `ephemeral` applies to thinking deferrals only, because an update keeps the
     visibility of the message it edits.
+
+    Args:
+      thinking: Show "thinking..." now and fill it in with the next `respond`.
+      ephemeral: Make the "thinking..." message visible only to the person who
+        triggered the interaction.
+
+    Raises:
+      InvalidResponse: It is an autocomplete, which cannot be deferred.
     """
-    if self.is_autocomplete:
+    if self.type is InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE:
       raise InvalidResponse("Autocomplete interactions cannot be deferred.")
     async with self._lock:
       self._require(InteractionState.NEW, "defer")
-      if (self.is_component or self.is_modal) and self.message and not thinking:
+      if (
+        (
+          (self.type is InteractionType.MESSAGE_COMPONENT)
+          or (self.type is InteractionType.MODAL_SUBMIT)
+        )
+        and self.message
+        and not thinking
+      ):
         await self._initial(ResponseType.DEFERRED_MESSAGE_UPDATE)
       else:
         data: Json | None = {"flags": EPHEMERAL} if ephemeral else None
@@ -532,6 +571,9 @@ class Interaction:
 
     A part of the `Draft` left as None stays as it is, an empty one clears it. Files
     are added to the message; `Draft(keep=[...])` says which of the existing ones stay.
+
+    Args:
+      message: What the message should become: a `Draft`, or a string for plain text.
     """
     draft = Draft.of(message)
     files = draft.uploads
@@ -553,7 +595,13 @@ class Interaction:
     only when the modal was opened from one. Fails after a message-mode defer
     or a new-message response, where the original is no longer that message.
     """
-    if not (self.is_component or self.is_modal) or self.message is None:
+    if (
+      not (
+        (self.type is InteractionType.MESSAGE_COMPONENT)
+        or (self.type is InteractionType.MODAL_SUBMIT)
+      )
+      or self.message is None
+    ):
       raise InvalidResponse(
         "update_message() needs the message a component was clicked on, and this "
         "interaction has none; use respond() or edit_response()."
@@ -579,18 +627,26 @@ class Interaction:
           )
 
   async def modal(self, modal: Modal) -> None:
-    """Show a modal; it must be the initial response."""
-    if self.is_modal or self.is_autocomplete:
+    """Show a modal; it must be the initial response.
+
+    Args:
+      modal: The form to show. Its `custom_id` routes the submission.
+    """
+    if (self.type is InteractionType.MODAL_SUBMIT) or (
+      self.type is InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE
+    ):
       raise InvalidResponse("A modal cannot answer a modal submit or an autocomplete.")
     async with self._lock:
       self._require(InteractionState.NEW, "show a modal", AlreadyResponded)
       await self._initial(ResponseType.MODAL, modal.to_dict())
 
   async def autocomplete(self, choices: Sequence[Choice | str | int | float]) -> None:
-    """Send autocomplete suggestions (at most 25, Discord's limit)."""
-    from ._commands import Choice
+    """Send autocomplete suggestions (at most 25, Discord's limit).
 
-    if not self.is_autocomplete:
+    Args:
+      choices: The suggestions: `Choice`s, or plain values that are shown as they are.
+    """
+    if not (self.type is InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE):
       raise InvalidResponse("Suggestions only answer autocomplete interactions.")
     if len(choices) > 25:
       raise ValueError("Discord accepts at most 25 autocomplete choices.")

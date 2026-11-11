@@ -3,8 +3,8 @@
     from micro.discord.permissions import Permissions
 
     needed = Permissions.MANAGE_MESSAGES | Permissions.BAN_MEMBERS
-    if needed in ctx.member.permissions: ...
-    ctx.member.permissions.allows(needed)        # the same, and true for an administrator
+    if needed in interaction.member.permissions: ...
+    interaction.member.permissions.allows(needed)        # the same, and true for an administrator
 
     @commands.slash("purge", default_member_permissions=Permissions.MANAGE_MESSAGES)
 

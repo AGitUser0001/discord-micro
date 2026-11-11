@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -20,7 +20,6 @@ from ._api_sticker_item import APIStickerItem
 from ._api_message_role_subscription_data import APIMessageRoleSubscriptionData
 from ._api_message_call import APIMessageCall
 from ._api_message_shared_client_theme import APIMessageSharedClientTheme
-from ._api_embed import APIEmbed
 from ._api_reaction import APIReaction
 from ._api_user import APIUser
 from ._api_sticker import APISticker
@@ -36,6 +35,7 @@ from ._api_public_thread_channel import APIPublicThreadChannel
 from ._api_poll import APIPoll
 from ._partial_api_application import PartialAPIApplication
 from ._api_attachment import APIAttachment
+from ._api_embed import APIEmbed
 from ._api_message_top_level_component import APIMessageTopLevelComponent
 from ._api_interaction_data_resolved import APIInteractionDataResolved
 from ._api_message_snapshot import APIMessageSnapshot

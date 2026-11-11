@@ -13,9 +13,9 @@ running code, and one handler runs all of them.
    dynamic = RuntimeCommands(service)
 
    @dynamic.handler
-   async def run(ctx: Interaction) -> None:
-     body = await lookup(ctx.guild_id, ctx.command_name)   # your own storage
-     await ctx.respond(body)
+   async def run(interaction: Interaction) -> None:
+     body = await lookup(interaction.guild_id, interaction.command_name)   # your own storage
+     await interaction.respond(body)
 
    await dynamic.add("hello", "Say hello", guild_id=1234,
                      options=[option("who", "Who to greet")])
@@ -29,7 +29,7 @@ creates a command or changes its definition.
 
 * Without ``guild_id`` the command is **global**. With one it is registered in that guild
   only. Adding the same name for another guild adds a *scope*: it is still one command, so
-  use ``ctx.guild_id`` inside the handler to tell the guilds apart.
+  use ``interaction.guild_id`` inside the handler to tell the guilds apart.
 * ``options`` is a list of :func:`option` values (``option("who", "Who", kind="user",
   required=True, choices=[...])``). ``kind`` is 1 (slash, the default), 2 (user menu) or 3
   (message menu).
@@ -40,9 +40,9 @@ creates a command or changes its definition.
 The handler
 -----------
 
-``@dynamic.handler`` is one ``async def f(ctx)`` for every runtime command. ``ctx.command_name``
-is the invoked name and ``ctx.option_values`` the submitted options (``{"who": "bo"}``).
-``@dynamic.autocomplete`` takes ``async def f(ctx, value)`` and returns choices for options you
+``@dynamic.handler`` is one ``async def f(interaction)`` for every runtime command. ``interaction.command_name``
+is the invoked name and ``interaction.submitted.options`` the submitted options (``{"who": "bo"}``).
+``@dynamic.autocomplete`` takes ``async def f(interaction, value)`` and returns choices for options you
 declared with ``autocomplete=True`` in a raw option dict.
 
 How it works

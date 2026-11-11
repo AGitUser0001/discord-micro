@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -14,6 +14,7 @@ class ActionType(IntEnum):
     integer_13 = 13
     integer_14 = 14
     integer_15 = 15
+    integer_16 = 16
     integer_20 = 20
     integer_21 = 21
     integer_22 = 22
@@ -26,6 +27,7 @@ class ActionType(IntEnum):
     integer_30 = 30
     integer_31 = 31
     integer_32 = 32
+    integer_33 = 33
     integer_40 = 40
     integer_41 = 41
     integer_42 = 42

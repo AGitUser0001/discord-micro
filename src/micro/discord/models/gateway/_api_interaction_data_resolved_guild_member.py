@@ -1,11 +1,11 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from ._api_avatar_decoration_data import APIAvatarDecorationData
-from ._flags53 import Flags53
+from ._flags55 import Flags55
 from ._api_collectibles import APICollectibles
 
 
@@ -39,7 +39,7 @@ class APIInteractionDataResolvedGuildMember(BaseModel):
         Field(description="The data for the member's collectibles"),
     ] = None
     flags: Annotated[
-        Flags53, Field(description='Guild member flags represented as a bit set')
+        Flags55, Field(description='Guild member flags represented as a bit set')
     ]
     joined_at: Annotated[
         str | None, Field(description='When the user joined the guild')

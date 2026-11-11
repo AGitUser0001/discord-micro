@@ -239,6 +239,7 @@ class ChannelRef:
     target_application_id: int | str | None = UNSET,
     target_type: m.InviteTargetTypes | int | None = UNSET,
     role_ids: str | Sequence[int | str] | None = UNSET,
+    target_user_ids: str | Sequence[int | str] | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
   ) -> Result[
@@ -256,6 +257,7 @@ class ChannelRef:
       target_application_id=target_application_id,
       target_type=target_type,
       role_ids=role_ids,
+      target_user_ids=target_user_ids,
       files=files,
       reason=reason,
     )
@@ -888,7 +890,7 @@ class GuildRef:
     self,
     *,
     limit: int | None = UNSET,
-    after: int | None = UNSET,
+    after: int | str | None = UNSET,
   ) -> Result[list[m.GuildMemberResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/members"""
     return await self.api.list_guild_members(self.guild_id, limit=limit, after=after)

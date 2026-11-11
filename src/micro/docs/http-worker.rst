@@ -56,7 +56,7 @@ Start one or more; each registers itself so clients can find it:
 Calling Discord
 ---------------
 
-:class:`DiscordHTTPClient` is the client. Most code never builds one: ``ctx.api`` in a
+:class:`DiscordHTTPClient` is the client. Most code never builds one: ``ctx.api`` (a :class:`Context`) in a
 handler, ``DiscordState`` and the helpers in :doc:`api` all use it. It needs a runtime.
 
 .. code-block:: python
@@ -162,11 +162,11 @@ there is one, so you catch what you mean:
    from micro.discord import Forbidden, NotFound
 
    try:
-     await ctx.api.message(channel_id, message_id).delete()
+     await ctx.api.message(channel_id, message_id).delete()   # ctx: Context
    except NotFound:
      pass                      # already gone
    except Forbidden as error:
-     await ctx.respond(Draft(f"I can't do that here: {error.message}", ephemeral=True))
+     await interaction.respond(Draft(f"I can't do that here: {error.message}", ephemeral=True))
 
 ``status`` is the HTTP status, ``code`` Discord's own error number (10008 "Unknown
 Message", 50013 "Missing Permissions"), ``message`` its description and ``body`` the
@@ -244,14 +244,14 @@ Reference
    micro.discord.NotFound
    micro.discord.RateLimited
    micro.discord.DiscordServerError
-   micro.discord.DiscordHTTPRequest
-   micro.discord.DiscordHTTPResponse
+   micro.discord.http_service.DiscordHTTPRequest
+   micro.discord.http_service.DiscordHTTPResponse
    micro.discord.http_service.DiscordHTTPFile
-   micro.discord.HTTPEvent
-   micro.discord.RateLimits
-   micro.discord.DiscordHTTPOperation
-   micro.discord.partition_key
-   micro.discord.rank_workers
-   micro.discord.route_key
-   micro.discord.HTTP_OPERATIONS
-   micro.discord.DiscordOperationId
+   micro.discord.http_service.HTTPEvent
+   micro.discord.http_service.RateLimits
+   micro.discord.http_operations.DiscordHTTPOperation
+   micro.discord.http_service.partition_key
+   micro.discord.http_service.rank_workers
+   micro.discord.http_service.route_key
+   micro.discord.http_operations.HTTP_OPERATIONS
+   micro.discord.http_operations.DiscordOperationId

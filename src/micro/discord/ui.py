@@ -23,13 +23,16 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from os import PathLike
-from typing import Any, ClassVar, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, overload
 
 from pydantic import JsonValue
 
 from .colour import Colour, ColourLike
+
+if TYPE_CHECKING:
+  from .objects import Object
+
 from .enums import ButtonStyle, ChannelType, TextInputStyle
-from .objects import Object
 
 type Json = dict[str, JsonValue]
 
@@ -39,8 +42,8 @@ class Upload:
   """A file to send with a message.
 
       chart = Upload("chart.png", png_bytes)
-      await ctx.respond(Draft(components=[MediaGallery(MediaItem(chart))]))   # shown, attached
-      await ctx.respond(Draft("the log", files=[Upload.text("log.txt", text)]))
+      await interaction.respond(Draft(components=[MediaGallery(MediaItem(chart))]))   # shown, attached
+      await interaction.respond(Draft("the log", files=[Upload.text("log.txt", text)]))
 
   Put it wherever a picture or file goes (`Thumbnail`, `MediaGallery`, `File`, an
   embed's `image=`) and the message attaches it by itself; a file that is only
@@ -277,6 +280,83 @@ hooks = Hooks()
 """The process-wide hooks every builder in this module runs."""
 
 
+# What Discord says about each component ---------------------------------------------
+#
+# Limits are not repeated here: a component class declares its Discord type (`code`) and the
+# metaclass reads its limits from Discord's generated request models when the class is
+# created, so they cannot drift from what Discord enforces.
+
+_MESSAGE_MODELS = {
+  1: "ActionRowComponentForMessageRequest",
+  2: "ButtonComponentForMessageRequest",
+  3: "StringSelectComponentForMessageRequest",
+  5: "UserSelectComponentForMessageRequest",
+  6: "RoleSelectComponentForMessageRequest",
+  7: "MentionableSelectComponentForMessageRequest",
+  8: "ChannelSelectComponentForMessageRequest",
+  9: "SectionComponentForMessageRequest",
+  10: "TextDisplayComponentForMessageRequest",
+  11: "ThumbnailComponentForMessageRequest",
+  12: "MediaGalleryComponentForMessageRequest",
+  13: "FileComponentForMessageRequest",
+  14: "SeparatorComponentForMessageRequest",
+  17: "ContainerComponentForMessageRequest",
+}
+_MODAL_MODELS = {
+  1: "ActionRowComponentForModalRequest",
+  3: "StringSelectComponentForModalRequest",
+  4: "TextInputComponentForModalRequest",
+  5: "UserSelectComponentForModalRequest",
+  6: "RoleSelectComponentForModalRequest",
+  7: "MentionableSelectComponentForModalRequest",
+  8: "ChannelSelectComponentForModalRequest",
+  10: "TextDisplayComponentForModalRequest",
+  18: "LabelComponentForModalRequest",
+  19: "FileUploadComponentForModalRequest",
+  21: "RadioGroupComponentForModalRequest",
+  22: "CheckboxGroupComponentForModalRequest",
+  23: "CheckboxComponentForModalRequest",
+}
+
+
+_model_cache: dict[Any, dict[str, tuple[int, int | None]]] = {}
+
+
+def _limits_in(model: Any) -> dict[str, tuple[int, int | None]]:
+  """`{field: (minimum, maximum)}` for a generated Discord model."""
+  if model not in _model_cache:
+    import typing
+
+    import annotated_types
+
+    found: dict[str, tuple[int, int | None]] = {}
+    for name, info in model.model_fields.items():
+      low: Any = 0
+      high: Any = None
+      layers = [info.metadata] + [
+        getattr(arg, "__metadata__", ()) for arg in typing.get_args(info.annotation)
+      ]
+      for layer in layers:
+        for rule in layer:
+          if isinstance(rule, annotated_types.MinLen):
+            low = rule.min_length
+          elif isinstance(rule, annotated_types.MaxLen):
+            high = rule.max_length
+          elif isinstance(rule, annotated_types.Interval):
+            low = rule.ge if rule.ge is not None else low
+            high = rule.le if rule.le is not None else high
+          else:
+            low = getattr(rule, "min_length", None) or low
+            high = getattr(rule, "max_length", None) or high
+      found[name] = (int(low), None if high is None else int(high))
+    _model_cache[model] = found
+  return _model_cache[model]
+
+
+_DECLARES = ("code", "main", "limits", "model")
+"""What a component class declares in its body; the metaclass derives the rest from them."""
+
+
 class _Hooked(type):
   """Metaclass of the builders: runs the build and serialize middleware."""
 
@@ -294,12 +374,11 @@ class _Hooked(type):
       to_dict._hooked = True  # type: ignore[attr-defined]
       to_dict.__doc__ = original.__doc__
       namespace["to_dict"] = to_dict
-    return super().__new__(mcs, name, bases, namespace)
-
-  @property
-  def max(cls) -> int | None:
-    """What this kind of component can hold in its main dimension (read it on the class)."""
-    return _primary_max(cls)
+    cls = super().__new__(mcs, name, bases, namespace)
+    derive = getattr(cls, "_derive", None)
+    if derive is not None and any(k in namespace for k in _DECLARES):
+      derive()  # fill in what the class's declarations imply (its limits, its `max`)
+    return cls
 
   # Typed as returning the class's own instances, so type checkers ignore this
   # `__call__` and check arguments against each component's real `__init__`.
@@ -413,17 +492,48 @@ class Component(metaclass=_Hooked):
   """Characters of Text Display content inside it, in all."""
   slots: ClassVar[int] = 1
   """What it costs inside its parent's `count`: 1, but a select takes a whole row (5)."""
+  code: ClassVar[int | None] = None
+  """Discord's component type number, declared in the class body (None: no JSON of its own)."""
+  main: ClassVar[str | int | None] = None
+  """The main dimension `count` measures, declared in the class body: the name of the limit
+  that bounds it (a field of Discord's model), or a number, or None if it has none."""
+  limits: ClassVar[Mapping[str, tuple[int, int | None]]] = {}
+  """`{field: (minimum, maximum)}`, read from Discord's own request models by the metaclass
+  when the class is created (a class that is not in a model declares them itself). A
+  subclass inherits them."""
+  max: ClassVar[int | None] = None
+  """The limit of `count` (None when unbounded): derived from `main` when the class is
+  created. Read it on the class or an instance."""
+
+  @classmethod
+  def _derive(cls) -> None:
+    """Called by the metaclass when a class declares `code`, `main` or `limits`."""
+    if "limits" not in cls.__dict__:
+      if cls.code is None:
+        raise TypeError(f"{cls.__name__} declares neither `code` nor `limits`.")
+      from micro.discord.models import http as models
+
+      name = _MESSAGE_MODELS.get(cls.code) or _MODAL_MODELS[cls.code]
+      cls.limits = _limits_in(getattr(models, name))
+    if "max" not in cls.__dict__:
+      main = cls.main
+      cls.max = (
+        main
+        if isinstance(main, int)
+        else None
+        if main is None
+        else cls.limits.get(main, (0, None))[1]
+      )
+
+  def _main(self) -> int:
+    """How much of its main dimension it holds (`count`); 0 for one with none."""
+    return 0
 
   @property
   def count(self) -> int:
     """How much of its main dimension it holds (see `max`): an action row's slots used,
     a section's texts, a gallery's items, a text's characters, a container's components."""
-    return _PRIMARY[type(self)][0](self)
-
-  @property
-  def max(self) -> int | None:
-    """The limit of `count` (None when it has no main dimension)."""
-    return _primary_max(type(self))
+    return self._main()
 
   @property
   def remaining(self) -> int | None:
@@ -451,7 +561,7 @@ class Component(metaclass=_Hooked):
   @property
   def measures(self) -> tuple[Measure, ...]:
     """Every count this component has, with its limit (from Discord's own models)."""
-    limits = _limits_of(type(self))
+    limits = self.limits
     found = [
       Measure(
         "slots" if isinstance(self, ActionRow) and name == "components" else name,
@@ -555,8 +665,11 @@ class EmbedField(metaclass=_Hooked):
   """One name and value in an embed; `inline` sets fields side by side."""
 
   name: str
+  """The field's heading (up to 256 characters)."""
   value: str
+  """Its text (up to 1024 characters)."""
   inline: bool = False
+  """Show it beside the neighbouring inline fields."""
 
   def to_dict(self) -> Json:
     """This field as the JSON object Discord expects."""
@@ -568,7 +681,9 @@ class EmbedFooter(metaclass=_Hooked):
   """Small text at the bottom of an embed, with an optional icon."""
 
   text: str
+  """The footer text (up to 2048 characters)."""
   icon: Media | None = None
+  """A small picture left of the text: a URL or an `Upload`."""
 
   def to_dict(self) -> Json:
     """This footer as the JSON object Discord expects."""
@@ -582,8 +697,11 @@ class EmbedAuthor(metaclass=_Hooked):
   """A name (that may link somewhere) with an icon, at the top of an embed."""
 
   name: str
+  """The author's name (up to 256 characters)."""
   url: str | None = None
+  """Where the name links to."""
   icon: Media | None = None
+  """A small picture beside the name: a URL or an `Upload`."""
 
   def to_dict(self) -> Json:
     """This author as the JSON object Discord expects."""
@@ -613,16 +731,52 @@ class Embed(metaclass=_Hooked):
   are checked when it is serialized (see `measures`).
   """
 
+  model: ClassVar[str] = "RichEmbed"
+  """The Discord request model its limits are read from (by the metaclass, when the class
+  is created)."""
+  limits: ClassVar[Mapping[str, tuple[int, int | None]]]
+  """`{field: (minimum, maximum)}` of an embed, from `model`; a subclass inherits them."""
+  field_limits: ClassVar[Mapping[str, tuple[int, int | None]]]
+  """The same for one field of an embed (`RichEmbedField`)."""
+  footer_limit: ClassVar[int | None]
+  """The longest footer text (`RichEmbedFooter`)."""
+  author_limit: ClassVar[int | None]
+  """The longest author name (`RichEmbedAuthor`)."""
+
+  @classmethod
+  def _derive(cls) -> None:
+    """Called by the metaclass when a class declares `model` or `limits`."""
+    from micro.discord.models import http as models
+
+    if "limits" not in cls.__dict__:
+      cls.limits = _limits_in(getattr(models, cls.model))
+    if "field_limits" not in cls.__dict__:
+      cls.field_limits = _limits_in(models.RichEmbedField)
+    if "footer_limit" not in cls.__dict__:
+      cls.footer_limit = _limits_in(models.RichEmbedFooter)["text"][1]
+    if "author_limit" not in cls.__dict__:
+      cls.author_limit = _limits_in(models.RichEmbedAuthor)["name"][1]
+
   title: str | None
+  """The heading (up to 256 characters)."""
   description: str | None
+  """The body text (up to 4096 characters)."""
   colour: Colour | None
+  """The coloured bar down the left edge (a `Colour`)."""
   url: str | None
+  """Where the title links to."""
   fields: tuple[EmbedField, ...]
+  """Name and value pairs below the description (up to 25)."""
   footer: EmbedFooter | None
+  """Small text at the bottom."""
   image: Media | None
+  """A large picture: a URL or an `Upload`."""
   thumbnail: Media | None
+  """A small picture at the top right: a URL or an `Upload`."""
   author: EmbedAuthor | None
+  """A name with an icon above the title."""
   timestamp: datetime | None
+  """A time shown beside the footer."""
 
   def __init__(
     self,
@@ -671,10 +825,7 @@ class Embed(metaclass=_Hooked):
   @property
   def measures(self) -> tuple[Measure, ...]:
     """Every count this embed has, with Discord's limit for it."""
-    from micro.discord.models import http as models
-
-    top = _limits_in(models.RichEmbed)
-    name = _limits_in(models.RichEmbedField)
+    top, name = self.limits, self.field_limits
     value = name["value"][1]
     found = [
       Measure("title", utf16_length(self.title or ""), top["title"][1]),
@@ -690,11 +841,9 @@ class Embed(metaclass=_Hooked):
       )
       found.append(Measure(f"field {index} value", utf16_length(item.value), value, 1))
     if self.footer is not None:
-      limit = _limits_in(models.RichEmbedFooter)["text"][1]
-      found.append(Measure("footer", utf16_length(self.footer.text), limit))
+      found.append(Measure("footer", utf16_length(self.footer.text), self.footer_limit))
     if self.author is not None:
-      limit = _limits_in(models.RichEmbedAuthor)["name"][1]
-      found.append(Measure("author", utf16_length(self.author.name), limit))
+      found.append(Measure("author", utf16_length(self.author.name), self.author_limit))
     return tuple(found)
 
   def to_dict(self) -> Json:
@@ -783,13 +932,21 @@ class Button(Component):
   """A button: `custom_id` (an interaction), `url` (a link), or `sku_id` (premium)."""
 
   label: str | None = None
+  """The text on the button (up to 80 characters)."""
   custom_id: str | None = None
+  """What identifies this button when it is clicked (`interaction.custom_id`). Exactly one of `custom_id`, `url` and `sku_id`."""
   url: str | None = None
+  """Makes a link button that opens this address (no interaction is sent)."""
   style: ButtonStyle = ButtonStyle.PRIMARY
+  """How it looks (`ButtonStyle`); a `url` always makes it `LINK` and a `sku_id` `PREMIUM`."""
   emoji: Emoji | None = None
+  """An `Emoji` shown before the label."""
   disabled: bool = False
+  """Show it greyed out and unclickable."""
   sku_id: int | str | None = None
+  """Makes a premium purchase button for this SKU (it then has no label or emoji)."""
   id: int | None = None
+  """A number you give it to find it in a layout message later."""
 
   def __post_init__(self) -> None:
     targets = [x for x in (self.custom_id, self.url, self.sku_id) if x is not None]
@@ -814,6 +971,15 @@ class Button(Component):
     _put(value, emoji=_emoji(self.emoji))
     return value
 
+  code = 2
+  main = "label"
+
+  def _main(self) -> int:
+    return utf16_length(self.label or "")
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(label=self.label, custom_id=self.custom_id)
+
 
 @dataclass(frozen=True, slots=True)
 class SelectOption(metaclass=_Hooked):
@@ -821,10 +987,15 @@ class SelectOption(metaclass=_Hooked):
   `label` unless you give one."""
 
   label: str
+  """What the person sees (up to 100 characters)."""
   value: str
+  """What a submission reports for this option."""
   description: str | None = None
+  """A line of smaller text under the label."""
   default: bool = False
+  """Whether it is selected to begin with."""
   emoji: Emoji | None = None
+  """An `Emoji` shown before the label."""
 
   def __init__(
     self,
@@ -916,13 +1087,21 @@ class StringSelect(Component):
   """A menu of `SelectOption`s."""
 
   custom_id: str
+  """What identifies this menu when it is used (`interaction.custom_id`)."""
   options: Sequence[SelectOption]
+  """The choices (up to 25)."""
   placeholder: str | None = None
+  """Text shown while nothing is chosen."""
   min_values: int | None = None
+  """The fewest options that must be chosen."""
   max_values: int | None = None
+  """The most options that may be chosen."""
   disabled: bool = False
+  """Show it greyed out."""
   required: bool | None = None
+  """Whether it must be filled in (modals only)."""
   id: int | None = None
+  """A number you give it to find it in a layout message later."""
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
@@ -931,6 +1110,18 @@ class StringSelect(Component):
       self.disabled, self.required, self.id,
       options=[o.to_dict() for o in self.options],
     )  # fmt: skip
+
+  code = 3
+  main = "options"
+  slots = 5
+
+  def _main(self) -> int:
+    return len(self.options)
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(
+      custom_id=self.custom_id, options=self.options, placeholder=self.placeholder
+    )
 
 
 Select = StringSelect
@@ -958,6 +1149,20 @@ class UserSelect(Component):
       default_values=_defaults("user", self.defaults) or None,
     )  # fmt: skip
 
+  code = 5
+  main = "default_values"
+  slots = 5
+
+  def _main(self) -> int:
+    return len(self.defaults or ())
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(
+      custom_id=self.custom_id,
+      placeholder=self.placeholder,
+      default_values=self.defaults,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class RoleSelect(Component):
@@ -980,6 +1185,20 @@ class RoleSelect(Component):
       default_values=_defaults("role", self.defaults) or None,
     )  # fmt: skip
 
+  code = 6
+  main = "default_values"
+  slots = 5
+
+  def _main(self) -> int:
+    return len(self.defaults or ())
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(
+      custom_id=self.custom_id,
+      placeholder=self.placeholder,
+      default_values=self.defaults,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class MentionableSelect(Component):
@@ -1001,6 +1220,20 @@ class MentionableSelect(Component):
       self.disabled, self.required, self.id,
       default_values=_defaults(None, self.defaults) or None,
     )  # fmt: skip
+
+  code = 7
+  main = "default_values"
+  slots = 5
+
+  def _main(self) -> int:
+    return len(self.defaults or ())
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(
+      custom_id=self.custom_id,
+      placeholder=self.placeholder,
+      default_values=self.defaults,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1026,6 +1259,20 @@ class ChannelSelect(Component):
       channel_types=kinds or None,
       default_values=_defaults("channel", self.defaults) or None,
     )  # fmt: skip
+
+  code = 8
+  main = "default_values"
+  slots = 5
+
+  def _main(self) -> int:
+    return len(self.defaults or ())
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(
+      custom_id=self.custom_id,
+      placeholder=self.placeholder,
+      default_values=self.defaults,
+    )
 
 
 type Select_ = (
@@ -1053,6 +1300,18 @@ class ActionRow(Component):
       {"type": 1, "components": [c.to_dict() for c in self.components]}, id=self.id
     )
 
+  code = 1
+  main = "components"
+
+  def _main(self) -> int:
+    return sum(_slots(item) for item in self.components)
+
+  def _children(self) -> Iterable[Any]:
+    return self.components
+
+  def _counts(self) -> Mapping[str, int]:
+    return {"components": sum(_slots(item) for item in self.components)}
+
 
 # Layout components (v2) ---------------------------------------------------------
 
@@ -1062,11 +1321,25 @@ class TextDisplay(Component):
   """Markdown text. Counts toward the message's 4000 characters of text in total."""
 
   content: str
+  """The Markdown text."""
   id: int | None = None
+  """A number you give it to find it in a layout later."""
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
     return _put({"type": 10, "content": self.content}, id=self.id)
+
+  code = 10
+  main = "content"
+
+  def _main(self) -> int:
+    return utf16_length(self.content)
+
+  def _text(self) -> int:
+    return utf16_length(self.content)
+
+  def _counts(self) -> Mapping[str, int]:
+    return {"content": utf16_length(self.content)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1095,14 +1368,26 @@ class Thumbnail(Component):
     }
     return _put(value, id=self.id, description=_alt(self.media, self.description))
 
+  code = 11
+  main = "description"
+
+  def _main(self) -> int:
+    return utf16_length(self.description or "")
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(description=self.description)
+
 
 @dataclass(frozen=True, slots=True)
 class Section(Component):
   """One to three texts with a `Button` or `Thumbnail` beside them."""
 
   texts: Sequence[TextDisplay]
+  """One to three `TextDisplay`s."""
   accessory: Button | Thumbnail
+  """A `Button` or `Thumbnail` shown beside the texts."""
   id: int | None = None
+  """A number you give it to find it in a layout later."""
 
   def __init__(
     self,
@@ -1122,6 +1407,18 @@ class Section(Component):
       "accessory": self.accessory.to_dict(),
     }
     return _put(value, id=self.id)
+
+  code = 9
+  main = "components"
+
+  def _main(self) -> int:
+    return len(self.texts)
+
+  def _children(self) -> Iterable[Any]:
+    return (*self.texts, self.accessory)
+
+  def _counts(self) -> Mapping[str, int]:
+    return {"components": len(self.texts)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1161,6 +1458,15 @@ class MediaGallery(Component):
     """This component as the JSON object Discord expects."""
     return _put({"type": 12, "items": [i.to_dict() for i in self.items]}, id=self.id)
 
+  code = 12
+  main = "items"
+
+  def _main(self) -> int:
+    return len(self.items)
+
+  def _counts(self) -> Mapping[str, int]:
+    return {"items": len(self.items)}
+
 
 @dataclass(frozen=True, slots=True)
 class File(Component):
@@ -1192,6 +1498,9 @@ class File(Component):
     }
     return _put(value, id=self.id)
 
+  code = 13
+  main = None
+
 
 @dataclass(frozen=True, slots=True)
 class Separator(Component):
@@ -1209,6 +1518,9 @@ class Separator(Component):
       "spacing": 1 if self.spacing == "small" else 2,
     }
     return _put(value, id=self.id)
+
+  code = 14
+  main = None
 
 
 type ContainerChild = (
@@ -1230,8 +1542,11 @@ class Container(Component):
 
   components: Sequence[ContainerChild]
   accent_colour: Colour | None = None
+  """The coloured bar down the left edge (a `Colour`)."""
   spoiler: bool = False
+  """Hide it behind a spoiler."""
   id: int | None = None
+  """A number you give it to find it in a layout later."""
 
   def __init__(
     self,
@@ -1261,6 +1576,18 @@ class Container(Component):
       id=self.id,
       accent_color=None if self.accent_colour is None else int(self.accent_colour),
     )  # Discord's key
+
+  code = 17
+  main = MAX_COMPONENTS
+
+  def _main(self) -> int:
+    return self.components_count
+
+  def _children(self) -> Iterable[Any]:
+    return self.components
+
+  def _counts(self) -> Mapping[str, int]:
+    return {"components": len(self.components)}
 
 
 _LAYOUT = (TextDisplay, Section, Thumbnail, MediaGallery, File, Separator, Container)
@@ -1313,14 +1640,23 @@ class TextInput(Component):
   """A text field. In a `Label`, leave `label` out; bare in a `Modal`, it needs one."""
 
   custom_id: str
+  """What identifies this field in the submission (`interaction.submitted.fields[custom_id]`)."""
   label: str | None = None
+  """The field's heading; leave it out inside a `Label`."""
   style: TextInputStyle = TextInputStyle.SHORT
+  """One line (`SHORT`) or several (`PARAGRAPH`)."""
   required: bool = True
+  """Whether it must be filled in."""
   placeholder: str | None = None
+  """Hint text shown while empty."""
   value: str | None = None
+  """Text it starts with."""
   min_length: int | None = None
+  """The fewest characters accepted."""
   max_length: int | None = None
+  """The most characters accepted."""
   id: int | None = None
+  """A number you give it to find it in a layout later."""
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
@@ -1338,6 +1674,20 @@ class TextInput(Component):
       value=self.value,
       min_length=self.min_length,
       max_length=self.max_length,
+    )
+
+  code = 4
+  main = "value"
+
+  def _main(self) -> int:
+    return utf16_length(self.value or "")
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(
+      custom_id=self.custom_id,
+      label=self.label,
+      value=self.value,
+      placeholder=self.placeholder,
     )
 
 
@@ -1392,6 +1742,15 @@ class RadioGroup(Component):
     }
     return _put(value, id=self.id, required=self.required)
 
+  code = 21
+  main = "options"
+
+  def _main(self) -> int:
+    return len(self.options)
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(custom_id=self.custom_id, options=self.options)
+
 
 @dataclass(frozen=True, slots=True)
 class CheckboxGroup(Component):
@@ -1419,6 +1778,15 @@ class CheckboxGroup(Component):
       required=self.required,
     )
 
+  code = 22
+  main = "options"
+
+  def _main(self) -> int:
+    return len(self.options)
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(custom_id=self.custom_id, options=self.options)
+
 
 @dataclass(frozen=True, slots=True)
 class Checkbox(Component):
@@ -1434,10 +1802,16 @@ class Checkbox(Component):
       {"type": 23, "custom_id": self.custom_id}, id=self.id, default=self.default
     )
 
+  code = 23
+  main = None
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(custom_id=self.custom_id)
+
 
 @dataclass(frozen=True, slots=True)
 class FileUpload(Component):
-  """Ask for files; read them with `ctx.attachments` after the submission."""
+  """Ask for files; read them with `interaction.attachments` after the submission."""
 
   custom_id: str
   min_values: int | None = None
@@ -1457,6 +1831,12 @@ class FileUpload(Component):
       required=self.required,
       file_types=list(self.file_types) or None,
     )
+
+  code = 19
+  main = None
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(custom_id=self.custom_id)
 
 
 type ModalInput = (
@@ -1482,6 +1862,18 @@ class Label(Component):
     }
     return _put(value, id=self.id, description=self.description)
 
+  code = 18
+  main = "label"
+
+  def _main(self) -> int:
+    return utf16_length(self.label)
+
+  def _children(self) -> Iterable[Any]:
+    return (self.component,)
+
+  def _counts(self) -> Mapping[str, int]:
+    return _lengths(label=self.label, description=self.description)
+
 
 @dataclass(frozen=True, slots=True)
 class Modal(Component):
@@ -1491,7 +1883,9 @@ class Modal(Component):
   """
 
   custom_id: str
+  """What `interaction.custom_id` is when the form is submitted."""
   title: str
+  """The pop-up's heading (up to 45 characters)."""
   components: Sequence[Label | TextDisplay | TextInput | Mapping[str, JsonValue]] = (
     field(default_factory=tuple)
   )
@@ -1516,6 +1910,27 @@ class Modal(Component):
       else:
         built.append(item.to_dict())
     return {"custom_id": self.custom_id, "title": self.title, "components": built}
+
+  limits: ClassVar[Mapping[str, tuple[int, int | None]]] = {
+    "title": (1, 45),
+    "custom_id": (1, 100),
+    "components": (1, 5),
+  }
+  """Not in one of Discord's models, so declared here."""
+  main = "components"
+
+  def _main(self) -> int:
+    return len(self.components)
+
+  def _children(self) -> Iterable[Any]:
+    return self.components
+
+  def _counts(self) -> Mapping[str, int]:
+    return {
+      "title": utf16_length(self.title),
+      "custom_id": utf16_length(self.custom_id),
+      "components": len(self.components),
+    }
 
 
 # Messages -----------------------------------------------------------------------
@@ -1582,8 +1997,8 @@ class Draft(metaclass=_Hooked):
         components=[Button("Open", custom_id="report.open")],
         ephemeral=True,
       )
-      await ctx.respond(reply)              # also channel.send(reply), message.edit(reply)
-      await ctx.respond(replace(reply, content="again"))
+      await interaction.respond(reply)              # also channel.send(reply), message.edit(reply)
+      await interaction.respond(replace(reply, content="again"))
 
   A `Draft` is immutable and comparable, so build it anywhere (a helper, a template, a
   test) and send it wherever; nothing is sent until you do. Change one with
@@ -1599,16 +2014,27 @@ class Draft(metaclass=_Hooked):
   """
 
   content: str | None
+  """The message text (up to 2000 characters). On an edit, `None` leaves it as it is and `""` clears it."""
   embeds: tuple[Embed | Json, ...] | None
+  """Embeds to show (up to 10). On an edit, `None` leaves them and `()` removes them."""
   components: tuple[Buildable, ...] | None
+  """Buttons, selects or layout components. On an edit, `None` leaves them and `()` removes them."""
   files: tuple[Upload, ...]
+  """Files to upload with the message (`Upload`)."""
   allowed_mentions: AllowedMentions | None
+  """Who the message may ping; leave it out for the safe default (see `AllowedMentions`)."""
   ephemeral: bool
+  """Only the person who triggered the interaction sees it (interaction replies only)."""
   reply_to: int | str | None
+  """The id of a message this one replies to."""
   tts: bool
+  """Read the message aloud with text to speech."""
   silent: bool
+  """Send without notifying anyone."""
   suppress_embeds: bool
+  """Hide the link previews Discord would add."""
   keep: tuple[str, ...] | None
+  """On an edit, the existing attachments (ids) that stay; `None` leaves them all, `()` removes them all."""
 
   def __init__(
     self,
@@ -1625,6 +2051,8 @@ class Draft(metaclass=_Hooked):
     suppress_embeds: bool = False,
     keep: Sequence[Object | str | int] | None = None,
   ) -> None:
+    from .objects import Object
+
     set_ = object.__setattr__
     set_(self, "content", content)
     set_(self, "embeds", None if embeds is None else tuple(embeds))
@@ -1744,38 +2172,6 @@ def attachments(
 
 # Validation ---------------------------------------------------------------------
 
-_MESSAGE_MODELS = {
-  1: "ActionRowComponentForMessageRequest",
-  2: "ButtonComponentForMessageRequest",
-  3: "StringSelectComponentForMessageRequest",
-  5: "UserSelectComponentForMessageRequest",
-  6: "RoleSelectComponentForMessageRequest",
-  7: "MentionableSelectComponentForMessageRequest",
-  8: "ChannelSelectComponentForMessageRequest",
-  9: "SectionComponentForMessageRequest",
-  10: "TextDisplayComponentForMessageRequest",
-  11: "ThumbnailComponentForMessageRequest",
-  12: "MediaGalleryComponentForMessageRequest",
-  13: "FileComponentForMessageRequest",
-  14: "SeparatorComponentForMessageRequest",
-  17: "ContainerComponentForMessageRequest",
-}
-_MODAL_MODELS = {
-  1: "ActionRowComponentForModalRequest",
-  3: "StringSelectComponentForModalRequest",
-  4: "TextInputComponentForModalRequest",
-  5: "UserSelectComponentForModalRequest",
-  6: "RoleSelectComponentForModalRequest",
-  7: "MentionableSelectComponentForModalRequest",
-  8: "ChannelSelectComponentForModalRequest",
-  10: "TextDisplayComponentForModalRequest",
-  18: "LabelComponentForModalRequest",
-  19: "FileUploadComponentForModalRequest",
-  21: "RadioGroupComponentForModalRequest",
-  22: "CheckboxGroupComponentForModalRequest",
-  23: "CheckboxComponentForModalRequest",
-}
-
 
 def validate(
   components: Buildable | Sequence[Buildable], *, modal: bool = False
@@ -1810,184 +2206,6 @@ def validate(
         f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in error.errors()[:3]
       )
       raise ValueError(f"{name}: {problems}") from error
-
-
-# What each component counts ------------------------------------------------------------
-#
-# For every component: the components inside it (`children`), the Text Display characters
-# it holds itself (`text`), and its own counts by Discord's field name (`counts`). The
-# limits are not repeated here: they are read from Discord's generated request models,
-# so they cannot drift from what Discord enforces.
-
-_COUNTED: dict[type, dict[str, Callable[[Any], Any]]] = {
-  ActionRow: {
-    "children": lambda c: c.components,
-    "counts": lambda c: {"components": sum(_slots(i) for i in c.components)},
-  },
-  Button: {"counts": lambda c: _lengths(label=c.label, custom_id=c.custom_id)},
-  StringSelect: {
-    "counts": lambda c: _lengths(
-      custom_id=c.custom_id, options=c.options, placeholder=c.placeholder
-    )
-  },
-  UserSelect: {
-    "counts": lambda c: _lengths(
-      custom_id=c.custom_id, placeholder=c.placeholder, default_values=c.defaults
-    )
-  },
-  RoleSelect: {
-    "counts": lambda c: _lengths(
-      custom_id=c.custom_id, placeholder=c.placeholder, default_values=c.defaults
-    )
-  },
-  MentionableSelect: {
-    "counts": lambda c: _lengths(
-      custom_id=c.custom_id, placeholder=c.placeholder, default_values=c.defaults
-    )
-  },
-  ChannelSelect: {
-    "counts": lambda c: _lengths(
-      custom_id=c.custom_id, placeholder=c.placeholder, default_values=c.defaults
-    )
-  },
-  TextDisplay: {
-    "text": lambda c: utf16_length(c.content),
-    "counts": lambda c: {"content": utf16_length(c.content)},
-  },
-  Thumbnail: {"counts": lambda c: _lengths(description=c.description)},
-  Section: {
-    "children": lambda c: (*c.texts, c.accessory),
-    "counts": lambda c: {"components": len(c.texts)},
-  },
-  MediaGallery: {"counts": lambda c: {"items": len(c.items)}},
-  Container: {
-    "children": lambda c: c.components,
-    "counts": lambda c: {"components": len(c.components)},
-  },
-  TextInput: {
-    "counts": lambda c: _lengths(
-      custom_id=c.custom_id, label=c.label, value=c.value, placeholder=c.placeholder
-    )
-  },
-  Label: {
-    "children": lambda c: (c.component,),
-    "counts": lambda c: _lengths(label=c.label, description=c.description),
-  },
-  FileUpload: {"counts": lambda c: _lengths(custom_id=c.custom_id)},
-  RadioGroup: {"counts": lambda c: _lengths(custom_id=c.custom_id, options=c.options)},
-  CheckboxGroup: {
-    "counts": lambda c: _lengths(custom_id=c.custom_id, options=c.options)
-  },
-  Checkbox: {"counts": lambda c: _lengths(custom_id=c.custom_id)},
-  Modal: {
-    "children": lambda c: c.components,
-    "counts": lambda c: {
-      "title": utf16_length(c.title),
-      "custom_id": utf16_length(c.custom_id),
-      "components": len(c.components),
-    },
-  },
-}
-for _cls, _how in _COUNTED.items():
-  for _name, _function in _how.items():
-    setattr(_cls, f"_{_name}", lambda self, _f=_function: _f(self))
-
-# The main dimension of each component: (what it holds, which limit bounds it). The limit
-# is a field of Discord's model, or a number. This is `count` and `max`.
-_PRIMARY: dict[type, tuple[Callable[[Any], int], str | int | None]] = {
-  ActionRow: (lambda c: sum(_slots(i) for i in c.components), "components"),
-  Button: (lambda c: utf16_length(c.label or ""), "label"),
-  StringSelect: (lambda c: len(c.options), "options"),
-  UserSelect: (lambda c: len(c.defaults or ()), "default_values"),
-  RoleSelect: (lambda c: len(c.defaults or ()), "default_values"),
-  MentionableSelect: (lambda c: len(c.defaults or ()), "default_values"),
-  ChannelSelect: (lambda c: len(c.defaults or ()), "default_values"),
-  TextDisplay: (lambda c: utf16_length(c.content), "content"),
-  Thumbnail: (lambda c: utf16_length(c.description or ""), "description"),
-  Section: (lambda c: len(c.texts), "components"),
-  MediaGallery: (lambda c: len(c.items), "items"),
-  File: (lambda c: 0, None),
-  Separator: (lambda c: 0, None),
-  Container: (lambda c: c.components_count, MAX_COMPONENTS),
-  TextInput: (lambda c: utf16_length(c.value or ""), "value"),
-  Label: (lambda c: utf16_length(c.label), "label"),
-  FileUpload: (lambda c: 0, None),
-  RadioGroup: (lambda c: len(c.options), "options"),
-  CheckboxGroup: (lambda c: len(c.options), "options"),
-  Checkbox: (lambda c: 0, None),
-  Modal: (lambda c: len(c.components), "components"),
-}
-for _wide in (StringSelect, UserSelect, RoleSelect, MentionableSelect, ChannelSelect):
-  _wide.slots = 5
-
-
-def _primary_max(cls: type) -> int | None:
-  entry = _PRIMARY.get(cls)
-  if entry is None or entry[1] is None:
-    return None
-  if isinstance(entry[1], int):
-    return entry[1]
-  return _limits_of(cls).get(entry[1], (0, None))[1]
-
-
-_TYPE_CODES: dict[type, int] = {
-  ActionRow: 1, Button: 2, StringSelect: 3, TextInput: 4, UserSelect: 5,
-  RoleSelect: 6, MentionableSelect: 7, ChannelSelect: 8, Section: 9, TextDisplay: 10,
-  Thumbnail: 11, MediaGallery: 12, File: 13, Separator: 14, Container: 17, Label: 18,
-  FileUpload: 19, RadioGroup: 21, CheckboxGroup: 22, Checkbox: 23,
-}  # fmt: skip
-_NOT_IN_A_MODEL: dict[type, dict[str, tuple[int, int | None]]] = {
-  Modal: {"title": (1, 45), "custom_id": (1, 100), "components": (1, 5)}
-}
-_limit_cache: dict[type, dict[str, tuple[int, int | None]]] = {}
-
-
-def _limits_in(model: Any) -> dict[str, tuple[int, int | None]]:
-  """`{field: (minimum, maximum)}` for a generated Discord model."""
-  if model not in _model_cache:
-    import typing
-
-    import annotated_types
-
-    found: dict[str, tuple[int, int | None]] = {}
-    for name, info in model.model_fields.items():
-      low: Any = 0
-      high: Any = None
-      layers = [info.metadata] + [
-        getattr(arg, "__metadata__", ()) for arg in typing.get_args(info.annotation)
-      ]
-      for layer in layers:
-        for rule in layer:
-          if isinstance(rule, annotated_types.MinLen):
-            low = rule.min_length
-          elif isinstance(rule, annotated_types.MaxLen):
-            high = rule.max_length
-          elif isinstance(rule, annotated_types.Interval):
-            low = rule.ge if rule.ge is not None else low
-            high = rule.le if rule.le is not None else high
-          else:
-            low = getattr(rule, "min_length", None) or low
-            high = getattr(rule, "max_length", None) or high
-      found[name] = (int(low), None if high is None else int(high))
-    _model_cache[model] = found
-  return _model_cache[model]
-
-
-_model_cache: dict[Any, dict[str, tuple[int, int | None]]] = {}
-
-
-def _limits_of(cls: type) -> dict[str, tuple[int, int | None]]:
-  """`{field: (minimum, maximum)}` for a component, from Discord's generated models."""
-  if cls in _NOT_IN_A_MODEL:
-    return _NOT_IN_A_MODEL[cls]
-  if cls not in _limit_cache:
-    from micro.discord.models import http as models
-
-    code = _TYPE_CODES[cls]
-    _limit_cache[cls] = _limits_in(
-      getattr(models, _MESSAGE_MODELS.get(code) or _MODAL_MODELS[code])
-    )
-  return _limit_cache[cls]
 
 
 hooks.serialize(check_limits)  # the limits are checked as components are serialized

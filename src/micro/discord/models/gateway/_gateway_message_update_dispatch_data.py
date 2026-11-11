@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -20,8 +20,7 @@ from ._api_message_call import APIMessageCall
 from ._api_message_shared_client_theme import APIMessageSharedClientTheme
 from ._channel_type1 import ChannelType1
 from ._type19 import Type19
-from ._flags58 import Flags58
-from ._api_embed import APIEmbed
+from ._flags60 import Flags60
 from ._api_reaction import APIReaction
 from ._api_guild_member_no_user import APIGuildMemberNoUser
 from ._api_user_with_member import APIUserWithMember
@@ -39,6 +38,7 @@ from ._api_public_thread_channel import APIPublicThreadChannel
 from ._api_poll import APIPoll
 from ._partial_api_application import PartialAPIApplication
 from ._api_attachment import APIAttachment
+from ._api_embed import APIEmbed
 from ._api_message_top_level_component import APIMessageTopLevelComponent
 from ._api_interaction_data_resolved import APIInteractionDataResolved
 from ._api_message_snapshot import APIMessageSnapshot
@@ -124,7 +124,7 @@ class GatewayMessageUpdateDispatchData(BaseModel):
         ),
     ] = None
     flags: Annotated[
-        Flags58 | None, Field(description='Message flags combined as a bitfield')
+        Flags60 | None, Field(description='Message flags combined as a bitfield')
     ] = None
     referenced_message: Annotated[
         APIMessage | None,

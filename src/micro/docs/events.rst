@@ -22,6 +22,52 @@ run.
 Discord's documentation and created the first time you touch it. The handler receives the
 event as the schema's typed model, or as a plain dict if you annotate it that way.
 
+What a handler can ask for
+--------------------------
+
+A handler says what it needs by annotation. A leading ``ctx: Context`` is the
+:class:`Context` (``ctx.api``, ``ctx.state``, ``ctx.store``, ...), and the payload can arrive as
+a bound object (:doc:`objects`) instead of the raw model:
+
+.. code-block:: python
+
+   from micro.discord import Context, Member, Message
+
+   @service.listen(events.MESSAGE_CREATE)
+   async def ping(ctx: Context, message: Message) -> None:
+     if message.content == "!ping":
+       await message.reply("pong")
+
+   @service.listen(events.GUILD_MEMBER_ADD)
+   async def joined(ctx: Context, member: Member) -> None:
+     channel = await ctx.state.channel(WELCOME_CHANNEL)
+     if channel is not None:
+       await channel.send(f"Welcome {member.mention}!")
+
+``Message``, ``Member``, ``User``, ``Channel``, ``Guild`` and ``Role`` work as payload types for
+the events that carry them. Anything else is delivered as the schema's model, and still gets
+``ctx`` if it asks.
+
+Before and after
+~~~~~~~~~~~~~~~~
+
+When an event **changes or removes** a member, channel, role, guild, voice state or presence the
+shard held, the object as it *was* travels with it. A handler whose parameters are ``before``
+and ``after`` gets both:
+
+.. code-block:: python
+
+   @service.listen(events.GUILD_MEMBER_UPDATE)
+   async def changed(ctx: Context, before: Member | None, after: Member) -> None:
+     if before is not None and before.roles != after.roles:
+       ...                                   # their roles changed
+
+   @service.listen(events.GUILD_MEMBER_REMOVE)
+   async def left(ctx: Context, before: Member | None, after: Member) -> None:
+     ...                                     # before: who they were, with their roles
+
+``before`` is ``None`` when the shard did not hold the object (it had not seen it yet).
+
 When an event does not match its schema
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

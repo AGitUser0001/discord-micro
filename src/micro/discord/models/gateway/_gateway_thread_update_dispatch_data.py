@@ -1,13 +1,13 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from ._api_overwrite import APIOverwrite
 from ._api_thread_metadata import APIThreadMetadata
 from ._thread_channel_type import ThreadChannelType
-from ._flags63 import Flags63
+from ._flags65 import Flags65
 from ._api_thread_member import APIThreadMember
 
 
@@ -17,7 +17,7 @@ class GatewayThreadUpdateDispatchData(BaseModel):
     )
     id: Annotated[str, Field(description='The id of the channel')]
     type: ThreadChannelType
-    flags: Flags63 | None = None
+    flags: Flags65 | None = None
     rate_limit_per_user: Annotated[
         float | None,
         Field(

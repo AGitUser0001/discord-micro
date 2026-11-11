@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
 
-class Flags53(IntFlag):
+class Flags55(IntFlag):
     integer_1 = 1
     integer_2 = 2
     integer_4 = 4

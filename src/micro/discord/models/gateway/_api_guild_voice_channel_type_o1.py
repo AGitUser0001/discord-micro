@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -53,7 +53,9 @@ class APIGuildVoiceChannelTypeO1(BaseModel):
     )
     bitrate: Annotated[
         float | None,
-        Field(description='The bitrate (in bits) of the voice or stage channel'),
+        Field(
+            description='The bitrate (in bits per second) of the voice or stage channel'
+        ),
     ] = None
     user_limit: Annotated[
         float | None, Field(description='The user limit of the voice or stage channel')

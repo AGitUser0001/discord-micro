@@ -1,11 +1,11 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 
 
 class SearchGuildMembersHTTPRequest(DiscordModel):
-  path: http.SearchGuildMembersParametersPath
-  query: http.SearchGuildMembersParametersQuery | None = None
+    path: http.SearchGuildMembersParametersPath
+    query: http.SearchGuildMembersParametersQuery | None = None

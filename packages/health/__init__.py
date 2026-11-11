@@ -60,15 +60,15 @@ def table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
   description="Streams, consumers and running components",
   default_member_permissions=ADMINISTRATOR,
 )
-async def health(ctx: Interaction) -> None:
-  await ctx.defer(ephemeral=True)
+async def health(interaction: Interaction) -> None:
+  await interaction.defer(ephemeral=True)
   data = await report(service.runtime)
   streams = table(
     ["stream", "messages", "consumers", "ephemeral", "pending", "unacked"],
     [list(item.values()) for item in data["streams"]],
   )
   running = table(["kind", "count"], list(data["components"].items()))
-  await ctx.respond(
+  await interaction.respond(
     Draft(
       f"**{data['consumers']}** consumers in total\n```\n{streams}\n\n{running}\n```",
       ephemeral=True,

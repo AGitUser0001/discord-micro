@@ -17,6 +17,7 @@ nested under it (`.` or `:` separated): a command's dotted path such as
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from micro.discord.enums import InteractionType
 from micro.middleware import Middleware, MiddlewareError, Middlewares, Next
 
 from ._context import Interaction
@@ -68,7 +69,9 @@ class Flow:
   def interaction(self) -> Interaction:
     """The `Interaction` this flow is about."""
     if self._interaction is None:
-      self._interaction = Interaction(self.payload, self._http, received=self.received)
+      self._interaction = Interaction(
+        self.payload, self._http, received=self.received, service=self.service
+      )
     return self._interaction
 
 
@@ -106,7 +109,7 @@ def defers(
 
   async def defer(ctx: Flow, next: Next) -> None:
     interaction = ctx.interaction
-    if not interaction.is_autocomplete:
+    if interaction.type is not InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE:
       await interaction.defer(thinking=thinking, ephemeral=ephemeral)
     await next()
 

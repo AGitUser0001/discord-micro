@@ -11,10 +11,13 @@ members out. Every object gets an anchor, and `:class:`Service``, `:meth:`Servic
 """
 
 import annotationlib
+import ast
 import dataclasses
 import importlib
 import inspect
+import itertools
 import re
+import textwrap
 from collections.abc import Iterator
 from typing import Any, TypeAliasType
 
@@ -28,9 +31,21 @@ type Registry = dict[str, tuple[str, str]]
 _registry: Registry = {}
 
 
+_anchors: dict[str, str] = {}
+
+
 def anchor(name: str) -> str:
-  """The HTML id docutils gives a hyperlink target called `name`."""
-  return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+  """The HTML id of `name`, unique even when two names differ only by case (`Option`,
+  `option`): HTML ids and ReST targets ignore case, so the second gets a `-2`."""
+  if name not in _anchors:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    taken = set(_anchors.values())
+    candidate, count = slug, 1
+    while candidate in taken:
+      count += 1
+      candidate = f"{slug}-{count}"
+    _anchors[name] = candidate
+  return _anchors[name]
 
 
 def locate(dotted: str) -> object:
@@ -98,15 +113,153 @@ def _signature(value: object) -> str:
   return f"({', '.join(shown)}){suffix}"
 
 
-def _docstring(value: object) -> str:
-  target = value.fget if isinstance(value, property) else value
-  text = inspect.getdoc(target) or ""  # type: ignore[arg-type]
-  # Single backticks are code in docstrings; ReST wants two.
-  text = re.sub(
+_SECTIONS = {
+  "args": "Parameters",
+  "arguments": "Parameters",
+  "parameters": "Parameters",
+  "returns": "Returns",
+  "return": "Returns",
+  "yields": "Yields",
+  "raises": "Raises",
+  "note": "Note",
+  "notes": "Note",
+  "example": "Example",
+  "examples": "Example",
+}
+_HEADER = re.compile(r"^(" + "|".join(_SECTIONS) + r"):\s*$", re.IGNORECASE)
+
+
+def _types_of(target: object) -> dict[str, str]:
+  """`{parameter: annotation}` of a function, as written."""
+  try:
+    signature = inspect.signature(
+      target,  # type: ignore[arg-type]
+      annotation_format=annotationlib.Format.STRING,
+    )
+  except TypeError, ValueError:
+    return {}
+  return {
+    name: str(p.annotation)
+    for name, p in signature.parameters.items()
+    if p.annotation is not p.empty
+  }
+
+
+def _sections(text: str, types: dict[str, str]) -> str:
+  """Turn Google-style `Args:` / `Returns:` / `Raises:` blocks into ReST.
+
+      Args:
+          name: what it is.
+          size (int): and its type, if the annotation says too little.
+
+  `Parameters` and `Raises` become bullet lists, the others plain paragraphs under a
+  bold title; the type comes from the signature unless the line gives one.
+  """
+  lines = text.splitlines()
+  out: list[str] = []
+  index = 0
+  while index < len(lines):
+    header = _HEADER.match(lines[index])
+    if header is None:
+      out.append(lines[index])
+      index += 1
+      continue
+    title = _SECTIONS[header.group(1).lower()]
+    index += 1
+    block: list[str] = []
+    while index < len(lines) and (
+      lines[index].startswith(("  ", "\t")) or not lines[index].strip()
+    ):
+      block.append(lines[index])
+      index += 1
+    while block and not block[-1].strip():
+      block.pop()
+    body = textwrap.dedent("\n".join(block)).splitlines()
+    if out and out[-1] != "":
+      out.append("")
+    out += [f"**{title}**", ""]
+    if title in ("Parameters", "Raises"):
+      items: list[list[str]] = []
+      for line in body:
+        entry = re.match(r"^([\w.*]+)(?:\s*\(([^)]*)\))?:\s*(.*)$", line)
+        if entry and not line.startswith(" "):
+          items.append([entry.group(1), entry.group(2) or "", entry.group(3)])
+        elif items and line.strip():
+          items[-1][2] += " " + line.strip()
+      for name, typ, said in items:
+        typ = typ or (types.get(name.lstrip("*"), "") if title == "Parameters" else "")
+        shown = f"``{name}``" + (f" (``{typ}``)" if typ else "")
+        out.append(f"* {shown}" + (f" – {said}" if said else ""))
+    else:
+      out += body
+    out.append("")
+  return "\n".join(out)
+
+
+def attribute_docs(cls: type) -> dict[str, tuple[str, str]]:
+  """`{name: (type, description)}` for the attributes a class documents in its source:
+  class-level `name: type` and `self.name = ...` in `__init__`, each followed by a
+  string. Read from the source, so nothing is imported or run."""
+  try:
+    source = textwrap.dedent(inspect.getsource(cls))
+    tree = ast.parse(source)
+  except OSError, TypeError, SyntaxError:
+    return {}
+  found: dict[str, tuple[str, str]] = {}
+
+  def scan(body: list[ast.stmt]) -> None:
+    for before, after in itertools.pairwise(body):
+      if not (
+        isinstance(after, ast.Expr)
+        and isinstance(after.value, ast.Constant)
+        and isinstance(after.value.value, str)
+      ):
+        continue
+      target: ast.expr | None = None
+      annotation = ""
+      if isinstance(before, ast.AnnAssign):
+        target, annotation = before.target, ast.unparse(before.annotation)
+      elif isinstance(before, ast.Assign) and len(before.targets) == 1:
+        target = before.targets[0]
+      if isinstance(target, ast.Name):
+        name = target.id
+      elif (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "self"
+      ):
+        name = target.attr
+      else:
+        continue
+      if not name.startswith("_"):
+        found[name] = (annotation, inspect.cleandoc(after.value.value))
+
+  classes = [n for n in tree.body if isinstance(n, ast.ClassDef)]
+  if not classes:
+    return found
+  scan(classes[0].body)
+  for node in classes[0].body:
+    if isinstance(node, ast.FunctionDef) and node.name == "__init__":
+      scan(node.body)
+  return found
+
+
+def _code(text: str) -> str:
+  """Single backticks are code in docstrings; ReST wants two."""
+  return re.sub(
     r"(?<![`:\w])`([^`\n]+)`(?!`)(\w?)",
     lambda m: f"``{m.group(1)}``" + ("\\ " + m.group(2) if m.group(2) else ""),
     text,
   )
+
+
+def _docstring(value: object) -> str:
+  target = value.fget if isinstance(value, property) else value
+  text = inspect.getdoc(target) or ""  # type: ignore[arg-type]
+  # Single backticks are code in docstrings; ReST wants two.
+  text = _code(text)
+  if not inspect.isclass(target):
+    text = _sections(text, _types_of(target))
   out: list[str] = []
   lines = text.splitlines()
   index = 0
@@ -180,7 +333,7 @@ def render(dotted: str, brief: bool) -> list[str]:
   """ReST for one documented object."""
   items = entries(dotted, brief)
   value = locate(dotted)
-  lines = [f".. _{dotted}:", ""]
+  lines = [f".. _{anchor(dotted)}:", ""]
   short = dotted.rpartition(".")[2]
   if isinstance(value, TypeAliasType):
     lines += [f"**type** ``{short}`` = ``{value.__value__}``", ""]
@@ -204,14 +357,19 @@ def render(dotted: str, brief: bool) -> list[str]:
     doc = ""
   lines += _indent(doc, "") + [""] if doc else []
   if inspect.isclass(value) and not brief:
-    own = fields_of(value)
-    if own:
-      lines += ["Fields: " + ", ".join(f"``{n}``" for n, _ in own), ""]
+    attributes: dict[str, tuple[str, str]] = {n: (t, "") for n, t in fields_of(value)}
+    attributes.update(attribute_docs(value))
+    if attributes:
+      lines += ["**Attributes**", ""]
+      for name, (kind, said) in attributes.items():
+        shown = f"* ``{name}``" + (f" (``{kind}``)" if kind else "")
+        lines.append(shown + (f" – {_code(' '.join(said.split()))}" if said else ""))
+      lines.append("")
     for full, name, member in items[1:]:
       kind = _kind(member)
       shown = f"``{name}``" if kind == "property" else f"``{name}{_signature(member)}``"
       label = "" if kind == "property" else f"{kind} "
-      lines += [f".. _{full}:", "", f"{label}{shown}".strip()]
+      lines += [f".. _{anchor(full)}:", "", f"{label}{shown}".strip()]
       body = _docstring(member) or "(no description)"
       lines += _indent(body, "    ") + [""]
   return lines
@@ -252,6 +410,7 @@ def register(page: str, source: str) -> None:
 
 def reset() -> None:
   _registry.clear()
+  _anchors.clear()
 
 
 def lookup(name: str) -> tuple[str, str] | None:

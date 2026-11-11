@@ -4,7 +4,7 @@ Commands
 :class:`Commands` declares slash commands, user commands and message commands from typed
 Python functions. The function's parameters become the command's options; Micro builds
 Discord's definition, converts the submitted values back into Python objects, and hands you
-an :class:`Interaction` (``ctx``) first.
+an :class:`Interaction` (``interaction``) first.
 
 .. code-block:: python
 
@@ -16,27 +16,27 @@ an :class:`Interaction` (``ctx``) first.
 
    @commands.slash("ticket", description="Open a ticket")
    async def ticket(
-     ctx: Interaction,
+     interaction: Interaction,
      topic: Annotated[str, Option("What about", max_length=100)],
      level: Literal["low", "high"] = "low",
      assignee: User | None = None,
    ) -> None:
-     await ctx.respond(f"Opened {topic}")
+     await interaction.respond(f"Opened {topic}")
 
    @ticket.autocomplete("topic")
-   async def topics(ctx: Interaction, value: str) -> list[str]:
+   async def topics(interaction: Interaction, value: str) -> list[str]:
      return [t for t in ("billing", "bug") if t.startswith(value)]
 
    admin = commands.group("admin", description="Admin tools")
 
    @admin.command("purge")
-   async def purge(ctx: Interaction, count: int) -> None: ...
+   async def purge(interaction: Interaction, count: int) -> None: ...
 
    @commands.user("Report")
-   async def report(ctx: Interaction, member: Member) -> None: ...
+   async def report(interaction: Interaction, member: Member) -> None: ...
 
    @commands.message("Quote")
-   async def quote(ctx: Interaction, message: Message) -> None: ...
+   async def quote(interaction: Interaction, message: Message) -> None: ...
 
 Options
 -------

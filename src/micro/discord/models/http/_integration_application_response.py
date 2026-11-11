@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
@@ -22,4 +22,6 @@ class IntegrationApplicationResponse(DiscordModel):
     type: ApplicationTypes | None
     cover_image: str | None = None
     primary_sku_id: SnowflakeType | None = None
+    flags: int
+    flags_new: str
     bot: UserResponse | None = None

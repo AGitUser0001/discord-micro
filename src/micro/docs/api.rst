@@ -3,13 +3,13 @@ The Discord API
 
 ``api`` has **one method for every Discord operation**: all 242, generated from Discord's
 own OpenAPI specification, so names, arguments and types match Discord's documentation.
-You get it as ``ctx.api`` in an interaction handler or ``DiscordHTTPClient(runtime).api``
+You get it as ``ctx.api`` in a handler that asks for a :class:`Context` or ``DiscordHTTPClient(runtime).api``
 anywhere else. Every call goes through the :doc:`http-worker`, so rate limits, retries and
 the token are handled for you.
 
 .. code-block:: python
 
-   api = ctx.api
+   api = ctx.api                  # in a handler: async def f(ctx: Context, interaction: Interaction)
    sent = await api.create_message(channel_id, Draft("hi", embeds=[Embed("T", "D")]))
    message = sent.unwrap()                                   # or match on Ok / Err
    await api.update_message(channel_id, message.id, "edited")
@@ -93,8 +93,8 @@ most on it. Nothing is fetched until you call a method.
 There are refs for channels, messages, guilds, members, roles, users, emojis, stickers,
 scheduled events, webhooks (``webhook(id)`` and ``webhook_token(id, token)``), invites and
 application commands: 156 methods in all, listed below. Everything else is on ``ref.api``.
-In an interaction handler, ``ctx.channel_ref``, ``ctx.guild_ref``, ``ctx.member_ref``,
-``ctx.user_ref`` and ``ctx.message_ref`` are that interaction's own.
+In an interaction handler, ``interaction.channel_ref``, ``interaction.guild_ref``, ``interaction.member_ref``,
+``interaction.user_ref`` and ``interaction.message_ref`` are that interaction's own.
 
 Objects and ``.full()``
 -----------------------

@@ -62,34 +62,35 @@ def store() -> StoreClient:
 
 
 @dynamic.handler
-async def run(ctx: Interaction) -> None:
+async def run(interaction: Interaction) -> None:
   result = await store().execute(
     "query($g: ID!, $n: String!) { custom(guildId: $g, name: $n) { text } }",
-    variables={"g": ctx.guild_id, "n": ctx.command_name},
+    variables={"g": interaction.guild_id, "n": interaction.command_name},
   )
   found = ((result.get("data") or {}).get("custom")) or {}
-  await ctx.respond(
+  await interaction.respond(
     Draft(found.get("text") or "That command was removed.", ephemeral=True)
   )
 
 
 @custom.command("add", description="Make a command (or change its text)")
 async def add(
-  ctx: Interaction,
+  interaction: Interaction,
   name: Annotated[str, Option("Its name, lowercase", max_length=32)],
   text: Annotated[str, Option("What it says", max_length=2000)],
 ) -> None:
-  if ctx.guild_id is None:
-    await ctx.respond(Draft("Only in servers.", ephemeral=True))
+  if interaction.guild_id is None:
+    await interaction.respond(Draft("Only in servers.", ephemeral=True))
     return
   name = name.lower().lstrip("/")
   if name == "custom":
-    await ctx.respond(Draft("That name is taken.", ephemeral=True))
+    await interaction.respond(Draft("That name is taken.", ephemeral=True))
     return
   await store().execute(
-    "mutation($g: ID!) { addGuild(id: $g) { id } }", variables={"g": ctx.guild_id}
+    "mutation($g: ID!) { addGuild(id: $g) { id } }",
+    variables={"g": interaction.guild_id},
   )  # already there is fine: a CONFLICT is reported, the data is untouched
-  variables = {"g": ctx.guild_id, "n": name, "t": text}
+  variables = {"g": interaction.guild_id, "n": name, "t": text}
   created = await store().execute(
     """
     mutation($g: ID!, $n: String!, $t: String!) {
@@ -106,38 +107,42 @@ async def add(
       variables=variables,
     )
   try:
-    await dynamic.add(name, "Custom command", guild_id=ctx.guild_id)
+    await dynamic.add(name, "Custom command", guild_id=interaction.guild_id)
   except ValueError:
-    await ctx.respond(
+    await interaction.respond(
       Draft("Names are lowercase letters, digits, - and _.", ephemeral=True)
     )
     return
-  await ctx.respond(Draft(f"Made /{name}. It shows up in a moment.", ephemeral=True))
+  await interaction.respond(
+    Draft(f"Made /{name}. It shows up in a moment.", ephemeral=True)
+  )
 
 
 @custom.command("remove", description="Delete a command")
-async def remove(ctx: Interaction, name: Annotated[str, Option("Its name")]) -> None:
+async def remove(
+  interaction: Interaction, name: Annotated[str, Option("Its name")]
+) -> None:
   name = name.lower().lstrip("/")
   result = await store().execute(
     "mutation($g: ID!, $n: String!) { removeCustom(guildId: $g, name: $n) }",
-    variables={"g": ctx.guild_id, "n": name},
+    variables={"g": interaction.guild_id, "n": name},
   )
   gone = ((result.get("data") or {}).get("removeCustom")) is True
-  if gone and ctx.guild_id is not None:
-    await dynamic.remove(name, guild_id=ctx.guild_id)
-  await ctx.respond(
+  if gone and interaction.guild_id is not None:
+    await dynamic.remove(name, guild_id=interaction.guild_id)
+  await interaction.respond(
     Draft(f"Removed /{name}." if gone else "No such command.", ephemeral=True)
   )
 
 
 @custom.command("list", description="Show this server's custom commands")
-async def list_commands(ctx: Interaction) -> None:
+async def list_commands(interaction: Interaction) -> None:
   result = await store().execute(
     "query($g: ID!) { guild(id: $g) { commands { name } } }",
-    variables={"g": ctx.guild_id},
+    variables={"g": interaction.guild_id},
   )
   guild = (result.get("data") or {}).get("guild") or {}
   names = sorted(item["name"] for item in guild.get("commands") or [])
-  await ctx.respond(
+  await interaction.respond(
     Draft(" ".join(f"`/{name}`" for name in names) or "None yet.", ephemeral=True)
   )

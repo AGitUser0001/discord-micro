@@ -1,14 +1,14 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 from ._delete_guild_application_command_http_response_body import DeleteGuildApplicationCommandHTTPResponseBody
 
 
 class DeleteGuildApplicationCommandHTTPResponse(DiscordModel):
-  status: int
-  headers: tuple[tuple[str, str], ...]
-  body: DeleteGuildApplicationCommandHTTPResponseBody | None = None
-  raw_body: bytes
+    status: int
+    headers: tuple[tuple[str, str], ...]
+    body: DeleteGuildApplicationCommandHTTPResponseBody | None = None
+    raw_body: bytes

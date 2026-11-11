@@ -13,6 +13,8 @@ from pydantic import JsonValue
 from micro.discord.enums import CommandType
 from micro.discord.objects import Attachment, Channel, Member, Role, User
 
+from ._inject import leading
+
 _NAME = re.compile(r"^[-_\w]{1,32}$")
 
 type Handler = Callable[..., Awaitable[Any]]
@@ -123,7 +125,9 @@ def _validate_name(name: str, *, lower: bool = True) -> str:
 def parse_options(handler: Handler) -> list[OptionSpec]:
   """Read slash-command options from a handler's parameters after the first."""
   hints = get_type_hints(handler, include_extras=True)
-  parameters = list(inspect.signature(handler).parameters.values())[1:]
+  parameters = list(inspect.signature(handler).parameters.values())[
+    len(leading(handler)) :
+  ]
   specs: list[OptionSpec] = []
   for parameter in parameters:
     annotation = hints.get(parameter.name, str)
@@ -175,7 +179,7 @@ class Command:
   name: str
   handler: Handler
   description: str = "-"
-  type: CommandType = CommandType.SLASH
+  type: CommandType = CommandType.CHAT
   options: list[OptionSpec] = field(default_factory=list)
   autocompleters: dict[str, Handler] = field(default_factory=dict)
   guild_ids: tuple[int, ...] = ()
@@ -210,7 +214,7 @@ class Command:
       "name": self.name,
       "nsfw": self.nsfw,
     }
-    if self.type == CommandType.SLASH:
+    if self.type == CommandType.CHAT:
       value["description"] = self.description
       value["options"] = [option.to_dict() for option in self.options]
     _common(value, self)
@@ -244,7 +248,7 @@ class CommandGroup:
   name_localizations: Mapping[str, str] | None = None
   description_localizations: Mapping[str, str] | None = None
   nested: bool = False
-  type: CommandType = CommandType.SLASH
+  type: CommandType = CommandType.CHAT
 
   def command(
     self, name: str, *, description: str = "-"
@@ -289,7 +293,7 @@ class CommandGroup:
   def to_dict(self) -> dict[str, JsonValue]:
     """This group as Discord's application command JSON."""
     value: dict[str, JsonValue] = {
-      "type": CommandType.SLASH,
+      "type": CommandType.CHAT,
       "name": self.name,
       "description": self.description,
       "nsfw": self.nsfw,
@@ -336,6 +340,7 @@ def convert_options(
   values: Sequence[Mapping[str, Any]],
   resolved: Mapping[str, Any],
   guild_id: str | None = None,
+  context: Any = None,
 ) -> dict[str, JsonValue]:
   """Turn interaction option values into handler keyword arguments (`guild_id`: the
   server the interaction happened in, which resolved members belong to).
@@ -354,8 +359,15 @@ def convert_options(
         arguments[spec.parameter] = None
       continue
     raw = given[spec.name]
-    arguments[spec.parameter] = _convert(spec, raw, resolved, guild_id)
+    arguments[spec.parameter] = _bind(_convert(spec, raw, resolved, guild_id), context)
   return arguments
+
+
+def _bind(value: Any, context: Any) -> Any:
+  """A resolved object bound to the context, so its actions work."""
+  return (
+    value.bind(context) if context is not None and hasattr(value, "bind") else value
+  )
 
 
 def _convert(
@@ -370,7 +382,9 @@ def _convert(
       {**members.get(raw, {}), "user": users.get(raw), "guild_id": guild_id}
     )
   if spec.python_type is Role:
-    return Role.model_validate((resolved.get("roles") or {})[raw])
+    return Role.model_validate(
+      {**(resolved.get("roles") or {})[raw], "guild_id": guild_id}
+    )
   if spec.python_type is Channel:
     return Channel.model_validate((resolved.get("channels") or {})[raw])
   if spec.python_type is Attachment:
@@ -378,7 +392,9 @@ def _convert(
   if spec.python_type is Mentionable:
     if raw in users:
       return User.model_validate(users[raw])
-    return Role.model_validate((resolved.get("roles") or {})[raw])
+    return Role.model_validate(
+      {**(resolved.get("roles") or {})[raw], "guild_id": guild_id}
+    )
   return spec.python_type(raw)
 
 

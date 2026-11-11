@@ -16,4 +16,5 @@ class Flags9(IntFlag):
     integer_256 = 256
     integer_512 = 512
     integer_32768 = 32768
+    integer_131072 = 131072
     integer_2097152 = 2097152

@@ -1,12 +1,12 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 
 
 class UpdateWebhookByTokenHTTPRequest(DiscordModel):
-  path: http.UpdateWebhookByTokenParametersPath
-  body: http.UpdateWebhookByTokenRequest
-  content_type: str = 'application/json'
+    path: http.UpdateWebhookByTokenParametersPath
+    body: http.UpdateWebhookByTokenRequest
+    content_type: str = "application/json"

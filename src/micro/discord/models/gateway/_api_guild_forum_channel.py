@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -9,7 +9,7 @@ from ._default_auto_archive_duration import DefaultAutoArchiveDuration
 from ._default_forum_layout import DefaultForumLayout
 from ._api_guild_forum_tag import APIGuildForumTag
 from ._api_guild_forum_default_reaction_emoji import APIGuildForumDefaultReactionEmoji
-from ._flags41 import Flags41
+from ._flags43 import Flags43
 from ._default_sort_order6 import DefaultSortOrder6
 
 
@@ -21,7 +21,7 @@ class APIGuildForumChannel(BaseModel):
     type: Annotated[
         Literal[15], Field(description='A channel that can only contain threads')
     ]
-    flags: Flags41 | None = None
+    flags: Flags43 | None = None
     position: Annotated[float, Field(description='Sorting position of the channel')]
     name: Annotated[
         str, Field(description='The name of the channel (1-100 characters)')

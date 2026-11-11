@@ -1,11 +1,11 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 
 
 class ListGuildApplicationCommandsHTTPRequest(DiscordModel):
-  path: http.ListGuildApplicationCommandsParametersPath
-  query: http.ListGuildApplicationCommandsParametersQuery | None = None
+    path: http.ListGuildApplicationCommandsParametersPath
+    query: http.ListGuildApplicationCommandsParametersQuery | None = None

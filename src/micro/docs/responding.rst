@@ -1,22 +1,46 @@
 Responding
 ==========
 
-Every handler receives an :class:`Interaction`, called ``ctx`` by convention. It carries
-what Discord sent and every way to answer.
+A handler asks for what it needs by annotation: an :class:`Interaction` (what the user did
+and every way to answer it), a :class:`Context` (how to reach Discord), or both, in that
+order, before the command's own options:
+
+.. code-block:: python
+
+   @commands.slash("whois")
+   async def whois(ctx: Context, interaction: Interaction, who: User) -> None:
+     member = await ctx.state.member(interaction.guild_id, who.id)    # what the Gateway knows
+     await interaction.respond(member.display_name if member else who.display_name)
+
+A context carries everything a handler reaches for, apart from the runtime:
+
+* ``ctx.api``: every Discord operation (:doc:`api`).
+* ``ctx.state``: what the Gateway connections hold (:doc:`state`), including the bot's own
+  user (``await ctx.state.me()``) and every guild it is in (``await ctx.state.guilds()``).
+* ``ctx.gateway``: the connections themselves: presence (``update_presence``), voice
+  (``update_voice_state``), member lists (``request_guild_members``), ``status()``, intents.
+* ``ctx.timers``: schedule something for later, cancel it, list what is pending.
+* ``ctx.client``: request, emit or enqueue to your own services (:doc:`services`).
+* ``ctx.store``: your durable records, in the Store (:doc:`data`).
+* ``ctx.application_id``: your application's id.
+
+A handler that takes only the interaction (``async def f(interaction: Interaction)``) is fine
+too; the interaction reaches the same context as ``interaction.context``. This page is about
+the interaction.
 
 ``respond`` is the everyday call; it chooses the right Discord request from what the
 interaction has already sent.
 
 .. code-block:: python
 
-   await ctx.respond(Draft("hi", ephemeral=True, embeds=[...], components=[...]))
-   await ctx.defer()                       # button: silent, update mode. Command: "thinking..."
-   await ctx.defer(thinking=True)          # button: "thinking..." (message mode)
-   await ctx.edit_response("changed")
-   await ctx.delete_response()
-   await ctx.update_message("new content") # edit the message a button sits on
-   await ctx.modal(modal)
-   await ctx.autocomplete(["a", "b"])
+   await interaction.respond(Draft("hi", ephemeral=True, embeds=[...], components=[...]))
+   await interaction.defer()                       # button: silent, update mode. Command: "thinking..."
+   await interaction.defer(thinking=True)          # button: "thinking..." (message mode)
+   await interaction.edit_response("changed")
+   await interaction.delete_response()
+   await interaction.update_message("new content") # edit the message a button sits on
+   await interaction.modal(modal)
+   await interaction.autocomplete(["a", "b"])
 
 What a call does depends on what came before:
 
@@ -52,15 +76,15 @@ calls raise :class:`InteractionExpired`.
 A message as a value
 --------------------
 
-A message is a :class:`Draft` (:doc:`ui`): ``ctx.respond``, ``edit_response`` and
+A message is a :class:`Draft` (:doc:`ui`): ``interaction.respond``, ``edit_response`` and
 ``update_message`` each take one, or a plain string for text only. There is no other way to
 pass embeds, components, files or ``ephemeral``, so a message is always one value you can
 build away from the handler, test, and reuse.
 
 .. code-block:: python
 
-   await ctx.respond("hi")
-   await ctx.respond(Draft("hi", ephemeral=True, embeds=[Embed("T")]))
+   await interaction.respond("hi")
+   await interaction.respond(Draft("hi", ephemeral=True, embeds=[Embed("T")]))
 
 Files
 -----
@@ -77,16 +101,16 @@ to spell.
 
    chart = Upload("chart.png", png_bytes, description="Sales by week")
 
-   await ctx.respond(Draft(components=[MediaGallery(MediaItem(chart))]))  # a picture
-   await ctx.respond(Draft(components=[Section(TextDisplay("Sales"), accessory=Thumbnail(chart))]))
-   await ctx.respond(Draft(components=[File(Upload.text("log.txt", log))]))   # a download
-   await ctx.respond(Draft(embeds=[Embed("Sales", image=chart)]))         # in an embed
+   await interaction.respond(Draft(components=[MediaGallery(MediaItem(chart))]))  # a picture
+   await interaction.respond(Draft(components=[Section(TextDisplay("Sales"), accessory=Thumbnail(chart))]))
+   await interaction.respond(Draft(components=[File(Upload.text("log.txt", log))]))   # a download
+   await interaction.respond(Draft(embeds=[Embed("Sales", image=chart)]))         # in an embed
 
 A file that is only attached, not shown, goes in the draft's ``files``:
 
 .. code-block:: python
 
-   await ctx.respond(Draft("Here you go.", files=[Upload.from_path("report.pdf")]))
+   await interaction.respond(Draft("Here you go.", files=[Upload.from_path("report.pdf")]))
 
 ``Upload.text(name, string)``, ``Upload.json(name, value)`` and ``Upload.from_path(path)``
 build one from what you have. ``description=`` is its alt text, ``spoiler=True`` hides it
@@ -98,8 +122,8 @@ edit new files are **added** and the ones already there stay; ``keep`` says othe
 
 .. code-block:: python
 
-   await ctx.update_message(Draft(components=[MediaGallery(MediaItem(new_chart))], keep=[]))    # replace all
-   await ctx.edit_response(Draft("trimmed", keep=[ctx.message.attachments[0]]))      # keep one
+   await interaction.update_message(Draft(components=[MediaGallery(MediaItem(new_chart))], keep=[]))    # replace all
+   await interaction.edit_response(Draft("trimmed", keep=[interaction.message.attachments[0]]))      # keep one
 
 (Alt text on a file added by an edit is sent only together with ``keep``, because naming
 the files is what tells Discord which ones the message has.)
@@ -109,14 +133,13 @@ cannot carry files, so there ``respond`` acknowledges in that reply and sends th
 with its files straight after; nothing changes in your code. Every message method of the API
 (``channel.send``, ``create_message``, ...) attaches shown uploads the same way.
 
-Low-level calls
----------------
+Anything ``respond`` does not cover
+-----------------------------------
 
-The low-level layer is one Discord request each and never decides or refuses:
-``create_initial_response(ResponseType.X, data)``, ``create_followup(body)``,
-``edit_initial_response(body)``, ``delete_initial_response()``. They record what they sent
-(so ``ctx.responded`` and ``ctx.state`` stay right) but trust you to know the sequence.
-Use them for response types ``respond`` does not cover.
+For a response type ``respond`` has no method for, call the API directly:
+``ctx.api.create_interaction_response(interaction.id, interaction.token, type=..., data=...)``. It sends
+exactly that and never decides or refuses, so it does not update ``interaction.responded`` or
+``interaction.state``; you are in charge of the sequence.
 
 Reading the interaction
 -----------------------
@@ -127,45 +150,53 @@ Reading the interaction
 
    * - Attribute
      - Meaning
-   * - ``ctx.user``, ``ctx.member``
+   * - ``interaction.user``, ``interaction.member``
      - Who acted; ``member`` is ``None`` in DMs.
-   * - ``ctx.guild_id``, ``ctx.channel_id``, ``ctx.locale``
+   * - ``interaction.guild_id``, ``interaction.channel_id``, ``interaction.locale``
      - Where, and the user's language.
-   * - ``ctx.message``
+   * - ``interaction.message``
      - The message a component sits on.
-   * - ``ctx.command_name``, ``ctx.option_values``
-     - For commands: the name and the submitted options by name (subcommands included).
-   * - ``ctx.custom_id``, ``ctx.values``
-     - For components: the id, and a select's chosen values.
-   * - ``ctx.inputs``, ``ctx.fields``
-     - For modals: everything by custom id, and just the text-like fields.
-   * - ``ctx.route``
+   * - ``interaction.command_name``, ``interaction.custom_id``
+     - The command invoked, or the id of the component or modal.
+   * - ``interaction.submitted``
+     - What the user sent (below): options, a select's values, a modal's fields, and the
+       users, roles, channels and files they refer to.
+   * - ``interaction.route``
      - What the matched route extracted from the custom id (:doc:`components`).
-   * - ``ctx.state``
-     - A dictionary middleware may use to pass things to the handler.
-   * - ``ctx.age``, ``ctx.expired``
+   * - ``interaction.state``
+     - What has been sent so far, an :class:`InteractionState` (``NEW``, then ``MESSAGE``,
+       ``DEFERRED_MESSAGE``, ``UPDATED``, ``MODAL``, ...). ``interaction.responded`` and ``interaction.deferred``
+       are the two questions you usually ask of it.
+   * - ``interaction.age``, ``interaction.expired``
      - Seconds since Discord created it; whether the token has expired.
-   * - ``ctx.responded``, ``ctx.deferred``
+   * - ``interaction.responded``, ``interaction.deferred``
      - What has been sent.
-   * - ``ctx.is_command``, ``is_component``, ``is_modal``, ``is_autocomplete``
-     - The kind.
+   * - ``interaction.type``
+     - The kind, an :class:`InteractionType`: ``interaction.type is InteractionType.MODAL_SUBMIT``.
 
-Modal and select input
-~~~~~~~~~~~~~~~~~~~~~~
+What the user sent
+~~~~~~~~~~~~~~~~~~
 
-``ctx.inputs`` is everything a modal submission holds, by ``custom_id``: strings for text and
-radio inputs (``None`` for nothing chosen), lists for selects, checkbox groups and
-uploads, a bool for a checkbox. ``ctx.fields`` is just the text-like ones as strings. For the
-entity fields, ``ctx.users("who")``, ``ctx.members("who")``, ``ctx.roles(...)``,
-``ctx.channels(...)`` and ``ctx.attachments("files")`` return typed objects (:doc:`objects`)
-resolved from Discord's lookup table. A select on a message works the same without the name
-(``ctx.users()``). ``Interaction.resolved`` holds the whole table (:class:`Resolved`).
+Everything the user sent is under ``interaction.submitted`` (a :class:`Submitted`), so typing
+``interaction.submitted.`` lists just that:
+
+* ``options``: a command's options by name, subcommands included. Raw values: ids stay
+  strings (``resolved`` has the entities they name).
+* ``values``: a select menu's chosen values.
+* ``inputs``: everything a modal submission holds, by ``custom_id``: strings for text and
+  radio inputs (``None`` for nothing chosen), lists for selects, checkbox groups and uploads,
+  a bool for a checkbox. ``fields`` is just the text-like ones as strings.
+* ``users("who")``, ``members("who")``, ``roles(...)``, ``channels(...)`` and
+  ``attachments("files")`` return typed objects (:doc:`objects`) resolved from Discord's
+  lookup table. A select on a message works the same without the name (``users()``).
+* ``choices(custom_id)`` is what a select, checkbox group or upload picked, as raw values,
+  and ``resolved`` holds the whole lookup table (:class:`Resolved`).
 
 Doing anything else
 ~~~~~~~~~~~~~~~~~~~
 
-``ctx.api`` is the whole Discord API (:doc:`api`), and ``ctx.channel_ref``,
-``ctx.guild_ref``, ``ctx.member_ref``, ``ctx.user_ref`` and ``ctx.message_ref`` are this
+``interaction.context.api`` is the whole Discord API (:doc:`api`), and ``interaction.channel_ref``,
+``interaction.guild_ref``, ``interaction.member_ref``, ``interaction.user_ref`` and ``interaction.message_ref`` are this
 interaction's own objects, ready for ``send``, ``timeout``, ``reply`` and so on.
 
 Errors
@@ -180,5 +211,7 @@ Reference
 ---------
 
 .. api::
+   micro.discord.interactions.Context
    micro.discord.interactions.Interaction
+   micro.discord.interactions.Submitted
    micro.discord.interactions.Resolved

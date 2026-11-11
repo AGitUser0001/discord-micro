@@ -19,8 +19,8 @@ WAVE = CustomId("hello.wave", Wave)
 
 
 @commands.slash("hello", description="Say hello")
-async def hello(ctx: Interaction, name: str = "world") -> None:
-  await ctx.respond(
+async def hello(interaction: Interaction, name: str = "world") -> None:
+  await interaction.respond(
     Draft(
       f"Hello, {name}!",
       components=[Button("Wave back", custom_id=WAVE.encode(Wave(name=name)))],
@@ -29,7 +29,7 @@ async def hello(ctx: Interaction, name: str = "world") -> None:
 
 
 @components.match(WAVE)
-async def wave(ctx: Interaction, state: Wave) -> None:
-  await ctx.respond(
-    Draft(f"{ctx.user.display_name} waves at {state.name}.", ephemeral=True)
+async def wave(interaction: Interaction, state: Wave) -> None:
+  await interaction.respond(
+    Draft(f"{interaction.user.display_name} waves at {state.name}.", ephemeral=True)
   )

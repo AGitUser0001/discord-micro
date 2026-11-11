@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -8,7 +8,7 @@ from ._premium_type import PremiumType
 from ._public_flags import PublicFlags
 from ._api_avatar_decoration_data import APIAvatarDecorationData
 from ._api_user_primary_guild import APIUserPrimaryGuild
-from ._flags57 import Flags57
+from ._flags59 import Flags59
 from ._api_collectibles import APICollectibles
 from ._api_guild_member_no_user import APIGuildMemberNoUser
 
@@ -56,7 +56,7 @@ class APIUserWithMember(BaseModel):
     ] = None
     email: Annotated[str | None, Field(description="The user's email")] = None
     flags: Annotated[
-        Flags57 | None, Field(description="The flags on a user's account")
+        Flags59 | None, Field(description="The flags on a user's account")
     ] = None
     premium_type: Annotated[
         PremiumType | None,

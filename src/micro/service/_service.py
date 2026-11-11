@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from re import fullmatch
+from re import sub as re_sub
 from typing import TYPE_CHECKING, Any, Literal, Never, Protocol, overload
 
 from nats.aio.msg import Msg
@@ -12,7 +13,7 @@ from pydantic import JsonValue, ValidationError
 
 from micro import log, subjects
 from micro._handling import handling
-from micro.coordination import DECLARATIONS_KEY, Declarations
+from micro.coordination import DECLARATIONS_KEY, Declarations, LockLost
 from micro.errors import ServiceError
 from micro.middleware import Middleware, Middlewares
 from micro.queue import WorkQueue
@@ -21,14 +22,19 @@ from micro.runtime import Component, Presence, Reject, Retry, StreamConsumer
 from ._call import UNSET, Call
 from ._client import SCHEMA_HEADER, STATUS_HEADER, Client, error_body
 from ._event import EventSchema
+from ._inject import NO_PAYLOAD, call_handler
 from ._request import RequestSchema
 
 if TYPE_CHECKING:
   from micro.store import GraphModule
 
-type EventHandler[T] = Callable[[T], Awaitable[None]]
+type EventHandler[T] = Callable[[T], Awaitable[None]] | Callable[..., Awaitable[None]]
+"""An event handler: `async def f(payload)`, or one that asks for more by annotation:
+`async def f(ctx: Context, member: Member)` (see `micro.service._inject`)."""
 type RequestHandler[InputT, OutputT] = Callable[[InputT], Awaitable[OutputT]]
 type EventPredicate[T] = Callable[[T], bool]
+type PeriodicHandler = Callable[..., Awaitable[None]]
+"""A handler `every` runs: `async def f()` or `async def f(ctx: Context)`."""
 
 _SERVICE_NAME_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 
@@ -99,6 +105,9 @@ class Service(Component):
     self.version = version
     self.concurrency = concurrency
     self._listeners: list[_Listener] = []
+    self._periodic: list[tuple[PeriodicHandler, float]] = []
+    self._startup: list[PeriodicHandler] = []
+    self._shutdown: list[PeriodicHandler] = []
     self._requests: dict[
       str, tuple[RequestSchema[Any, Any], RequestHandler[Any, Any]]
     ] = {}
@@ -135,6 +144,56 @@ class Service(Component):
       self._declaring("Event handlers")
       _require_async(handler, "Event handlers")
       self._listeners.append(_Listener(event, handler, guild_id, when))
+      return handler
+
+    return register
+
+  def startup(self, handler: PeriodicHandler) -> PeriodicHandler:
+    """Run a handler once when the service starts, before it takes any work: open a
+    connection, warm a cache. It may ask for `ctx: Context` like any handler.
+
+        @service.startup
+        async def setup(ctx: Context) -> None: ...
+    """
+    self._declaring("Startup handlers")
+    _require_async(handler, "Startup handlers")
+    self._startup.append(handler)
+    return handler
+
+  def shutdown(self, handler: PeriodicHandler) -> PeriodicHandler:
+    """Run a handler once when the service closes, after its work has finished: release
+    what `startup` opened. A handler that raises is logged and the rest still run."""
+    self._declaring("Shutdown handlers")
+    _require_async(handler, "Shutdown handlers")
+    self._shutdown.append(handler)
+    return handler
+
+  def every(
+    self, seconds: float = 0, *, minutes: float = 0, hours: float = 0
+  ) -> Callable[[PeriodicHandler], PeriodicHandler]:
+    """Run a handler again and again: `@service.every(minutes=5)`.
+
+    It runs once at start and then again an interval after each run ends, on **one replica
+    at a time** (the others wait, and one takes over if it goes away), so a job that
+    must happen once is not done once per replica. A run that raises is logged and the
+    next one still happens; one that takes longer than the interval just delays the next.
+
+    Args:
+      seconds: The interval in seconds.
+      minutes: Added to it, in minutes.
+      hours: Added to it, in hours.
+
+    Raises:
+      ValueError: The total interval is not positive.
+    """
+    total = seconds + minutes * 60 + hours * 3600
+    if total <= 0:
+      raise ValueError("every() needs a positive interval.")
+
+    def register(handler: PeriodicHandler) -> PeriodicHandler:
+      self._declaring("Periodic tasks")
+      _require_async(handler, "Periodic tasks")
+      self._periodic.append((handler, total))
       return handler
 
     return register
@@ -218,6 +277,27 @@ class Service(Component):
     self._declaring("Extensions")
     self._extensions.append(extension)
 
+  async def _run_every(
+    self, handler: PeriodicHandler, interval: float, label: str
+  ) -> None:
+    """Run a periodic handler while this replica holds its lock (one replica at a time)."""
+    locks = await self.runtime.locks()
+    key = "every." + re_sub(r"[^A-Za-z0-9_-]+", "_", f"{self.name}.{label}")
+    while self.active:
+      try:
+        async with locks.hold(key, ttl=30) as lease:
+          while self.active and not lease.lost.is_set():
+            try:
+              async with self.tracked():
+                with handling(self.name, f"every {label}"):
+                  await call_handler(self, handler, NO_PAYLOAD)
+            except Exception:
+              log.exception("A periodic task failed", task=label)
+            with suppress(TimeoutError):
+              await asyncio.wait_for(lease.lost.wait(), timeout=interval)
+      except LockLost:
+        log.warning("A periodic task lost its lock; waiting for it again", task=label)
+
   def _declaring(self, what: str) -> None:
     if self.phase.value != "created":
       raise RuntimeError(f"{what} cannot be added after the service starts.")
@@ -271,6 +351,8 @@ class Service(Component):
     """Hook: runs once when the component starts."""
     runtime = self.runtime
     self._client = Client(runtime)
+    for handler in self._startup:
+      await call_handler(self, handler, NO_PAYLOAD)
     for request_id, (schema, handler) in self._requests.items():
       self._subscriptions.append(
         await runtime.nats.subscribe(
@@ -293,6 +375,9 @@ class Service(Component):
       )
       await consumer.start()
       self._consumers.append(consumer)
+    for handler, interval in self._periodic:
+      label = f"{handler.__module__}:{handler.__qualname__}"
+      self.spawn(self._run_every(handler, interval, label), name=f"every {label}")
     for queue, handler in self._work.values():
       await queue.ensure(runtime)
       consumer = StreamConsumer(
@@ -321,6 +406,11 @@ class Service(Component):
   async def on_close(self) -> None:
     """Hook: runs when the component closes."""
     await self._stop_sources()
+    for handler in self._shutdown:
+      try:
+        await call_handler(self, handler, NO_PAYLOAD)
+      except Exception:
+        log.exception("A shutdown handler failed", handler=handler.__qualname__)
 
   async def _stop_sources(self) -> None:
     if self._presence is not None:
@@ -522,7 +612,7 @@ class Service(Component):
     """Run a handler inside the middleware stack. `end()` counts as handled."""
 
     async def final(call: Call) -> None:
-      await handler(call.input)
+      await call_handler(self, handler, call.input, call.message)
 
     with handling(self.name, f"{kind} {key}"):
       await self._call_middleware.run(Call(kind, key, self, message, payload), final)

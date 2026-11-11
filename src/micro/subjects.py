@@ -100,6 +100,10 @@ def dispatch_filter(name: str = "*", guild_id: int | str | None = "*") -> str:
   return f"micro.discord.dispatch.{event_name}.{guild}"
 
 
+BEFORE_HEADER = "Micro-Before"
+"""On a dispatch that changed or removed an object the shard held: that object as it was."""
+
+
 def state(shard_id: int) -> str:
   """Where the connection serving a shard answers questions about its guilds."""
   return f"micro.discord.state.{shard_id}"
@@ -167,6 +171,7 @@ def safe_name(name: str) -> str:
 
 
 __all__ = (
+  "BEFORE_HEADER",
   "CONFIG_BUCKET",
   "EVENTS_STREAM",
   "EVENT_STREAM_SUBJECTS",

@@ -101,7 +101,7 @@ as a value, a :class:`Result`: an :class:`Ok` with the value, or an :class:`Err`
 Handle it where you need to, or write ``unwrap()`` to let it fail: that raises the original
 error, so your generic handler sees exactly what it always saw. Bugs and broken
 infrastructure (a bad argument, a limit exceeded, NATS down) are not results; they still
-raise. The interaction methods (``ctx.respond`` and friends) are the state machine over the
+raise. The interaction methods (``interaction.respond`` and friends) are the state machine over the
 API and raise: answering an interaction that was already answered is a mistake, not an
 outcome.
 

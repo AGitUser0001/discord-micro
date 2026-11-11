@@ -1,10 +1,10 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
-from ._flags41 import Flags41
+from ._flags43 import Flags43
 from ._api_user import APIUser
 
 
@@ -16,7 +16,7 @@ class APIGroupDMChannel(BaseModel):
     type: Annotated[
         Literal[3], Field(description='A direct message between multiple users')
     ]
-    flags: Flags41 | None = None
+    flags: Flags43 | None = None
     rate_limit_per_user: Annotated[
         float | None,
         Field(

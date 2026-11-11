@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
@@ -9,6 +9,7 @@ from typing_extensions import TypeAliasType
 from ._invite_target_types import InviteTargetTypes
 from ._snowflake_type import SnowflakeType
 from ._role_ids import RoleIds
+from ._target_user_ids import TargetUserIds
 
 
 class CreateGuildInviteRequest(DiscordModel):
@@ -23,3 +24,7 @@ class CreateGuildInviteRequest(DiscordModel):
     target_application_id: SnowflakeType | None = None
     target_type: InviteTargetTypes | None = None
     role_ids: str | RoleIds | None = None
+    target_user_ids: Annotated[
+        str | TargetUserIds | None,
+        Field(description='The IDs of the users to target with this invite.'),
+    ] = None

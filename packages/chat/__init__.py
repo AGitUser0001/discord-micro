@@ -4,20 +4,26 @@ from typing import Annotated
 
 from pydantic import BaseModel
 
-from micro.discord import DiscordHTTPClient
-from micro.discord.enums import ButtonStyle, TextInputStyle
-from micro.discord.filters import all_of, content_startswith, ignore_bots
-from micro.discord.interactions import (
+from micro.discord import (
+  AllowedMentions,
+  Button,
+  ButtonStyle,
   Commands,
   Components,
   CustomId,
+  DiscordHTTPClient,
+  Draft,
+  Embed,
   Interaction,
+  Member,
+  Modal,
   Modals,
   Option,
+  TextInput,
+  TextInputStyle,
 )
+from micro.discord.filters import all_of, content_startswith, ignore_bots
 from micro.discord.models.gateway import GatewayMessageCreateDispatchData
-from micro.discord.objects import Member
-from micro.discord.ui import AllowedMentions, Button, Draft, Embed, Modal, TextInput
 from micro.schemas import events
 from micro.service import Service
 
@@ -41,14 +47,16 @@ async def ping(message: GatewayMessageCreateDispatchData) -> None:
 
 @commands.slash("greet", description="Greet someone")
 async def greet(
-  ctx: Interaction, name: Annotated[str, Option("Who to greet")], shout: bool = False
+  interaction: Interaction,
+  name: Annotated[str, Option("Who to greet")],
+  shout: bool = False,
 ) -> None:
   reply = (await service.client.request(GREET, Greeting(name=name))).message
-  await ctx.respond(reply.upper() if shout else reply)
+  await interaction.respond(reply.upper() if shout else reply)
 
 
 @greet.autocomplete("name")
-async def suggest(ctx: Interaction, value: str) -> list[str]:
+async def suggest(interaction: Interaction, value: str) -> list[str]:
   names = ("Ada", "Grace", "Linus", "Margaret")
   return [name for name in names if name.lower().startswith(value.lower())]
 
@@ -65,11 +73,12 @@ polls = commands.group("poll", description="Quick polls")
 
 @polls.command("start", description="Start a yes/no poll")
 async def start_poll(
-  ctx: Interaction, question: Annotated[str, Option("The question", max_length=60)]
+  interaction: Interaction,
+  question: Annotated[str, Option("The question", max_length=60)],
 ) -> None:
   yes = VOTE.encode(Poll(question=question, choice=1))
   no = VOTE.encode(Poll(question=question, choice=0))
-  await ctx.respond(
+  await interaction.respond(
     Draft(
       embeds=[Embed(question, "Vote below.")],
       components=[
@@ -81,30 +90,31 @@ async def start_poll(
 
 
 @components.match(VOTE)
-async def vote(ctx: Interaction, poll: Poll) -> None:
+async def vote(interaction: Interaction, poll: Poll) -> None:
   answer = "yes" if poll.choice else "no"
-  await ctx.respond(
+  await interaction.respond(
     Draft(
-      f"{ctx.user.display_name} voted {answer} on {poll.question!r}.", ephemeral=True
+      f"{interaction.user.display_name} voted {answer} on {poll.question!r}.",
+      ephemeral=True,
     )
   )
 
 
 @commands.slash("feedback", description="Tell us what you think")
-async def ask_feedback(ctx: Interaction) -> None:
+async def ask_feedback(interaction: Interaction) -> None:
   text = TextInput("text", "Your thoughts", style=TextInputStyle.PARAGRAPH)
-  await ctx.modal(Modal(FEEDBACK.encode(), "Feedback", [text]))
+  await interaction.modal(Modal(FEEDBACK.encode(), "Feedback", [text]))
 
 
 @modals.match(FEEDBACK)
-async def feedback(ctx: Interaction) -> None:
+async def feedback(interaction: Interaction) -> None:
   await service.client.enqueue(
-    AUDIT, Greeting(name=f"feedback: {ctx.fields['text'][:40]}")
+    AUDIT, Greeting(name=f"feedback: {interaction.submitted.fields['text'][:40]}")
   )
-  await ctx.respond(Draft("Thanks for the feedback!", ephemeral=True))
+  await interaction.respond(Draft("Thanks for the feedback!", ephemeral=True))
 
 
 @commands.user("Say hi")
-async def say_hi(ctx: Interaction, member: Member) -> None:
+async def say_hi(interaction: Interaction, member: Member) -> None:
   mentions = AllowedMentions.only(users=[int(member.id or 0)])
-  await ctx.respond(Draft(f"Hi {member.mention}!", allowed_mentions=mentions))
+  await interaction.respond(Draft(f"Hi {member.mention}!", allowed_mentions=mentions))

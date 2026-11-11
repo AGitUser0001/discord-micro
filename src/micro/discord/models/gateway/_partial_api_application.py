@@ -1,13 +1,13 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
-from ._flags39 import Flags39
 from ._event_webhooks_status import EventWebhooksStatus
 from ._event_webhooks_type import EventWebhooksType
 from ._api_application_install_params import APIApplicationInstallParams
+from ._flags42 import Flags42
 from ._api_partial_guild import APIPartialGuild
 from ._api_application_integration_types_config_map import APIApplicationIntegrationTypesConfigMap
 from ._api_user import APIUser
@@ -99,7 +99,7 @@ class PartialAPIApplication(BaseModel):
         ),
     ] = None
     flags: Annotated[
-        Flags39 | None, Field(description="The application's public flags")
+        Flags42 | None, Field(description="The application's public flags")
     ] = None
     flags_new: Annotated[
         str | None, Field(description="The application's public flags")

@@ -1,10 +1,25 @@
 """Typed views of Discord objects: just the fields bots use, extras kept."""
 
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+  AliasChoices,
+  BaseModel,
+  ConfigDict,
+  Field,
+  PrivateAttr,
+  model_validator,
+)
 
+from ._actions import (
+  ChannelActions,
+  GuildActions,
+  MemberActions,
+  MessageActions,
+  RoleActions,
+  UserActions,
+)
 from .asset import Asset
 from .colour import Colour
 from .enums import ChannelType, OverwriteType
@@ -22,6 +37,27 @@ class _View(BaseModel):
 
   model_config = ConfigDict(extra="allow", frozen=True, populate_by_name=True)
   _full: ClassVar[str | None] = None
+  _context: Any = PrivateAttr(default=None)
+
+  def bind(self, context: Any) -> Self:
+    """This object tied to a `Context`, so its actions (`reply`, `ban`, ...) work."""
+    bound = self.model_copy()
+    bound._context = context
+    return bound
+
+  @property
+  def context(self) -> Any:
+    """The `Context` this object is bound to (an object you build by hand has none).
+
+    Raises:
+      RuntimeError: The object is not bound to a context.
+    """
+    if self._context is None:
+      raise RuntimeError(
+        f"This {type(self).__name__} is not bound to a Context: objects handed to a "
+        "handler or read from `ctx.state` are; one you built by hand is not."
+      )
+    return self._context
 
   def full(self) -> Any:
     """Everything Discord sent, as Discord's own generated model for this object.
@@ -77,7 +113,7 @@ class Object(_View):
     return hash((type(self).__name__, self.id))
 
 
-class User(Object):
+class User(Object, UserActions):
   _full = "UserResponse"
   accent_colour: Colour | None = Field(
     default=None,
@@ -117,7 +153,7 @@ class User(Object):
     return self.avatar or self.default_avatar
 
 
-class Member(_View):
+class Member(_View, MemberActions):
   """A user in one guild. Its identity is the pair, `(guild_id, user id)`: one user is a
   different member in every guild, and the same user in all of them (`user`).
 
@@ -180,9 +216,27 @@ class Member(_View):
   def __hash__(self) -> int:
     return hash(("Member", self.guild_id, self.id))
 
+  async def get_guild(self) -> Guild | None:
+    """The guild this member is in, from what the Gateway holds."""
+    return await self.context.state.guild(self.guild_id)
 
-class Role(Object):
+  async def get_roles(self) -> list[Role]:
+    """The member's roles as `Role` objects (those the Gateway holds)."""
+    held = await self.context.state.roles(self.guild_id) or []
+    return [role for role in held if role.id in self.roles or role.id == self.guild_id]
+
+  async def get_permissions(
+    self, channel_id: int | str | None = None
+  ) -> Permissions | None:
+    """The member's effective permissions, in a channel if given (`None` if not held)."""
+    return await self.context.state.permissions(self.guild_id, self.id, channel_id)
+
+
+class Role(Object, RoleActions):
   _full = "GuildRoleResponse"
+  guild_id: str | None = None
+  """The guild this role is in (Micro fills it in where it builds a role; its actions
+  need it)."""
   name: str = ""
   colour: Colour = Field(
     default=Colour(0),
@@ -198,6 +252,12 @@ class Role(Object):
     """The `<@&id>` mention string."""
     return f"<@&{self.id}>"
 
+  async def get_guild(self) -> Guild | None:
+    """The guild this role is in (`None` if it does not know, or the guild is not held)."""
+    return (
+      None if self.guild_id is None else await self.context.state.guild(self.guild_id)
+    )
+
 
 class PermissionOverwrite(Object):
   type: OverwriteType
@@ -205,7 +265,7 @@ class PermissionOverwrite(Object):
   deny: Permissions = Permissions.NONE
 
 
-class Channel(Object):
+class Channel(Object, ChannelActions):
   _full = "GetChannelResponse200"
   type: ChannelType = ChannelType.GUILD_TEXT
   name: str | None = None
@@ -218,8 +278,28 @@ class Channel(Object):
     """The `<#id>` mention string."""
     return f"<#{self.id}>"
 
+  async def get_guild(self) -> Guild | None:
+    """The guild this channel is in (`None` for a DM, or if not held)."""
+    return (
+      None if self.guild_id is None else await self.context.state.guild(self.guild_id)
+    )
 
-class Guild(Object):
+  async def get_parent(self) -> Channel | None:
+    """The category (or the channel, for a thread) this channel sits under."""
+    return (
+      None
+      if self.parent_id is None
+      else await self.context.state.channel(self.parent_id)
+    )
+
+  async def permissions_for(self, user_id: int | str) -> Permissions | None:
+    """A user's effective permissions in this channel (`None` if not held)."""
+    if self.guild_id is None:
+      return None
+    return await self.context.state.permissions(self.guild_id, user_id, self.id)
+
+
+class Guild(Object, GuildActions):
   _full = "GuildResponse"
   name: str = ""
   owner_id: str | None = None
@@ -232,6 +312,94 @@ class Guild(Object):
   def _pictures(cls, data: Any) -> Any:
     return _assets(data, "icons", "icon")
 
+  async def get_members(self) -> list[Member] | None:
+    """The members the Gateway holds for this guild."""
+    return await self.context.state.members(self.id)
+
+  async def get_roles(self) -> list[Role] | None:
+    """The guild's roles as the Gateway holds them."""
+    return await self.context.state.roles(self.id)
+
+  async def get_channels(self) -> list[Channel] | None:
+    """The guild's channels as the Gateway holds them."""
+    return await self.context.state.channels(self.id)
+
+  async def get_member(self, user_id: int | str) -> Member | None:
+    """One member of this guild, from what the Gateway holds."""
+    return await self.context.state.member(self.id, user_id)
+
+  async def get_channel(self, channel_id: int | str) -> Channel | None:
+    """One channel by id, from what the Gateway holds."""
+    return await self.context.state.channel(channel_id)
+
+  async def get_role(self, role_id: int | str) -> Role | None:
+    """One role by id, from what the Gateway holds."""
+    return await self.context.state.role(role_id)
+
+
+class GuildEmoji(Object):
+  """A custom emoji of a guild."""
+
+  _full = "EmojiResponse"
+  name: str | None = None
+  animated: bool = False
+  managed: bool = False
+  available: bool = True
+  roles: list[str] = []
+
+
+class Sticker(Object):
+  """A custom sticker of a guild."""
+
+  _full = "GuildStickerResponse"
+  name: str = ""
+  description: str | None = None
+
+
+class StageInstance(Object):
+  """A live stage in a stage channel."""
+
+  guild_id: str | None = None
+  channel_id: str | None = None
+  topic: str = ""
+
+
+class ScheduledEvent(Object):
+  """An event scheduled in a guild."""
+
+  guild_id: str | None = None
+  channel_id: str | None = None
+  name: str = ""
+  description: str | None = None
+  scheduled_start_time: str | None = None
+  scheduled_end_time: str | None = None
+
+
+class VoiceState(_View):
+  """Where a user is in voice, and how: its guild and user make its identity."""
+
+  guild_id: str
+  user_id: str
+  channel_id: str | None = None
+  session_id: str = ""
+  deaf: bool = False
+  mute: bool = False
+  self_deaf: bool = False
+  self_mute: bool = False
+  self_stream: bool = False
+  self_video: bool = False
+  suppress: bool = False
+
+
+class Presence(_View):
+  """A user's status and activities in a guild."""
+
+  guild_id: str | None = None
+  status: str = "offline"
+  activities: list[dict[str, Any]] = []
+  client_status: dict[str, str] = {}
+  user: dict[str, Any] = {}
+
 
 class Attachment(Object):
   _full = "MessageAttachmentResponse"
@@ -241,7 +409,7 @@ class Attachment(Object):
   content_type: str | None = None
 
 
-class Message(Object):
+class Message(Object, MessageActions):
   _full = "MessageResponse"
   channel_id: str
   guild_id: str | None = None
@@ -256,4 +424,14 @@ class Message(Object):
     return (
       f"https://discord.com/channels/{self.guild_id or '@me'}"
       f"/{self.channel_id}/{self.id}"
+    )
+
+  async def get_channel(self) -> Channel | None:
+    """The channel this message is in, from what the Gateway holds."""
+    return await self.context.state.channel(self.channel_id)
+
+  async def get_guild(self) -> Guild | None:
+    """The guild this message is in (`None` for a DM, or if not held)."""
+    return (
+      None if self.guild_id is None else await self.context.state.guild(self.guild_id)
     )

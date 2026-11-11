@@ -16,6 +16,7 @@ from micro.runtime import StreamConsumer, default_backoff
 
 from ._commands import Handler, _validate_name
 from ._context import Interaction
+from ._inject import call
 from ._templates import (
   INTERACTIONS_KEY,
   Call,
@@ -152,7 +153,7 @@ class RuntimeCommands(InteractionTemplate):
     *,
     guild_id: int | str | None = None,
     options: Sequence[Mapping[str, JsonValue]] = (),
-    kind: CommandType = CommandType.SLASH,
+    kind: CommandType = CommandType.CHAT,
     default_member_permissions: int | None = None,
     nsfw: bool = False,
   ) -> None:
@@ -162,10 +163,10 @@ class RuntimeCommands(InteractionTemplate):
     """
     definition: dict[str, JsonValue] = {
       "type": kind,
-      "name": _validate_name(name, lower=kind == CommandType.SLASH),
+      "name": _validate_name(name, lower=kind == CommandType.CHAT),
       "nsfw": nsfw,
     }
-    if kind == CommandType.SLASH:
+    if kind == CommandType.CHAT:
       definition["description"] = description
       definition["options"] = [dict(item) for item in options]
     if default_member_permissions is not None:
@@ -192,7 +193,7 @@ class RuntimeCommands(InteractionTemplate):
     name: str,
     *,
     guild_id: int | str | None = None,
-    kind: CommandType = CommandType.SLASH,
+    kind: CommandType = CommandType.CHAT,
   ) -> bool:
     """Remove a command from a guild (or from everywhere); True if it existed."""
     table = await self._storage()
@@ -326,7 +327,7 @@ class RuntimeCommands(InteractionTemplate):
       await consumer.stop()
 
   def resolve(self, ctx: Interaction) -> Call | None:
-    kind = ctx.data.get("type", CommandType.SLASH)
+    kind = ctx.data.get("type", CommandType.CHAT)
     if (kind, ctx.data.get("name")) not in self._names:
       return None
     if ctx.type == InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE:
@@ -340,11 +341,11 @@ class RuntimeCommands(InteractionTemplate):
     if self._handler is None:
       return None
     function = self._handler
-    return lambda: function(ctx)
+    return lambda: call(function, ctx)
 
   async def _suggest(
     self, ctx: Interaction, function: Callable[..., Awaitable[Any]], value: Any
   ) -> None:
-    choices = await function(ctx, value)
+    choices = await call(function, ctx, value)
     if not ctx.responded:
       await ctx.autocomplete(list(choices or [])[:25])

@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -35,6 +35,7 @@ class Feature(StrEnum):
     PIN_PERMISSION_MIGRATION_COMPLETE = 'PIN_PERMISSION_MIGRATION_COMPLETE'
     PREVIEW_ENABLED = 'PREVIEW_ENABLED'
     PRIVATE_THREADS = 'PRIVATE_THREADS'
+    PRUNE_REQUIRES_ADMIN = 'PRUNE_REQUIRES_ADMIN'
     RAID_ALERTS_DISABLED = 'RAID_ALERTS_DISABLED'
     RELAY_ENABLED = 'RELAY_ENABLED'
     ROLE_ICONS = 'ROLE_ICONS'

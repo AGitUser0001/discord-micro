@@ -168,6 +168,42 @@ rollouts (:doc:`coordination`); ``service.uses(module)`` declares a graph module
 :doc:`store`. **Templates** such as ``Commands(service)`` attach with ``service.extend(...)``
 (they do it themselves) and implement ``start(service)``, ``stop()`` and ``metadata()``.
 
+Setup and teardown
+------------------
+
+A service never needs subclassing. ``startup`` runs once when the service starts, before it takes
+any work, and ``shutdown`` once when it closes, after its work has finished:
+
+.. code-block:: python
+
+   @service.startup
+   async def setup(ctx: Context) -> None:
+     ...                                     # open a connection, warm a cache
+
+   @service.shutdown
+   async def teardown(ctx: Context) -> None:
+     ...                                     # release what setup opened
+
+A ``shutdown`` handler that raises is logged and the others still run.
+
+Doing something on a schedule
+-----------------------------
+
+``every`` runs a handler again and again, like discord.py's ``tasks.loop``:
+
+.. code-block:: python
+
+   @service.every(minutes=5)
+   async def refresh(ctx: Context) -> None:
+     for guild in await ctx.state.guilds():
+       ...
+
+It runs once at start and then an interval after each run ends. It runs on **one replica at a
+time** (a lock; the others wait, and one takes over if it goes away), so work that must happen
+once is not done once per replica. A run that raises is logged and the next one still happens.
+The handler may take ``ctx: Context`` like any other. For a one-off at a moment (a reminder in
+an hour, a timeout ending) that must survive restarts, schedule a timer instead (:doc:`scheduler`).
+
 Reference
 ---------
 

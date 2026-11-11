@@ -1,12 +1,12 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from ._api_overwrite import APIOverwrite
 from ._video_quality_mode import VideoQualityMode
-from ._flags41 import Flags41
+from ._flags43 import Flags43
 
 
 class APIGuildVoiceChannel(BaseModel):
@@ -15,7 +15,7 @@ class APIGuildVoiceChannel(BaseModel):
     )
     id: Annotated[str, Field(description='The id of the channel')]
     type: Annotated[Literal[2], Field(description='A voice channel within a guild')]
-    flags: Flags41 | None = None
+    flags: Flags43 | None = None
     rate_limit_per_user: Annotated[
         float | None,
         Field(
@@ -53,7 +53,9 @@ class APIGuildVoiceChannel(BaseModel):
     )
     bitrate: Annotated[
         float | None,
-        Field(description='The bitrate (in bits) of the voice or stage channel'),
+        Field(
+            description='The bitrate (in bits per second) of the voice or stage channel'
+        ),
     ] = None
     user_limit: Annotated[
         float | None, Field(description='The user limit of the voice or stage channel')

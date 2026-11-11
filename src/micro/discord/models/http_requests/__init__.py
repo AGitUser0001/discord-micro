@@ -173,6 +173,12 @@ if TYPE_CHECKING:
   from ._create_thread_from_message_http_request import CreateThreadFromMessageHTTPRequest as CreateThreadFromMessageHTTPRequest
   from ._create_thread_from_message_http_response_body import CreateThreadFromMessageHTTPResponseBody as CreateThreadFromMessageHTTPResponseBody
   from ._create_thread_from_message_http_response import CreateThreadFromMessageHTTPResponse as CreateThreadFromMessageHTTPResponse
+  from ._get_channel_member_permissions_http_request import GetChannelMemberPermissionsHTTPRequest as GetChannelMemberPermissionsHTTPRequest
+  from ._get_channel_member_permissions_http_response_body import GetChannelMemberPermissionsHTTPResponseBody as GetChannelMemberPermissionsHTTPResponseBody
+  from ._get_channel_member_permissions_http_response import GetChannelMemberPermissionsHTTPResponse as GetChannelMemberPermissionsHTTPResponse
+  from ._get_channel_role_permissions_http_request import GetChannelRolePermissionsHTTPRequest as GetChannelRolePermissionsHTTPRequest
+  from ._get_channel_role_permissions_http_response_body import GetChannelRolePermissionsHTTPResponseBody as GetChannelRolePermissionsHTTPResponseBody
+  from ._get_channel_role_permissions_http_response import GetChannelRolePermissionsHTTPResponse as GetChannelRolePermissionsHTTPResponse
   from ._delete_channel_permission_overwrite_http_request import DeleteChannelPermissionOverwriteHTTPRequest as DeleteChannelPermissionOverwriteHTTPRequest
   from ._delete_channel_permission_overwrite_http_response_body import DeleteChannelPermissionOverwriteHTTPResponseBody as DeleteChannelPermissionOverwriteHTTPResponseBody
   from ._delete_channel_permission_overwrite_http_response import DeleteChannelPermissionOverwriteHTTPResponse as DeleteChannelPermissionOverwriteHTTPResponse
@@ -371,6 +377,12 @@ if TYPE_CHECKING:
   from ._put_guilds_onboarding_http_request import PutGuildsOnboardingHTTPRequest as PutGuildsOnboardingHTTPRequest
   from ._put_guilds_onboarding_http_response_body import PutGuildsOnboardingHTTPResponseBody as PutGuildsOnboardingHTTPResponseBody
   from ._put_guilds_onboarding_http_response import PutGuildsOnboardingHTTPResponse as PutGuildsOnboardingHTTPResponse
+  from ._get_guild_member_permissions_http_request import GetGuildMemberPermissionsHTTPRequest as GetGuildMemberPermissionsHTTPRequest
+  from ._get_guild_member_permissions_http_response_body import GetGuildMemberPermissionsHTTPResponseBody as GetGuildMemberPermissionsHTTPResponseBody
+  from ._get_guild_member_permissions_http_response import GetGuildMemberPermissionsHTTPResponse as GetGuildMemberPermissionsHTTPResponse
+  from ._get_guild_role_permissions_http_request import GetGuildRolePermissionsHTTPRequest as GetGuildRolePermissionsHTTPRequest
+  from ._get_guild_role_permissions_http_response_body import GetGuildRolePermissionsHTTPResponseBody as GetGuildRolePermissionsHTTPResponseBody
+  from ._get_guild_role_permissions_http_response import GetGuildRolePermissionsHTTPResponse as GetGuildRolePermissionsHTTPResponse
   from ._get_guild_preview_http_request import GetGuildPreviewHTTPRequest as GetGuildPreviewHTTPRequest
   from ._get_guild_preview_http_response_body import GetGuildPreviewHTTPResponseBody as GetGuildPreviewHTTPResponseBody
   from ._get_guild_preview_http_response import GetGuildPreviewHTTPResponse as GetGuildPreviewHTTPResponse
@@ -542,9 +554,21 @@ if TYPE_CHECKING:
   from ._update_invite_target_users_http_request import UpdateInviteTargetUsersHTTPRequest as UpdateInviteTargetUsersHTTPRequest
   from ._update_invite_target_users_http_response_body import UpdateInviteTargetUsersHTTPResponseBody as UpdateInviteTargetUsersHTTPResponseBody
   from ._update_invite_target_users_http_response import UpdateInviteTargetUsersHTTPResponse as UpdateInviteTargetUsersHTTPResponse
+  from ._bulk_add_invite_target_users_http_request import BulkAddInviteTargetUsersHTTPRequest as BulkAddInviteTargetUsersHTTPRequest
+  from ._bulk_add_invite_target_users_http_response_body import BulkAddInviteTargetUsersHTTPResponseBody as BulkAddInviteTargetUsersHTTPResponseBody
+  from ._bulk_add_invite_target_users_http_response import BulkAddInviteTargetUsersHTTPResponse as BulkAddInviteTargetUsersHTTPResponse
+  from ._bulk_remove_invite_target_users_http_request import BulkRemoveInviteTargetUsersHTTPRequest as BulkRemoveInviteTargetUsersHTTPRequest
+  from ._bulk_remove_invite_target_users_http_response_body import BulkRemoveInviteTargetUsersHTTPResponseBody as BulkRemoveInviteTargetUsersHTTPResponseBody
+  from ._bulk_remove_invite_target_users_http_response import BulkRemoveInviteTargetUsersHTTPResponse as BulkRemoveInviteTargetUsersHTTPResponse
   from ._get_invite_target_users_job_status_http_request import GetInviteTargetUsersJobStatusHTTPRequest as GetInviteTargetUsersJobStatusHTTPRequest
   from ._get_invite_target_users_job_status_http_response_body import GetInviteTargetUsersJobStatusHTTPResponseBody as GetInviteTargetUsersJobStatusHTTPResponseBody
   from ._get_invite_target_users_job_status_http_response import GetInviteTargetUsersJobStatusHTTPResponse as GetInviteTargetUsersJobStatusHTTPResponse
+  from ._remove_invite_target_user_http_request import RemoveInviteTargetUserHTTPRequest as RemoveInviteTargetUserHTTPRequest
+  from ._remove_invite_target_user_http_response_body import RemoveInviteTargetUserHTTPResponseBody as RemoveInviteTargetUserHTTPResponseBody
+  from ._remove_invite_target_user_http_response import RemoveInviteTargetUserHTTPResponse as RemoveInviteTargetUserHTTPResponse
+  from ._add_invite_target_user_http_request import AddInviteTargetUserHTTPRequest as AddInviteTargetUserHTTPRequest
+  from ._add_invite_target_user_http_response_body import AddInviteTargetUserHTTPResponseBody as AddInviteTargetUserHTTPResponseBody
+  from ._add_invite_target_user_http_response import AddInviteTargetUserHTTPResponse as AddInviteTargetUserHTTPResponse
   from ._create_lobby_http_request import CreateLobbyHTTPRequest as CreateLobbyHTTPRequest
   from ._create_lobby_http_response_body import CreateLobbyHTTPResponseBody as CreateLobbyHTTPResponseBody
   from ._create_lobby_http_response import CreateLobbyHTTPResponse as CreateLobbyHTTPResponse
@@ -901,6 +925,12 @@ _MODULES: dict[str, str] = {
   "CreateThreadFromMessageHTTPRequest": "_create_thread_from_message_http_request",
   "CreateThreadFromMessageHTTPResponseBody": "_create_thread_from_message_http_response_body",
   "CreateThreadFromMessageHTTPResponse": "_create_thread_from_message_http_response",
+  "GetChannelMemberPermissionsHTTPRequest": "_get_channel_member_permissions_http_request",
+  "GetChannelMemberPermissionsHTTPResponseBody": "_get_channel_member_permissions_http_response_body",
+  "GetChannelMemberPermissionsHTTPResponse": "_get_channel_member_permissions_http_response",
+  "GetChannelRolePermissionsHTTPRequest": "_get_channel_role_permissions_http_request",
+  "GetChannelRolePermissionsHTTPResponseBody": "_get_channel_role_permissions_http_response_body",
+  "GetChannelRolePermissionsHTTPResponse": "_get_channel_role_permissions_http_response",
   "DeleteChannelPermissionOverwriteHTTPRequest": "_delete_channel_permission_overwrite_http_request",
   "DeleteChannelPermissionOverwriteHTTPResponseBody": "_delete_channel_permission_overwrite_http_response_body",
   "DeleteChannelPermissionOverwriteHTTPResponse": "_delete_channel_permission_overwrite_http_response",
@@ -1099,6 +1129,12 @@ _MODULES: dict[str, str] = {
   "PutGuildsOnboardingHTTPRequest": "_put_guilds_onboarding_http_request",
   "PutGuildsOnboardingHTTPResponseBody": "_put_guilds_onboarding_http_response_body",
   "PutGuildsOnboardingHTTPResponse": "_put_guilds_onboarding_http_response",
+  "GetGuildMemberPermissionsHTTPRequest": "_get_guild_member_permissions_http_request",
+  "GetGuildMemberPermissionsHTTPResponseBody": "_get_guild_member_permissions_http_response_body",
+  "GetGuildMemberPermissionsHTTPResponse": "_get_guild_member_permissions_http_response",
+  "GetGuildRolePermissionsHTTPRequest": "_get_guild_role_permissions_http_request",
+  "GetGuildRolePermissionsHTTPResponseBody": "_get_guild_role_permissions_http_response_body",
+  "GetGuildRolePermissionsHTTPResponse": "_get_guild_role_permissions_http_response",
   "GetGuildPreviewHTTPRequest": "_get_guild_preview_http_request",
   "GetGuildPreviewHTTPResponseBody": "_get_guild_preview_http_response_body",
   "GetGuildPreviewHTTPResponse": "_get_guild_preview_http_response",
@@ -1270,9 +1306,21 @@ _MODULES: dict[str, str] = {
   "UpdateInviteTargetUsersHTTPRequest": "_update_invite_target_users_http_request",
   "UpdateInviteTargetUsersHTTPResponseBody": "_update_invite_target_users_http_response_body",
   "UpdateInviteTargetUsersHTTPResponse": "_update_invite_target_users_http_response",
+  "BulkAddInviteTargetUsersHTTPRequest": "_bulk_add_invite_target_users_http_request",
+  "BulkAddInviteTargetUsersHTTPResponseBody": "_bulk_add_invite_target_users_http_response_body",
+  "BulkAddInviteTargetUsersHTTPResponse": "_bulk_add_invite_target_users_http_response",
+  "BulkRemoveInviteTargetUsersHTTPRequest": "_bulk_remove_invite_target_users_http_request",
+  "BulkRemoveInviteTargetUsersHTTPResponseBody": "_bulk_remove_invite_target_users_http_response_body",
+  "BulkRemoveInviteTargetUsersHTTPResponse": "_bulk_remove_invite_target_users_http_response",
   "GetInviteTargetUsersJobStatusHTTPRequest": "_get_invite_target_users_job_status_http_request",
   "GetInviteTargetUsersJobStatusHTTPResponseBody": "_get_invite_target_users_job_status_http_response_body",
   "GetInviteTargetUsersJobStatusHTTPResponse": "_get_invite_target_users_job_status_http_response",
+  "RemoveInviteTargetUserHTTPRequest": "_remove_invite_target_user_http_request",
+  "RemoveInviteTargetUserHTTPResponseBody": "_remove_invite_target_user_http_response_body",
+  "RemoveInviteTargetUserHTTPResponse": "_remove_invite_target_user_http_response",
+  "AddInviteTargetUserHTTPRequest": "_add_invite_target_user_http_request",
+  "AddInviteTargetUserHTTPResponseBody": "_add_invite_target_user_http_response_body",
+  "AddInviteTargetUserHTTPResponse": "_add_invite_target_user_http_response",
   "CreateLobbyHTTPRequest": "_create_lobby_http_request",
   "CreateLobbyHTTPResponseBody": "_create_lobby_http_response_body",
   "CreateLobbyHTTPResponse": "_create_lobby_http_response",
@@ -1489,6 +1537,9 @@ __all__ = (
   "AddGuildMemberRoleHTTPRequest",
   "AddGuildMemberRoleHTTPResponse",
   "AddGuildMemberRoleHTTPResponseBody",
+  "AddInviteTargetUserHTTPRequest",
+  "AddInviteTargetUserHTTPResponse",
+  "AddInviteTargetUserHTTPResponseBody",
   "AddLobbyMemberHTTPRequest",
   "AddLobbyMemberHTTPResponse",
   "AddLobbyMemberHTTPResponseBody",
@@ -1510,12 +1561,18 @@ __all__ = (
   "BotPartnerSdkUnmergeProvisionalAccountHTTPRequest",
   "BotPartnerSdkUnmergeProvisionalAccountHTTPResponse",
   "BotPartnerSdkUnmergeProvisionalAccountHTTPResponseBody",
+  "BulkAddInviteTargetUsersHTTPRequest",
+  "BulkAddInviteTargetUsersHTTPResponse",
+  "BulkAddInviteTargetUsersHTTPResponseBody",
   "BulkBanUsersFromGuildHTTPRequest",
   "BulkBanUsersFromGuildHTTPResponse",
   "BulkBanUsersFromGuildHTTPResponseBody",
   "BulkDeleteMessagesHTTPRequest",
   "BulkDeleteMessagesHTTPResponse",
   "BulkDeleteMessagesHTTPResponseBody",
+  "BulkRemoveInviteTargetUsersHTTPRequest",
+  "BulkRemoveInviteTargetUsersHTTPResponse",
+  "BulkRemoveInviteTargetUsersHTTPResponseBody",
   "BulkSetApplicationCommandsHTTPRequest",
   "BulkSetApplicationCommandsHTTPResponse",
   "BulkSetApplicationCommandsHTTPResponseBody",
@@ -1777,6 +1834,12 @@ __all__ = (
   "GetChannelHTTPRequest",
   "GetChannelHTTPResponse",
   "GetChannelHTTPResponseBody",
+  "GetChannelMemberPermissionsHTTPRequest",
+  "GetChannelMemberPermissionsHTTPResponse",
+  "GetChannelMemberPermissionsHTTPResponseBody",
+  "GetChannelRolePermissionsHTTPRequest",
+  "GetChannelRolePermissionsHTTPResponse",
+  "GetChannelRolePermissionsHTTPResponseBody",
   "GetCurrentUserApplicationEntitlementsHTTPRequest",
   "GetCurrentUserApplicationEntitlementsHTTPResponse",
   "GetCurrentUserApplicationEntitlementsHTTPResponseBody",
@@ -1810,6 +1873,9 @@ __all__ = (
   "GetGuildMemberHTTPRequest",
   "GetGuildMemberHTTPResponse",
   "GetGuildMemberHTTPResponseBody",
+  "GetGuildMemberPermissionsHTTPRequest",
+  "GetGuildMemberPermissionsHTTPResponse",
+  "GetGuildMemberPermissionsHTTPResponseBody",
   "GetGuildNewMemberWelcomeHTTPRequest",
   "GetGuildNewMemberWelcomeHTTPResponse",
   "GetGuildNewMemberWelcomeHTTPResponseBody",
@@ -1819,6 +1885,9 @@ __all__ = (
   "GetGuildRoleHTTPRequest",
   "GetGuildRoleHTTPResponse",
   "GetGuildRoleHTTPResponseBody",
+  "GetGuildRolePermissionsHTTPRequest",
+  "GetGuildRolePermissionsHTTPResponse",
+  "GetGuildRolePermissionsHTTPResponseBody",
   "GetGuildScheduledEventHTTPRequest",
   "GetGuildScheduledEventHTTPResponse",
   "GetGuildScheduledEventHTTPResponseBody",
@@ -2071,6 +2140,9 @@ __all__ = (
   "PutGuildsOnboardingHTTPRequest",
   "PutGuildsOnboardingHTTPResponse",
   "PutGuildsOnboardingHTTPResponseBody",
+  "RemoveInviteTargetUserHTTPRequest",
+  "RemoveInviteTargetUserHTTPResponse",
+  "RemoveInviteTargetUserHTTPResponseBody",
   "SearchGuildMembersHTTPRequest",
   "SearchGuildMembersHTTPResponse",
   "SearchGuildMembersHTTPResponseBody",

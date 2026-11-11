@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -37,3 +37,7 @@ class GatewayIdentifyData(BaseModel):
     intents: Annotated[
         float, Field(description='The Gateway Intents you wish to receive')
     ]
+    capabilities: Annotated[
+        float | None,
+        Field(description='Bitfield representing capabilities of your gateway client'),
+    ] = None

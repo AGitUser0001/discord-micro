@@ -28,7 +28,7 @@ A shard that is down simply does not contribute.
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from nats.errors import NoRespondersError
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -36,7 +36,19 @@ from pydantic import JsonValue
 from pydantic_core import from_json, to_json
 
 from micro import subjects
-from micro.discord.objects import Channel, Guild, Member, Role, User
+from micro.discord.objects import (
+  Channel,
+  Guild,
+  GuildEmoji,
+  Member,
+  Presence,
+  Role,
+  ScheduledEvent,
+  StageInstance,
+  Sticker,
+  User,
+  VoiceState,
+)
 from micro.discord.permissions import Permissions
 from micro.errors import RoutingError
 
@@ -68,50 +80,100 @@ class DiscordState:
   error: it just knows nothing right now.
   """
 
-  def __init__(self, runtime: Runtime) -> None:
+  def __init__(self, runtime: Runtime, *, context: Any = None) -> None:
     from micro.gateway import GatewayControl
 
     self.runtime = runtime
     self._control = GatewayControl(runtime)
+    self._context = context
+    """The `Context` the objects it returns are bound to (`ctx.state` has it)."""
 
   async def guild(self, guild_id: int | str) -> Guild | None:
     """The guild itself (its name, owner, settings). Its roles, channels and members
-    are read with `roles`, `channels` and `member`."""
+    are read with `roles`, `channels` and `member`.
+
+    Args:
+      guild_id: The server's id.
+
+    Returns:
+      The guild, or `None` while it is not held (its shard is down or reconnecting).
+    """
     payload = await self._ask_guild(guild_id, "guild")
-    return Guild.model_validate(payload) if isinstance(payload, dict) else None
+    return self._make(Guild, payload) if isinstance(payload, dict) else None
 
   async def roles(self, guild_id: int | str) -> list[Role] | None:
-    """Every role of the guild, or None while the guild is not held."""
+    """Every role of the guild.
+
+    Args:
+      guild_id: The server's id.
+
+    Returns:
+      The roles, or `None` while the guild is not held.
+    """
     payloads = await self._ask_guild(guild_id, "roles")
     if not isinstance(payloads, list):
       return None
-    return [Role.model_validate(p) for p in payloads if isinstance(p, dict)]
+    return [
+      self._make(Role, {"guild_id": str(guild_id), **p})
+      for p in payloads
+      if isinstance(p, dict)
+    ]
 
   async def role(self, role_id: int | str) -> Role | None:
-    """A role by id alone."""
+    """A role by id alone, from whichever guild has it.
+
+    Args:
+      role_id: The role's id.
+
+    Returns:
+      The role, or `None` if no shard knows it.
+    """
     found = await self._where("role", role_id)
-    return None if found is None else Role.model_validate(found[1])
+    return (
+      None if found is None else self._make(Role, {"guild_id": found[0], **found[1]})
+    )
 
   async def channels(self, guild_id: int | str) -> list[Channel] | None:
-    """Every channel of the guild, or None while the guild is not held."""
+    """Every channel of the guild.
+
+    Args:
+      guild_id: The server's id.
+
+    Returns:
+      The channels, or `None` while the guild is not held.
+    """
     payloads = await self._ask_guild(guild_id, "channels")
     if not isinstance(payloads, list):
       return None
     return [
-      Channel.model_validate({"guild_id": str(guild_id), **p})
+      self._make(Channel, {"guild_id": str(guild_id), **p})
       for p in payloads
       if isinstance(p, dict)
     ]
 
   async def channel(self, channel_id: int | str) -> Channel | None:
-    """A channel by id alone (it knows its guild)."""
+    """A channel by id alone (it knows its guild).
+
+    Args:
+      channel_id: The channel's id.
+
+    Returns:
+      The channel, or `None` if no shard knows it.
+    """
     found = await self._where("channel", channel_id)
     if found is None:
       return None
-    return Channel.model_validate({"guild_id": found[0], **found[1]})
+    return self._make(Channel, {"guild_id": found[0], **found[1]})
 
   async def user(self, user_id: int | str) -> User | None:
-    """A user, the same in every guild: the newest copy any shard holds."""
+    """A user, the same in every guild: the newest copy any shard holds.
+
+    Args:
+      user_id: The user's id.
+
+    Returns:
+      The user, or `None` if no shard has seen them.
+    """
     newest: tuple[int, dict[str, JsonValue]] | None = None
     for answer in await self._ask_all("user", user_id=str(user_id)):
       if not isinstance(answer, dict):
@@ -123,7 +185,95 @@ class DiscordState:
         and (newest is None or stamp > newest[0])
       ):
         newest = (stamp, payload)
-    return None if newest is None else User.model_validate(newest[1])
+    return None if newest is None else self._make(User, newest[1])
+
+  async def me(self) -> User | None:
+    """The bot's own user, from the Gateway's `READY`.
+
+    Returns:
+      The bot's user, or `None` while no shard has connected.
+    """
+    for answer in await self._ask_all("me"):
+      if isinstance(answer, dict):
+        return self._make(User, answer)
+    return None
+
+  async def guilds(self) -> list[Guild]:
+    """Every guild the bot is in that a connected shard holds.
+
+    Returns:
+      The guilds (without their roles and channels; read those with `roles` and
+      `channels`). A guild whose shard is down is missing.
+    """
+    found: dict[str, Guild] = {}
+    for answer in await self._ask_all("guilds"):
+      for payload in answer if isinstance(answer, list) else []:
+        if isinstance(payload, dict):
+          guild = self._make(Guild, payload)
+          found[guild.id] = guild
+    return list(found.values())
+
+  async def _list[T](
+    self, guild: int | str, operation: str, view: type[T], **more: Any
+  ) -> list[T] | None:
+    found = await self._ask_guild(guild, operation)
+    if not isinstance(found, list):
+      return None
+    return [self._make(view, {**more, **p}) for p in found if isinstance(p, dict)]
+
+  async def members(self, guild_id: int | str) -> list[Member] | None:
+    """Every member of the guild that the shard holds, each with its user.
+
+    Args:
+      guild_id: The server's id.
+
+    Returns:
+      The members, or `None` while the guild is not held. With the `guild_members`
+      intent this is everyone; without it, the people the shard has seen.
+    """
+    return await self._list(guild_id, "members", Member, guild_id=str(guild_id))
+
+  async def threads(self, guild_id: int | str) -> list[Channel] | None:
+    """The active threads of the guild (`None` while the guild is not held)."""
+    return await self._list(guild_id, "threads", Channel, guild_id=str(guild_id))
+
+  async def emojis(self, guild_id: int | str) -> list[GuildEmoji] | None:
+    """The custom emojis of the guild (`None` while the guild is not held)."""
+    return await self._list(guild_id, "emojis", GuildEmoji)
+
+  async def stickers(self, guild_id: int | str) -> list[Sticker] | None:
+    """The custom stickers of the guild (`None` while the guild is not held)."""
+    return await self._list(guild_id, "stickers", Sticker)
+
+  async def stage_instances(self, guild_id: int | str) -> list[StageInstance] | None:
+    """The live stages of the guild (`None` while the guild is not held)."""
+    return await self._list(guild_id, "stage_instances", StageInstance)
+
+  async def scheduled_events(self, guild_id: int | str) -> list[ScheduledEvent] | None:
+    """The scheduled events of the guild (`None` while the guild is not held)."""
+    return await self._list(guild_id, "scheduled_events", ScheduledEvent)
+
+  async def voice_states(self, guild_id: int | str) -> list[VoiceState] | None:
+    """Everyone in voice in the guild (`None` while the guild is not held)."""
+    return await self._list(
+      guild_id, "voice_states", VoiceState, guild_id=str(guild_id)
+    )
+
+  async def voice_state(
+    self, guild_id: int | str, user_id: int | str
+  ) -> VoiceState | None:
+    """Where one user is in voice, or `None` if they are not (or the guild is not held)."""
+    found = await self._ask_guild(guild_id, "voice_state", user_id=str(user_id))
+    if not isinstance(found, dict):
+      return None
+    return self._make(VoiceState, {"guild_id": str(guild_id), **found})
+
+  async def presence(self, guild_id: int | str, user_id: int | str) -> Presence | None:
+    """A user's status and activities in the guild (needs the `guild_presences` intent)."""
+    found = await self._ask_guild(guild_id, "presence", user_id=str(user_id))
+    if not isinstance(found, dict):
+      return None
+    return self._make(Presence, {"guild_id": str(guild_id), **found})
 
   async def mutual_guilds(self, user_id: int | str) -> list[KnownGuild]:
     """The guilds the shards know this user to be in, each with `member()` for the user
@@ -134,7 +284,7 @@ class DiscordState:
     for answer in await self._ask_all("guilds_of", user_id=str(user_id)):
       for payload in answer if isinstance(answer, list) else []:
         if isinstance(payload, dict):
-          guilds.append(KnownGuild(Guild.model_validate(payload), str(user_id), self))
+          guilds.append(KnownGuild(self._make(Guild, payload), str(user_id), self))
     return guilds
 
   async def member(self, guild_id: int | str, user_id: int | str) -> Member | None:
@@ -143,7 +293,7 @@ class DiscordState:
     payload = await self._ask_guild(guild_id, "member", user_id=str(user_id))
     if not isinstance(payload, dict):
       return None
-    return Member.model_validate({**payload, "guild_id": str(guild_id)})
+    return self._make(Member, {**payload, "guild_id": str(guild_id)})
 
   async def permissions(
     self,
@@ -168,6 +318,11 @@ class DiscordState:
     )
 
   # Asking the shards -----------------------------------------------------------
+
+  def _make[T](self, view: type[T], payload: Any) -> T:
+    """A view of a payload, bound to the context so its actions work."""
+    made = view.model_validate(payload)  # type: ignore[attr-defined]
+    return made.bind(self._context) if self._context is not None else made  # type: ignore[attr-defined]
 
   async def _ask(
     self, shard_id: int, operation: str, **arguments: JsonValue

@@ -57,6 +57,7 @@ if TYPE_CHECKING:
   from ._checkbox_group_option_for_request import CheckboxGroupOptionForRequest as CheckboxGroupOptionForRequest
   from ._connected_account_providers import ConnectedAccountProviders as ConnectedAccountProviders
   from ._connected_account_visibility import ConnectedAccountVisibility as ConnectedAccountVisibility
+  from ._content_scan_metadata_response import ContentScanMetadataResponse as ContentScanMetadataResponse
   from ._create_group_dm_invite_request import CreateGroupDMInviteRequest as CreateGroupDMInviteRequest
   from ._access_token import AccessToken as AccessToken
   from ._color import Color as Color
@@ -90,7 +91,6 @@ if TYPE_CHECKING:
   from ._guild_incident_actions_request import GuildIncidentActionsRequest as GuildIncidentActionsRequest
   from ._guild_incidents_data_response import GuildIncidentsDataResponse as GuildIncidentsDataResponse
   from ._guild_join_request_application_status import GuildJoinRequestApplicationStatus as GuildJoinRequestApplicationStatus
-  from ._guild_liveliness_response import GuildLivelinessResponse as GuildLivelinessResponse
   from ._guild_mfa_level import GuildMFALevel as GuildMFALevel
   from ._guild_member_verification_form_field_type import GuildMemberVerificationFormFieldType as GuildMemberVerificationFormFieldType
   from ._guild_nsfw_content_level import GuildNSFWContentLevel as GuildNSFWContentLevel
@@ -134,6 +134,7 @@ if TYPE_CHECKING:
   from ._message_component_types import MessageComponentTypes as MessageComponentTypes
   from ._nonce2 import Nonce2 as Nonce2
   from ._nonce3 import Nonce3 as Nonce3
+  from ._message_embed_audio_response import MessageEmbedAudioResponse as MessageEmbedAudioResponse
   from ._message_embed_author_response import MessageEmbedAuthorResponse as MessageEmbedAuthorResponse
   from ._message_embed_field_response import MessageEmbedFieldResponse as MessageEmbedFieldResponse
   from ._message_embed_footer_response import MessageEmbedFooterResponse as MessageEmbedFooterResponse
@@ -154,6 +155,7 @@ if TYPE_CHECKING:
   from ._o_auth2_scopes import OAuth2Scopes as OAuth2Scopes
   from ._onboarding_prompt_type import OnboardingPromptType as OnboardingPromptType
   from ._paragraph_form_field_response import ParagraphFormFieldResponse as ParagraphFormFieldResponse
+  from ._permissions_response import PermissionsResponse as PermissionsResponse
   from ._poll_layout_types import PollLayoutTypes as PollLayoutTypes
   from ._poll_results_entry_response import PollResultsEntryResponse as PollResultsEntryResponse
   from ._poll_results_response import PollResultsResponse as PollResultsResponse
@@ -173,6 +175,7 @@ if TYPE_CHECKING:
   from ._recurrence_rule_months import RecurrenceRuleMonths as RecurrenceRuleMonths
   from ._recurrence_rule_weekdays import RecurrenceRuleWeekdays as RecurrenceRuleWeekdays
   from ._resolved_objects_response import ResolvedObjectsResponse as ResolvedObjectsResponse
+  from ._rich_embed_audio import RichEmbedAudio as RichEmbedAudio
   from ._rich_embed_author import RichEmbedAuthor as RichEmbedAuthor
   from ._rich_embed_field import RichEmbedField as RichEmbedField
   from ._rich_embed_footer import RichEmbedFooter as RichEmbedFooter
@@ -318,6 +321,8 @@ if TYPE_CHECKING:
   from ._delete_my_message_reaction_parameters_path import DeleteMyMessageReactionParametersPath as DeleteMyMessageReactionParametersPath
   from ._delete_user_message_reaction_parameters_path import DeleteUserMessageReactionParametersPath as DeleteUserMessageReactionParametersPath
   from ._create_thread_from_message_parameters_path import CreateThreadFromMessageParametersPath as CreateThreadFromMessageParametersPath
+  from ._get_channel_member_permissions_parameters_path import GetChannelMemberPermissionsParametersPath as GetChannelMemberPermissionsParametersPath
+  from ._get_channel_role_permissions_parameters_path import GetChannelRolePermissionsParametersPath as GetChannelRolePermissionsParametersPath
   from ._set_channel_permission_overwrite_parameters_path import SetChannelPermissionOverwriteParametersPath as SetChannelPermissionOverwriteParametersPath
   from ._delete_channel_permission_overwrite_parameters_path import DeleteChannelPermissionOverwriteParametersPath as DeleteChannelPermissionOverwriteParametersPath
   from ._deprecated_list_pins_parameters_path import DeprecatedListPinsParametersPath as DeprecatedListPinsParametersPath
@@ -382,6 +387,8 @@ if TYPE_CHECKING:
   from ._get_guild_new_member_welcome_parameters_path import GetGuildNewMemberWelcomeParametersPath as GetGuildNewMemberWelcomeParametersPath
   from ._get_guilds_onboarding_parameters_path import GetGuildsOnboardingParametersPath as GetGuildsOnboardingParametersPath
   from ._put_guilds_onboarding_parameters_path import PutGuildsOnboardingParametersPath as PutGuildsOnboardingParametersPath
+  from ._get_guild_member_permissions_parameters_path import GetGuildMemberPermissionsParametersPath as GetGuildMemberPermissionsParametersPath
+  from ._get_guild_role_permissions_parameters_path import GetGuildRolePermissionsParametersPath as GetGuildRolePermissionsParametersPath
   from ._get_guild_preview_parameters_path import GetGuildPreviewParametersPath as GetGuildPreviewParametersPath
   from ._preview_prune_guild_parameters_path import PreviewPruneGuildParametersPath as PreviewPruneGuildParametersPath
   from ._prune_guild_parameters_path import PruneGuildParametersPath as PruneGuildParametersPath
@@ -439,7 +446,11 @@ if TYPE_CHECKING:
   from ._invite_revoke_parameters_path import InviteRevokeParametersPath as InviteRevokeParametersPath
   from ._get_invite_target_users_parameters_path import GetInviteTargetUsersParametersPath as GetInviteTargetUsersParametersPath
   from ._update_invite_target_users_parameters_path import UpdateInviteTargetUsersParametersPath as UpdateInviteTargetUsersParametersPath
+  from ._bulk_add_invite_target_users_parameters_path import BulkAddInviteTargetUsersParametersPath as BulkAddInviteTargetUsersParametersPath
+  from ._bulk_remove_invite_target_users_parameters_path import BulkRemoveInviteTargetUsersParametersPath as BulkRemoveInviteTargetUsersParametersPath
   from ._get_invite_target_users_job_status_parameters_path import GetInviteTargetUsersJobStatusParametersPath as GetInviteTargetUsersJobStatusParametersPath
+  from ._add_invite_target_user_parameters_path import AddInviteTargetUserParametersPath as AddInviteTargetUserParametersPath
+  from ._remove_invite_target_user_parameters_path import RemoveInviteTargetUserParametersPath as RemoveInviteTargetUserParametersPath
   from ._get_lobby_parameters_path import GetLobbyParametersPath as GetLobbyParametersPath
   from ._delete_lobby_parameters_path import DeleteLobbyParametersPath as DeleteLobbyParametersPath
   from ._edit_lobby_parameters_path import EditLobbyParametersPath as EditLobbyParametersPath
@@ -497,6 +508,8 @@ if TYPE_CHECKING:
   from ._bulk_delete_messages_request import BulkDeleteMessagesRequest as BulkDeleteMessagesRequest
   from ._list_pins_parameters_query import ListPinsParametersQuery as ListPinsParametersQuery
   from ._list_message_reactions_by_emoji_parameters_query import ListMessageReactionsByEmojiParametersQuery as ListMessageReactionsByEmojiParametersQuery
+  from ._get_channel_member_permissions_parameters_query import GetChannelMemberPermissionsParametersQuery as GetChannelMemberPermissionsParametersQuery
+  from ._get_channel_role_permissions_parameters_query import GetChannelRolePermissionsParametersQuery as GetChannelRolePermissionsParametersQuery
   from ._set_channel_permission_overwrite_request import SetChannelPermissionOverwriteRequest as SetChannelPermissionOverwriteRequest
   from ._get_answer_voters_parameters_query import GetAnswerVotersParametersQuery as GetAnswerVotersParametersQuery
   from ._add_group_dm_user_request import AddGroupDmUserRequest as AddGroupDmUserRequest
@@ -546,6 +559,8 @@ if TYPE_CHECKING:
   from ._create_interaction_response_parameters_query import CreateInteractionResponseParametersQuery as CreateInteractionResponseParametersQuery
   from ._invite_resolve_parameters_query import InviteResolveParametersQuery as InviteResolveParametersQuery
   from ._update_invite_target_users_request import UpdateInviteTargetUsersRequest as UpdateInviteTargetUsersRequest
+  from ._bulk_add_invite_target_users_request import BulkAddInviteTargetUsersRequest as BulkAddInviteTargetUsersRequest
+  from ._bulk_remove_invite_target_users_request import BulkRemoveInviteTargetUsersRequest as BulkRemoveInviteTargetUsersRequest
   from ._create_or_join_lobby_request import CreateOrJoinLobbyRequest as CreateOrJoinLobbyRequest
   from ._edit_lobby_channel_link_request import EditLobbyChannelLinkRequest as EditLobbyChannelLinkRequest
   from ._add_lobby_member_request import AddLobbyMemberRequest as AddLobbyMemberRequest
@@ -621,6 +636,7 @@ if TYPE_CHECKING:
   from ._connected_account_response import ConnectedAccountResponse as ConnectedAccountResponse
   from ._create_entitlement_request_data import CreateEntitlementRequestData as CreateEntitlementRequestData
   from ._role_ids import RoleIds as RoleIds
+  from ._target_user_ids import TargetUserIds as TargetUserIds
   from ._create_guild_invite_request import CreateGuildInviteRequest as CreateGuildInviteRequest
   from ._create_or_update_thread_tag_request import CreateOrUpdateThreadTagRequest as CreateOrUpdateThreadTagRequest
   from ._create_private_channel_request import CreatePrivateChannelRequest as CreatePrivateChannelRequest
@@ -668,7 +684,7 @@ if TYPE_CHECKING:
   from ._lobby_member_response import LobbyMemberResponse as LobbyMemberResponse
   from ._lobby_response import LobbyResponse as LobbyResponse
   from ._ml_spam_rule_response import MLSpamRuleResponse as MLSpamRuleResponse
-  from ._media_gallery_item_request import MediaGalleryItemRequest as MediaGalleryItemRequest
+  from ._media_gallery_item_for_message_request import MediaGalleryItemForMessageRequest as MediaGalleryItemForMessageRequest
   from ._media_gallery_item_response import MediaGalleryItemResponse as MediaGalleryItemResponse
   from ._mention_spam_rule_response import MentionSpamRuleResponse as MentionSpamRuleResponse
   from ._message_allowed_mentions_request import MessageAllowedMentionsRequest as MessageAllowedMentionsRequest
@@ -1018,6 +1034,7 @@ _MODULES: dict[str, str] = {
   "CheckboxGroupOptionForRequest": "_checkbox_group_option_for_request",
   "ConnectedAccountProviders": "_connected_account_providers",
   "ConnectedAccountVisibility": "_connected_account_visibility",
+  "ContentScanMetadataResponse": "_content_scan_metadata_response",
   "CreateGroupDMInviteRequest": "_create_group_dm_invite_request",
   "AccessToken": "_access_token",
   "Color": "_color",
@@ -1051,7 +1068,6 @@ _MODULES: dict[str, str] = {
   "GuildIncidentActionsRequest": "_guild_incident_actions_request",
   "GuildIncidentsDataResponse": "_guild_incidents_data_response",
   "GuildJoinRequestApplicationStatus": "_guild_join_request_application_status",
-  "GuildLivelinessResponse": "_guild_liveliness_response",
   "GuildMFALevel": "_guild_mfa_level",
   "GuildMemberVerificationFormFieldType": "_guild_member_verification_form_field_type",
   "GuildNSFWContentLevel": "_guild_nsfw_content_level",
@@ -1095,6 +1111,7 @@ _MODULES: dict[str, str] = {
   "MessageComponentTypes": "_message_component_types",
   "Nonce2": "_nonce2",
   "Nonce3": "_nonce3",
+  "MessageEmbedAudioResponse": "_message_embed_audio_response",
   "MessageEmbedAuthorResponse": "_message_embed_author_response",
   "MessageEmbedFieldResponse": "_message_embed_field_response",
   "MessageEmbedFooterResponse": "_message_embed_footer_response",
@@ -1115,6 +1132,7 @@ _MODULES: dict[str, str] = {
   "OAuth2Scopes": "_o_auth2_scopes",
   "OnboardingPromptType": "_onboarding_prompt_type",
   "ParagraphFormFieldResponse": "_paragraph_form_field_response",
+  "PermissionsResponse": "_permissions_response",
   "PollLayoutTypes": "_poll_layout_types",
   "PollResultsEntryResponse": "_poll_results_entry_response",
   "PollResultsResponse": "_poll_results_response",
@@ -1134,6 +1152,7 @@ _MODULES: dict[str, str] = {
   "RecurrenceRuleMonths": "_recurrence_rule_months",
   "RecurrenceRuleWeekdays": "_recurrence_rule_weekdays",
   "ResolvedObjectsResponse": "_resolved_objects_response",
+  "RichEmbedAudio": "_rich_embed_audio",
   "RichEmbedAuthor": "_rich_embed_author",
   "RichEmbedField": "_rich_embed_field",
   "RichEmbedFooter": "_rich_embed_footer",
@@ -1279,6 +1298,8 @@ _MODULES: dict[str, str] = {
   "DeleteMyMessageReactionParametersPath": "_delete_my_message_reaction_parameters_path",
   "DeleteUserMessageReactionParametersPath": "_delete_user_message_reaction_parameters_path",
   "CreateThreadFromMessageParametersPath": "_create_thread_from_message_parameters_path",
+  "GetChannelMemberPermissionsParametersPath": "_get_channel_member_permissions_parameters_path",
+  "GetChannelRolePermissionsParametersPath": "_get_channel_role_permissions_parameters_path",
   "SetChannelPermissionOverwriteParametersPath": "_set_channel_permission_overwrite_parameters_path",
   "DeleteChannelPermissionOverwriteParametersPath": "_delete_channel_permission_overwrite_parameters_path",
   "DeprecatedListPinsParametersPath": "_deprecated_list_pins_parameters_path",
@@ -1343,6 +1364,8 @@ _MODULES: dict[str, str] = {
   "GetGuildNewMemberWelcomeParametersPath": "_get_guild_new_member_welcome_parameters_path",
   "GetGuildsOnboardingParametersPath": "_get_guilds_onboarding_parameters_path",
   "PutGuildsOnboardingParametersPath": "_put_guilds_onboarding_parameters_path",
+  "GetGuildMemberPermissionsParametersPath": "_get_guild_member_permissions_parameters_path",
+  "GetGuildRolePermissionsParametersPath": "_get_guild_role_permissions_parameters_path",
   "GetGuildPreviewParametersPath": "_get_guild_preview_parameters_path",
   "PreviewPruneGuildParametersPath": "_preview_prune_guild_parameters_path",
   "PruneGuildParametersPath": "_prune_guild_parameters_path",
@@ -1400,7 +1423,11 @@ _MODULES: dict[str, str] = {
   "InviteRevokeParametersPath": "_invite_revoke_parameters_path",
   "GetInviteTargetUsersParametersPath": "_get_invite_target_users_parameters_path",
   "UpdateInviteTargetUsersParametersPath": "_update_invite_target_users_parameters_path",
+  "BulkAddInviteTargetUsersParametersPath": "_bulk_add_invite_target_users_parameters_path",
+  "BulkRemoveInviteTargetUsersParametersPath": "_bulk_remove_invite_target_users_parameters_path",
   "GetInviteTargetUsersJobStatusParametersPath": "_get_invite_target_users_job_status_parameters_path",
+  "AddInviteTargetUserParametersPath": "_add_invite_target_user_parameters_path",
+  "RemoveInviteTargetUserParametersPath": "_remove_invite_target_user_parameters_path",
   "GetLobbyParametersPath": "_get_lobby_parameters_path",
   "DeleteLobbyParametersPath": "_delete_lobby_parameters_path",
   "EditLobbyParametersPath": "_edit_lobby_parameters_path",
@@ -1458,6 +1485,8 @@ _MODULES: dict[str, str] = {
   "BulkDeleteMessagesRequest": "_bulk_delete_messages_request",
   "ListPinsParametersQuery": "_list_pins_parameters_query",
   "ListMessageReactionsByEmojiParametersQuery": "_list_message_reactions_by_emoji_parameters_query",
+  "GetChannelMemberPermissionsParametersQuery": "_get_channel_member_permissions_parameters_query",
+  "GetChannelRolePermissionsParametersQuery": "_get_channel_role_permissions_parameters_query",
   "SetChannelPermissionOverwriteRequest": "_set_channel_permission_overwrite_request",
   "GetAnswerVotersParametersQuery": "_get_answer_voters_parameters_query",
   "AddGroupDmUserRequest": "_add_group_dm_user_request",
@@ -1507,6 +1536,8 @@ _MODULES: dict[str, str] = {
   "CreateInteractionResponseParametersQuery": "_create_interaction_response_parameters_query",
   "InviteResolveParametersQuery": "_invite_resolve_parameters_query",
   "UpdateInviteTargetUsersRequest": "_update_invite_target_users_request",
+  "BulkAddInviteTargetUsersRequest": "_bulk_add_invite_target_users_request",
+  "BulkRemoveInviteTargetUsersRequest": "_bulk_remove_invite_target_users_request",
   "CreateOrJoinLobbyRequest": "_create_or_join_lobby_request",
   "EditLobbyChannelLinkRequest": "_edit_lobby_channel_link_request",
   "AddLobbyMemberRequest": "_add_lobby_member_request",
@@ -1582,6 +1613,7 @@ _MODULES: dict[str, str] = {
   "ConnectedAccountResponse": "_connected_account_response",
   "CreateEntitlementRequestData": "_create_entitlement_request_data",
   "RoleIds": "_role_ids",
+  "TargetUserIds": "_target_user_ids",
   "CreateGuildInviteRequest": "_create_guild_invite_request",
   "CreateOrUpdateThreadTagRequest": "_create_or_update_thread_tag_request",
   "CreatePrivateChannelRequest": "_create_private_channel_request",
@@ -1629,7 +1661,7 @@ _MODULES: dict[str, str] = {
   "LobbyMemberResponse": "_lobby_member_response",
   "LobbyResponse": "_lobby_response",
   "MLSpamRuleResponse": "_ml_spam_rule_response",
-  "MediaGalleryItemRequest": "_media_gallery_item_request",
+  "MediaGalleryItemForMessageRequest": "_media_gallery_item_for_message_request",
   "MediaGalleryItemResponse": "_media_gallery_item_response",
   "MentionSpamRuleResponse": "_mention_spam_rule_response",
   "MessageAllowedMentionsRequest": "_message_allowed_mentions_request",
@@ -1959,6 +1991,7 @@ __all__ = (
   "AddGroupDmUserResponse201",
   "AddGuildMemberParametersPath",
   "AddGuildMemberRoleParametersPath",
+  "AddInviteTargetUserParametersPath",
   "AddLobbyMemberParametersPath",
   "AddLobbyMemberRequest",
   "AddMyMessageReactionParametersPath",
@@ -2047,12 +2080,16 @@ __all__ = (
   "BotAddGuildMemberRequest",
   "BotPartnerSdkTokenRequest",
   "BotPartnerSdkUnmergeProvisionalAccountRequest",
+  "BulkAddInviteTargetUsersParametersPath",
+  "BulkAddInviteTargetUsersRequest",
   "BulkBanUsersFromGuildParametersPath",
   "BulkBanUsersRequest",
   "BulkBanUsersResponse",
   "BulkDeleteMessagesParametersPath",
   "BulkDeleteMessagesRequest",
   "BulkLobbyMemberRequest",
+  "BulkRemoveInviteTargetUsersParametersPath",
+  "BulkRemoveInviteTargetUsersRequest",
   "BulkSetApplicationCommandsParametersPath",
   "BulkSetApplicationCommandsRequest",
   "BulkSetApplicationCommandsResponse200",
@@ -2102,6 +2139,7 @@ __all__ = (
   "ConsumeEntitlementParametersPath",
   "ContainerComponentForMessageRequest",
   "ContainerComponentResponse",
+  "ContentScanMetadataResponse",
   "CountGuildScheduledEventUsersParametersPath",
   "CountGuildScheduledEventUsersParametersQuery",
   "CreateApplicationCommandParametersPath",
@@ -2277,8 +2315,12 @@ __all__ = (
   "GetApplicationUserRoleConnectionParametersPath",
   "GetAutoModerationRuleParametersPath",
   "GetAutoModerationRuleResponse200",
+  "GetChannelMemberPermissionsParametersPath",
+  "GetChannelMemberPermissionsParametersQuery",
   "GetChannelParametersPath",
   "GetChannelResponse200",
+  "GetChannelRolePermissionsParametersPath",
+  "GetChannelRolePermissionsParametersQuery",
   "GetCurrentUserApplicationEntitlementsParametersPath",
   "GetCurrentUserApplicationEntitlementsParametersQuery",
   "GetCurrentUserApplicationEntitlementsResponse200",
@@ -2293,11 +2335,13 @@ __all__ = (
   "GetGuildJoinRequestsParametersPath",
   "GetGuildJoinRequestsParametersQuery",
   "GetGuildMemberParametersPath",
+  "GetGuildMemberPermissionsParametersPath",
   "GetGuildNewMemberWelcomeParametersPath",
   "GetGuildParametersPath",
   "GetGuildParametersQuery",
   "GetGuildPreviewParametersPath",
   "GetGuildRoleParametersPath",
+  "GetGuildRolePermissionsParametersPath",
   "GetGuildScheduledEventParametersPath",
   "GetGuildScheduledEventParametersQuery",
   "GetGuildScheduledEventResponse200",
@@ -2374,7 +2418,6 @@ __all__ = (
   "GuildJoinRequestApplicationStatus",
   "GuildJoinRequestResponse",
   "GuildJoinRequestsListResponse",
-  "GuildLivelinessResponse",
   "GuildMFALevel",
   "GuildMemberResponse",
   "GuildMemberVerificationFormFieldType",
@@ -2544,7 +2587,7 @@ __all__ = (
   "MLSpamUpsertRequestPartial",
   "MediaGalleryComponentForMessageRequest",
   "MediaGalleryComponentResponse",
-  "MediaGalleryItemRequest",
+  "MediaGalleryItemForMessageRequest",
   "MediaGalleryItemResponse",
   "MentionSpamRuleResponse",
   "MentionSpamTriggerMetadata",
@@ -2564,6 +2607,7 @@ __all__ = (
   "MessageComponentTypes",
   "MessageCreateRequest",
   "MessageEditRequestPartial",
+  "MessageEmbedAudioResponse",
   "MessageEmbedAuthorResponse",
   "MessageEmbedFieldResponse",
   "MessageEmbedFooterResponse",
@@ -2621,6 +2665,7 @@ __all__ = (
   "PartialGuildSubscriptionIntegrationResponse",
   "PartnerSdkTokenRequest",
   "PartnerSdkUnmergeProvisionalAccountRequest",
+  "PermissionsResponse",
   "PinnedMessageResponse",
   "PinnedMessagesResponse",
   "PollAnswerCreateRequest",
@@ -2667,9 +2712,11 @@ __all__ = (
   "RecurrenceRuleResponse",
   "RecurrenceRuleWeekdays",
   "RegexPattern",
+  "RemoveInviteTargetUserParametersPath",
   "ResolvedObjectsResponse",
   "ResourceChannelResponse",
   "RichEmbed",
+  "RichEmbedAudio",
   "RichEmbedAuthor",
   "RichEmbedField",
   "RichEmbedFooter",
@@ -2737,6 +2784,7 @@ __all__ = (
   "SyncGuildTemplateParametersPath",
   "Tag",
   "Tag1",
+  "TargetUserIds",
   "TargetUsersJobStatusResponse",
   "TargetUsersJobStatusTypes",
   "TeamMemberResponse",

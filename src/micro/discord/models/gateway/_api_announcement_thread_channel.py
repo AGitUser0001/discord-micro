@@ -1,12 +1,12 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from ._api_overwrite import APIOverwrite
 from ._api_thread_metadata import APIThreadMetadata
-from ._flags41 import Flags41
+from ._flags43 import Flags43
 from ._api_thread_member import APIThreadMember
 
 
@@ -21,7 +21,7 @@ class APIAnnouncementThreadChannel(BaseModel):
             description='A temporary sub-channel within a Guild Announcement channel'
         ),
     ]
-    flags: Flags41 | None = None
+    flags: Flags43 | None = None
     rate_limit_per_user: Annotated[
         float | None,
         Field(

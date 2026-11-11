@@ -1,10 +1,10 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 
 
 class GetGuildStickerHTTPRequest(DiscordModel):
-  path: http.GetGuildStickerParametersPath
+    path: http.GetGuildStickerParametersPath

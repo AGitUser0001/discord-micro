@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -28,8 +28,5 @@ class APITeamMember(BaseModel):
     team_id: Annotated[
         str, Field(description='The id of the parent team of which they are a member')
     ]
-    user: Annotated[
-        APIUser,
-        Field(description='The avatar, discriminator, id, and username of the user'),
-    ]
+    user: Annotated[APIUser, Field(description='User object of the team member')]
     role: Annotated[Role, Field(description="The user's role in the team.")]

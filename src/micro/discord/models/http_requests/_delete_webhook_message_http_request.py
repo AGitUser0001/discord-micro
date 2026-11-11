@@ -1,11 +1,11 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 
 
 class DeleteWebhookMessageHTTPRequest(DiscordModel):
-  path: http.DeleteWebhookMessageParametersPath
-  query: http.DeleteWebhookMessageParametersQuery | None = None
+    path: http.DeleteWebhookMessageParametersPath
+    query: http.DeleteWebhookMessageParametersQuery | None = None

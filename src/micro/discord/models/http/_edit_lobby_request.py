@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
@@ -19,3 +19,4 @@ class EditLobbyRequest(DiscordModel):
     members: Annotated[list[LobbyMemberRequest] | None, Field(max_length=25)] = None
     flags: Flags | None = None
     override_event_webhooks_url: AnyUrl | None = None
+    name: Annotated[str | None, Field(max_length=100, min_length=1)] = None

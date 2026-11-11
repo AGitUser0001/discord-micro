@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Union
 from micro.discord._model import DiscordModel
 from pydantic import AnyUrl, AwareDatetime, ConfigDict, Field, RootModel
@@ -24,8 +24,12 @@ class ApplicationResponse(DiscordModel):
     type: ApplicationTypes | None
     cover_image: str | None = None
     primary_sku_id: SnowflakeType | None = None
+    flags: int
+    flags_new: str
     bot: UserResponse | None = None
     slug: str | None = None
+    conjure_project_id: SnowflakeType | None = None
+    vibegrations_project_id: SnowflakeType | None = None
     guild_id: SnowflakeType | None = None
     rpc_origins: list[str] | None = None
     bot_public: bool | None = None
@@ -38,7 +42,5 @@ class ApplicationResponse(DiscordModel):
         dict[str, ApplicationIntegrationTypeConfigurationResponse] | None
     ) = None
     verify_key: str
-    flags: int
-    flags_new: str
     max_participants: int | None = None
     tags: list[str] | None = None

@@ -42,7 +42,7 @@ A/B test), ``owned`` or ``unroutable``:
        return super().route(payload)
 
 A custom template for a new kind of handler subclasses :class:`InteractionTemplate`
-(``routes()`` and ``resolve(ctx)``), or implements ``start`` / ``stop`` / ``metadata`` from
+(``routes()`` and ``resolve(interaction)``), or implements ``start`` / ``stop`` / ``metadata`` from
 scratch.
 
 Reference

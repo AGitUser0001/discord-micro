@@ -39,6 +39,7 @@ like :class:`Service` or :meth:`Service.listen` link to their reference entries.
    middleware
    logging
    scheduler
+   data
    store
    bridge
 

@@ -1,12 +1,12 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 
 
 class GetThreadMemberHTTPResponseBody(
-  RootModel[http.ThreadMemberResponse | http.RatelimitedResponse | http.ErrorResponse]
+    RootModel[http.ThreadMemberResponse | http.RatelimitedResponse | http.ErrorResponse]
 ):
-  pass
+    pass

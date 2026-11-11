@@ -888,6 +888,7 @@ class DiscordAPI(ApiBase):
     target_application_id: int | str | None = UNSET,
     target_type: m.InviteTargetTypes | int | None = UNSET,
     role_ids: str | Sequence[int | str] | None = UNSET,
+    target_user_ids: str | Sequence[int | str] | None = UNSET,
     files: Sequence[Upload] | None = None,
     reason: str | None = None,
   ) -> Result[
@@ -908,6 +909,7 @@ class DiscordAPI(ApiBase):
         "target_application_id": target_application_id,
         "target_type": target_type,
         "role_ids": role_ids,
+        "target_user_ids": target_user_ids,
       },
       files=files,
       reason=reason,
@@ -1198,6 +1200,34 @@ class DiscordAPI(ApiBase):
         "rate_limit_per_user": rate_limit_per_user,
       },
       reason=reason,
+    )
+
+  async def get_channel_member_permissions(
+    self,
+    channel_id: int | str,
+    user_id: int | str,
+    *,
+    implicit: bool | None = UNSET,
+  ) -> Result[m.PermissionsResponse, DiscordAPIError]:
+    """GET /channels/{channel_id}/permissions/member/{user_id}"""
+    return await self._try(
+      "get_channel_member_permissions",
+      {"channel_id": channel_id, "user_id": user_id},
+      {"implicit": implicit},
+    )
+
+  async def get_channel_role_permissions(
+    self,
+    channel_id: int | str,
+    role_id: int | str,
+    *,
+    implicit: bool | None = UNSET,
+  ) -> Result[m.PermissionsResponse, DiscordAPIError]:
+    """GET /channels/{channel_id}/permissions/role/{role_id}"""
+    return await self._try(
+      "get_channel_role_permissions",
+      {"channel_id": channel_id, "role_id": role_id},
+      {"implicit": implicit},
     )
 
   async def delete_channel_permission_overwrite(
@@ -2171,7 +2201,7 @@ class DiscordAPI(ApiBase):
     guild_id: int | str,
     *,
     limit: int | None = UNSET,
-    after: int | None = UNSET,
+    after: int | str | None = UNSET,
   ) -> Result[list[m.GuildMemberResponse], DiscordAPIError]:
     """GET /guilds/{guild_id}/members"""
     return await self._try(
@@ -2424,6 +2454,26 @@ class DiscordAPI(ApiBase):
         "mode": mode,
       },
       reason=reason,
+    )
+
+  async def get_guild_member_permissions(
+    self,
+    guild_id: int | str,
+    user_id: int | str,
+  ) -> Result[m.PermissionsResponse, DiscordAPIError]:
+    """GET /guilds/{guild_id}/permissions/member/{user_id}"""
+    return await self._try(
+      "get_guild_member_permissions", {"guild_id": guild_id, "user_id": user_id}, {}
+    )
+
+  async def get_guild_role_permissions(
+    self,
+    guild_id: int | str,
+    role_id: int | str,
+  ) -> Result[m.PermissionsResponse, DiscordAPIError]:
+    """GET /guilds/{guild_id}/permissions/role/{role_id}"""
+    return await self._try(
+      "get_guild_role_permissions", {"guild_id": guild_id, "role_id": role_id}, {}
     )
 
   async def get_guild_preview(
@@ -3347,12 +3397,68 @@ class DiscordAPI(ApiBase):
       reason=reason,
     )
 
+  async def bulk_add_invite_target_users(
+    self,
+    code: str,
+    *,
+    user_ids: Sequence[int | str],
+    reason: str | None = None,
+  ) -> Result[None, DiscordAPIError]:
+    """POST /invites/{code}/target-users/bulk-add"""
+    return await self._try(
+      "bulk_add_invite_target_users",
+      {"code": code},
+      {},
+      {"user_ids": user_ids},
+      reason=reason,
+    )
+
+  async def bulk_remove_invite_target_users(
+    self,
+    code: str,
+    *,
+    user_ids: Sequence[int | str],
+    reason: str | None = None,
+  ) -> Result[None, DiscordAPIError]:
+    """POST /invites/{code}/target-users/bulk-delete"""
+    return await self._try(
+      "bulk_remove_invite_target_users",
+      {"code": code},
+      {},
+      {"user_ids": user_ids},
+      reason=reason,
+    )
+
   async def get_invite_target_users_job_status(
     self,
     code: str,
   ) -> Result[m.TargetUsersJobStatusResponse, DiscordAPIError]:
     """GET /invites/{code}/target-users/job-status"""
     return await self._try("get_invite_target_users_job_status", {"code": code}, {})
+
+  async def remove_invite_target_user(
+    self,
+    code: str,
+    user_id: int | str,
+    *,
+    reason: str | None = None,
+  ) -> Result[None, DiscordAPIError]:
+    """DELETE /invites/{code}/target-users/{user_id}"""
+    return await self._try(
+      "remove_invite_target_user", {"code": code, "user_id": user_id}, {}, reason=reason
+    )
+
+  async def add_invite_target_user(
+    self,
+    code: str,
+    user_id: int | str,
+    *,
+    reason: str | None = None,
+  ) -> Result[None, DiscordAPIError]:
+    """PUT /invites/{code}/target-users/{user_id}"""
+    return await self._try(
+      "add_invite_target_user", {"code": code, "user_id": user_id}, {}, reason=reason
+    )
 
   async def create_lobby(
     self,
@@ -3362,6 +3468,7 @@ class DiscordAPI(ApiBase):
     metadata: Mapping[str, Any] | None = UNSET,
     flags: m.Flags | Any | None = UNSET,
     override_event_webhooks_url: str | None = UNSET,
+    name: str | None = UNSET,
     reason: str | None = None,
   ) -> Result[m.LobbyResponse, DiscordAPIError]:
     """POST /lobbies"""
@@ -3375,6 +3482,7 @@ class DiscordAPI(ApiBase):
         "metadata": metadata,
         "flags": flags,
         "override_event_webhooks_url": override_event_webhooks_url,
+        "name": name,
       },
       reason=reason,
     )
@@ -3387,6 +3495,7 @@ class DiscordAPI(ApiBase):
     lobby_metadata: Mapping[str, Any] | None = UNSET,
     member_metadata: Mapping[str, Any] | None = UNSET,
     flags: m.Flags | Any | None = UNSET,
+    name: str | None = UNSET,
     reason: str | None = None,
   ) -> Result[m.LobbyResponse, DiscordAPIError]:
     """PUT /lobbies"""
@@ -3400,6 +3509,7 @@ class DiscordAPI(ApiBase):
         "member_metadata": member_metadata,
         "secret": secret,
         "flags": flags,
+        "name": name,
       },
       reason=reason,
     )
@@ -3429,6 +3539,7 @@ class DiscordAPI(ApiBase):
     members: Sequence[m.LobbyMemberRequest | Mapping[str, Any]] | None = UNSET,
     flags: m.Flags | Any | None = UNSET,
     override_event_webhooks_url: str | None = UNSET,
+    name: str | None = UNSET,
     reason: str | None = None,
   ) -> Result[m.LobbyResponse, DiscordAPIError]:
     """PATCH /lobbies/{lobby_id}"""
@@ -3442,6 +3553,7 @@ class DiscordAPI(ApiBase):
         "members": members,
         "flags": flags,
         "override_event_webhooks_url": override_event_webhooks_url,
+        "name": name,
       },
       reason=reason,
     )
@@ -3961,13 +4073,20 @@ class DiscordAPI(ApiBase):
     before: int | str | None = UNSET,
     after: int | str | None = UNSET,
     limit: int | None = UNSET,
+    shard: int | None = UNSET,
     with_counts: bool | None = UNSET,
   ) -> Result[list[m.MyGuildResponse], DiscordAPIError]:
     """GET /users/@me/guilds"""
     return await self._try(
       "list_my_guilds",
       {},
-      {"before": before, "after": after, "limit": limit, "with_counts": with_counts},
+      {
+        "before": before,
+        "after": after,
+        "limit": limit,
+        "shard": shard,
+        "with_counts": with_counts,
+      },
     )
 
   async def leave_guild(

@@ -1,11 +1,11 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from pydantic import RootModel
 from micro.discord._model import DiscordModel
+from pydantic import RootModel
 from micro.discord.models import http
 
 
 
 class UpdateMyUserHTTPRequest(DiscordModel):
-  body: http.BotAccountPatchRequest
-  content_type: str = 'application/json'
+    body: http.BotAccountPatchRequest
+    content_type: str = "application/json"

@@ -1,6 +1,6 @@
 # Generated from Discord's API specification. Do not edit directly.
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 class Type9(StrEnum):
     article = 'article'
     auto_moderation_message = 'auto_moderation_message'
+    components = 'components'
     gifv = 'gifv'
     image = 'image'
     link = 'link'

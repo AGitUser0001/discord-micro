@@ -21,12 +21,12 @@ send it and that Discord returns when someone uses it. How you build the compone
    components, modals = Components(service), Modals(service)
 
    @components.match(CLOSE)
-   async def close(ctx: Interaction, ticket: Ticket) -> None:
-     await ctx.update_message(Draft(f"Ticket {ticket.id} closed.", components=[]))
+   async def close(interaction: Interaction, ticket: Ticket) -> None:
+     await interaction.update_message(Draft(f"Ticket {ticket.id} closed.", components=[]))
 
    @modals.match(NOTE)
-   async def note(ctx: Interaction) -> None:
-     await ctx.respond(Draft(ctx.fields["text"], ephemeral=True))
+   async def note(interaction: Interaction) -> None:
+     await interaction.respond(Draft(interaction.submitted.fields["text"], ephemeral=True))
 
    Button("Close", custom_id=CLOSE.encode(Ticket(id=42)))
    Modal(NOTE.encode(), "Add a note", [TextInput("text", "Note", style=TextInputStyle.PARAGRAPH)])
@@ -57,15 +57,15 @@ Matching other shapes
    import re
 
    @components.match("ticket.close")                      # that prefix, and ticket.close.* / ticket.close:*
-   async def close(ctx): ...
+   async def close(interaction): ...
 
    @components.match("ticket.{action}:{id:\\d+}")          # a template; {name} is one segment
-   async def ticket(ctx): ctx.route                       # {"action": "close", "id": "42"}
+   async def ticket(interaction): interaction.route                       # {"action": "close", "id": "42"}
 
    components.match(re.compile(r"report\.(?P<kind>spam|abuse)"))(report)
 
 A route is a literal ``prefix`` plus an optional regex (:class:`PatternRoute`). Named groups
-become ``ctx.route``. The router indexes routes by prefix, so many routes cost a few
+become ``interaction.route``. The router indexes routes by prefix, so many routes cost a few
 dictionary lookups, not a regex scan. If several routes match one ID the **longest prefix
 wins** and a warning names them. An ID no declared route matches falls back to its prefix
 (before the first ``:``); with nobody handling that, the user gets the "isn't available"
@@ -83,11 +83,11 @@ environment.
 Reading input
 -------------
 
-For a modal, ``ctx.inputs`` / ``ctx.fields`` and for a select ``ctx.values`` /
-``ctx.users()`` and friends are described in :doc:`responding`.
+For a modal, ``interaction.submitted.inputs`` / ``fields`` and for a select ``interaction.submitted.values`` /
+``users()`` and friends are described in :doc:`responding`.
 
 Modals can be opened from a command, a component, or another modal's flow: ``await
-ctx.modal(modal)`` must be the interaction's **first response**.
+interaction.modal(modal)`` must be the interaction's **first response**.
 
 Reference
 ---------
