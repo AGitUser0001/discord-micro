@@ -251,7 +251,7 @@ class GatewayWorker(Component):
       self, id=self.address, metadata={"max_concurrency": self.max_concurrency}
     )
     self._unwatch = runtime.directory.on_change(
-      self._wake.set, watching=lambda: self._peers()
+      self._peers_changed, watching=lambda: self._peers()
     )
     self.spawn(self._watch_generations(), name="watch.generations")
     self.spawn(self._watch_leases(), name="watch.leases")
@@ -267,7 +267,11 @@ class GatewayWorker(Component):
     while any(h.owned for h in self._held.values()) and self._peers():
       self._released.clear()
       self._wake.set()
-      await self._released.wait()
+      # Wait for a shard to change hands (or a peer to come or go), not for a pass to
+      # end: a pass ends at once, so that would spin. The heartbeat period is the
+      # fallback if an event is missed.
+      with suppress(TimeoutError):
+        await asyncio.wait_for(self._released.wait(), self.lease_ttl / 3)
 
   async def on_close(self) -> None:
     """Disconnect every shard and release its lease."""
@@ -388,7 +392,11 @@ class GatewayWorker(Component):
         raise
       except Exception:
         log.exception("Gateway reconciliation failed")
-      self._released.set()
+
+  def _peers_changed(self) -> None:
+    """A worker joined or left: reconcile, and let a drain re-check who is left."""
+    self._wake.set()
+    self._released.set()
 
   def _peers(self) -> list[str]:
     return sorted(
@@ -601,6 +609,7 @@ class GatewayWorker(Component):
   async def _stop(self, held: _Held, *, delete_lease: bool) -> None:
     if self._held.get(held.key) is held:
       del self._held[held.key]
+      self._released.set()  # a draining worker waits for exactly this
     await self._set_publishing(held, False)
     if held.starter is not None and not held.starter.done():
       held.starter.cancel()

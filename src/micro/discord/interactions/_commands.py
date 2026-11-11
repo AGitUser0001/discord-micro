@@ -6,7 +6,18 @@ import types
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
-from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import (
+  TYPE_CHECKING,
+  Annotated,
+  Any,
+  Concatenate,
+  Literal,
+  Protocol,
+  Union,
+  get_args,
+  get_origin,
+  get_type_hints,
+)
 
 from pydantic import JsonValue
 
@@ -15,9 +26,34 @@ from micro.discord.objects import Attachment, Channel, Member, Role, User
 
 from ._inject import leading
 
+if TYPE_CHECKING:
+  from ._application import Context
+  from ._context import Interaction
+
 _NAME = re.compile(r"^[-_\w]{1,32}$")
 
-type Handler = Callable[..., Awaitable[Any]]
+type Handler[**P] = (
+  Callable[Concatenate["Context", "Interaction", P], Awaitable[Any]]
+  | Callable[Concatenate["Interaction", P], Awaitable[Any]]
+  | Callable[Concatenate["Context", P], Awaitable[Any]]
+)
+"""A command, component or modal handler: it asks for the `Context`, the `Interaction`, or
+both (in that order), and the rest is the command's own options (`P`)."""
+
+
+class Registrar(Protocol):
+  """What a command decorator returns: it takes a handler of any shape above and gives back
+  the `Command` it registered."""
+
+  def __call__[**P](self, handler: Handler[P], /) -> Command: ...
+
+
+class Marker(Protocol):
+  """What a decorator that only registers returns: the handler, unchanged."""
+
+  def __call__[**P](self, handler: Handler[P], /) -> Handler[P]: ...
+
+
 type ChoiceValue = str | int | float
 
 
@@ -190,7 +226,7 @@ class Command:
   name_localizations: Mapping[str, str] | None = None
   description_localizations: Mapping[str, str] | None = None
 
-  def autocomplete(self, option: str) -> Callable[[Handler], Handler]:
+  def autocomplete(self, option: str) -> Marker:
     """Register suggestions for one string/number option."""
 
     def register(handler: Handler) -> Handler:
@@ -250,9 +286,7 @@ class CommandGroup:
   nested: bool = False
   type: CommandType = CommandType.CHAT
 
-  def command(
-    self, name: str, *, description: str = "-"
-  ) -> Callable[[Handler], Command]:
+  def command(self, name: str, *, description: str = "-") -> Registrar:
     """Decorator: add a subcommand to this group."""
 
     def register(handler: Handler) -> Command:

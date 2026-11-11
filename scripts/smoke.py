@@ -839,6 +839,49 @@ def state_unit_ignores_messages(shard_state: Any) -> bool:
   )
 
 
+async def handover_scenarios() -> None:
+  print("handover: a drained worker hands its shard over, and does not spin doing it")
+  from micro.gateway import GatewayWorker
+
+  passes = 0
+  original = GatewayWorker._reconcile  # pyright: ignore[reportPrivateUsage]
+
+  async def counted(self: GatewayWorker) -> None:
+    nonlocal passes
+    passes += 1
+    await original(self)
+
+  GatewayWorker._reconcile = counted  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+  try:
+    async with Stack(App(), extra_gateways=1) as s:
+      workers = [
+        c
+        for c in s.runtime._components  # pyright: ignore[reportPrivateUsage]
+        if isinstance(c, GatewayWorker)
+      ]
+
+      async def owners() -> list[GatewayWorker]:
+        return [w for w in workers if w.publishing_shards]
+
+      first = (await eventually(owners, bool))[0]
+      other = next(w for w in workers if w is not first)
+      before = passes
+      await first.drain()
+      await eventually(owners, lambda found: other in found)
+      check(
+        "the other worker publishes the shard once the first has drained",
+        other.publishing_shards != () and not first.publishing_shards,
+        (first.publishing_shards, other.publishing_shards),
+      )
+      check(
+        "the drain waits for the handover instead of spinning",
+        passes - before < 200,
+        passes - before,
+      )
+  finally:
+    GatewayWorker._reconcile = original  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+
+
 async def custom_package_scenarios() -> None:
   print("custom package: members make commands, text lives in the store")
   import importlib.util
@@ -4835,6 +4878,7 @@ SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {
   "idle": idle_scenarios,
   "config": config_scenarios,
   "gateway-config": gateway_config_scenarios,
+  "handover": handover_scenarios,
   "docs": docs_scenarios,
   "ui-limits": ui_limits_scenarios,
   "logging": logging_scenarios,

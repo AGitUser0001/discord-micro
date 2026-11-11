@@ -132,14 +132,14 @@ class RuntimeCommands(InteractionTemplate):
     self._table: Table[_Stored] | None = None
     self._watching: asyncio.Task[None] | None = None
 
-  def handler(self, function: Handler) -> Handler:
+  def handler[**P](self, function: Handler[P]) -> Handler[P]:
     """The function that runs any runtime command: `async def f(ctx)`."""
     if not asyncio.iscoroutinefunction(function):
       raise TypeError("Interaction handlers must be async functions.")
     self._handler = function
     return function
 
-  def autocomplete(self, function: Handler) -> Handler:
+  def autocomplete[**P](self, function: Handler[P]) -> Handler[P]:
     """Suggestions for options declared `autocomplete=True`: `async def f(ctx, value)`."""
     self._autocomplete = function
     return function

@@ -26,15 +26,38 @@ from ._inject import NO_PAYLOAD, call_handler
 from ._request import RequestSchema
 
 if TYPE_CHECKING:
+  from micro.discord.interactions import Context
+  from micro.discord.objects import Channel, Guild, Member, Message, Role, User
   from micro.store import GraphModule
 
-type EventHandler[T] = Callable[[T], Awaitable[None]] | Callable[..., Awaitable[None]]
-"""An event handler: `async def f(payload)`, or one that asks for more by annotation:
-`async def f(ctx: Context, member: Member)` (see `micro.service._inject`)."""
+type _Done = Awaitable[None]
+type EventHandler[T] = (
+  Callable[[T], _Done]
+  | Callable[["Context", T], _Done]
+  | Callable[["Message"], _Done]
+  | Callable[["Member"], _Done]
+  | Callable[["User"], _Done]
+  | Callable[["Channel"], _Done]
+  | Callable[["Guild"], _Done]
+  | Callable[["Role"], _Done]
+  | Callable[["Context", "Message"], _Done]
+  | Callable[["Context", "Member"], _Done]
+  | Callable[["Context", "User"], _Done]
+  | Callable[["Context", "Channel"], _Done]
+  | Callable[["Context", "Guild"], _Done]
+  | Callable[["Context", "Role"], _Done]
+  | Callable[["Context", "Member | None", "Member"], _Done]
+  | Callable[["Context", "Channel | None", "Channel"], _Done]
+  | Callable[["Context", "Guild | None", "Guild"], _Done]
+  | Callable[["Context", "Role | None", "Role"], _Done]
+)
+"""An event handler: `async def f(payload)`, or one that asks for more by annotation: a
+`ctx: Context` first, the payload as a bound `Message`, `Member`, `User`, `Channel`, `Guild`
+or `Role`, or `before` and `after` for an event that changed one (`micro.service._inject`)."""
 type RequestHandler[InputT, OutputT] = Callable[[InputT], Awaitable[OutputT]]
 type EventPredicate[T] = Callable[[T], bool]
-type PeriodicHandler = Callable[..., Awaitable[None]]
-"""A handler `every` runs: `async def f()` or `async def f(ctx: Context)`."""
+type PeriodicHandler = Callable[[], _Done] | Callable[["Context"], _Done]
+"""A handler `every`, `startup` and `shutdown` run: `async def f()` or `async def f(ctx: Context)`."""
 
 _SERVICE_NAME_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 
@@ -661,6 +684,6 @@ def _errors(exc: ValidationError) -> JsonValue:
   ]
 
 
-def _require_async(handler: Callable[..., Any], what: str) -> None:
+def _require_async(handler: object, what: str) -> None:
   if not inspect.iscoroutinefunction(handler):
     raise TypeError(f"{what} must be async functions.")

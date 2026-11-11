@@ -14,12 +14,15 @@ under it (`.` or `:` separated).
 
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import Protocol, overload
+from typing import Any, Protocol, overload
 
 from micro.errors import MicroError
 
 type Next = Callable[[], Awaitable[None]]
-type Middleware = Callable[..., Awaitable[None]]
+type Middleware = (
+  Callable[[Any, Next], Awaitable[None]]
+  | Callable[[Any, Next, Callable[[], Awaitable[None]]], Awaitable[None]]
+)
 
 
 class MiddlewareError(MicroError, RuntimeError):

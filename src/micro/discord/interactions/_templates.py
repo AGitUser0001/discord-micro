@@ -24,6 +24,8 @@ from ._commands import (
   CommandGroup,
   CommandOutdated,
   Handler,
+  Marker,
+  Registrar,
   _require_async,
   _validate_name,
   convert_options,
@@ -291,7 +293,7 @@ class Commands(InteractionTemplate):
     nsfw: bool = False,
     name_localizations: Mapping[str, str] | None = None,
     description_localizations: Mapping[str, str] | None = None,
-  ) -> Callable[[Handler], Command]:
+  ) -> Registrar:
     """Declare a slash command; options come from the handler's parameters."""
 
     def register(handler: Handler) -> Command:
@@ -343,21 +345,17 @@ class Commands(InteractionTemplate):
     self._add(group)
     return group
 
-  def user(
-    self, name: str, **settings: Unpack[MenuSettings]
-  ) -> Callable[[Handler], Command]:
+  def user(self, name: str, **settings: Unpack[MenuSettings]) -> Registrar:
     """A context-menu command on users: `async def f(ctx, member: Member)`."""
     return self._context_menu(CommandType.USER, name, settings)
 
-  def message(
-    self, name: str, **settings: Unpack[MenuSettings]
-  ) -> Callable[[Handler], Command]:
+  def message(self, name: str, **settings: Unpack[MenuSettings]) -> Registrar:
     """A context-menu command on messages: `async def f(ctx, message: Message)`."""
     return self._context_menu(CommandType.MESSAGE, name, settings)
 
   def _context_menu(
     self, kind: CommandType, name: str, settings: MenuSettings
-  ) -> Callable[[Handler], Command]:
+  ) -> Registrar:
     def register(handler: Handler) -> Command:
       _require_async(handler)
       command = Command(
@@ -487,7 +485,7 @@ class _CustomIdTemplate(InteractionTemplate):
 
   def match(
     self, route: Route | str | re.Pattern[str], *, prefix: str | None = None
-  ) -> Callable[[Handler], Handler]:
+  ) -> Marker:
     """Handle every custom_id a route matches (see `Route`, `PatternRoute`).
 
     A `CustomId` owns its prefix (before the first ':') and hands its decoded
