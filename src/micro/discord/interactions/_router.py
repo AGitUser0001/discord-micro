@@ -7,12 +7,8 @@ from typing import TYPE_CHECKING, Any, overload
 from nats.js.errors import NotFoundError
 
 from micro import log, subjects
-from micro.discord.routes import (
-  AUTOCOMPLETE,
-  MESSAGE_COMPONENT,
-  MODAL_SUBMIT,
-  interaction_route,
-)
+from micro.discord.enums import InteractionType
+from micro.discord.routes import interaction_route
 from micro.service import DispatchSchema, Service
 
 from ._context import respond_initially
@@ -145,10 +141,13 @@ class InteractionRouter(Service):
     data = payload.get("data")
     custom_id = data.get("custom_id") if isinstance(data, Mapping) else None
     kind = payload.get("type")
-    if isinstance(custom_id, str) and kind in (MESSAGE_COMPONENT, MODAL_SUBMIT):
+    if isinstance(custom_id, str) and kind in (
+      InteractionType.MESSAGE_COMPONENT,
+      InteractionType.MODAL_SUBMIT,
+    ):
       key, scope = (
         ("component_patterns", "cmp.")
-        if kind == MESSAGE_COMPONENT
+        if kind == InteractionType.MESSAGE_COMPONENT
         else ("modal_patterns", "mdl.")
       )
       table = self._table(key)
@@ -180,7 +179,7 @@ class InteractionRouter(Service):
     """Answer an interaction nobody handles, so Discord does not time out."""
     from micro.discord import DiscordHTTPClient
 
-    if payload.get("type") == AUTOCOMPLETE:
+    if payload.get("type") == InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE:
       body: dict[str, Any] = {"type": 8, "data": {"choices": []}}
     else:
       body = {

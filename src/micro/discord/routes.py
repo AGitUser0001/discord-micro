@@ -5,17 +5,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from micro import subjects
+from micro.discord.enums import CommandType, InteractionType
 
 _SAFE = re.compile(r"[A-Za-z0-9_-]+")
-
-APPLICATION_COMMAND = 2
-MESSAGE_COMPONENT = 3
-AUTOCOMPLETE = 4
-MODAL_SUBMIT = 5
-
-SLASH = 1
-USER = 2
-MESSAGE = 3
 
 
 def route_token(value: str) -> str:
@@ -51,17 +43,22 @@ def interaction_route(payload: Mapping[str, Any]) -> str | None:
   data = payload.get("data")
   if not isinstance(data, Mapping):
     return None
-  if kind in (APPLICATION_COMMAND, AUTOCOMPLETE):
+  if kind in (
+    InteractionType.APPLICATION_COMMAND,
+    InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE,
+  ):
     name = data.get("name")
-    command_type = data.get("type", SLASH)
+    command_type = data.get("type", CommandType.SLASH)
     if isinstance(name, str) and isinstance(command_type, int):
       return command_route(command_type, name)
-  elif kind in (MESSAGE_COMPONENT, MODAL_SUBMIT):
+  elif kind in (InteractionType.MESSAGE_COMPONENT, InteractionType.MODAL_SUBMIT):
     custom_id = data.get("custom_id")
     if isinstance(custom_id, str):
       prefix = custom_id_prefix(custom_id)
       return (
-        component_route(prefix) if kind == MESSAGE_COMPONENT else modal_route(prefix)
+        component_route(prefix)
+        if kind == InteractionType.MESSAGE_COMPONENT
+        else modal_route(prefix)
       )
   return None
 

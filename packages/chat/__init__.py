@@ -5,6 +5,7 @@ from typing import Annotated
 from pydantic import BaseModel
 
 from micro.discord import DiscordHTTPClient
+from micro.discord.enums import ButtonStyle, TextInputStyle
 from micro.discord.filters import all_of, content_startswith, ignore_bots
 from micro.discord.interactions import (
   Commands,
@@ -72,8 +73,8 @@ async def start_poll(
     Draft(
       embeds=[Embed(question, "Vote below.")],
       components=[
-        Button("Yes", custom_id=yes, style="success"),
-        Button("No", custom_id=no, style="danger"),
+        Button("Yes", custom_id=yes, style=ButtonStyle.SUCCESS),
+        Button("No", custom_id=no, style=ButtonStyle.DANGER),
       ],
     )
   )
@@ -91,7 +92,7 @@ async def vote(ctx: Interaction, poll: Poll) -> None:
 
 @commands.slash("feedback", description="Tell us what you think")
 async def ask_feedback(ctx: Interaction) -> None:
-  text = TextInput("text", "Your thoughts", style="paragraph")
+  text = TextInput("text", "Your thoughts", style=TextInputStyle.PARAGRAPH)
   await ctx.modal(Modal(FEEDBACK.encode(), "Feedback", [text]))
 
 

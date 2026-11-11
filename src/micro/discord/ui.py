@@ -28,6 +28,7 @@ from typing import Any, ClassVar, Literal, cast, overload
 from pydantic import JsonValue
 
 from .colour import Colour, ColourLike
+from .enums import ButtonStyle, ChannelType, TextInputStyle
 from .objects import Object
 
 type Json = dict[str, JsonValue]
@@ -132,30 +133,6 @@ EPHEMERAL = 1 << 6
 SUPPRESS_EMBEDS = 1 << 2
 SUPPRESS_NOTIFICATIONS = 1 << 12
 IS_COMPONENTS_V2 = 1 << 15
-
-_BUTTON_STYLES = {
-  "primary": 1,
-  "secondary": 2,
-  "success": 3,
-  "danger": 4,
-  "link": 5,
-  "premium": 6,
-}
-_CHANNEL_TYPES = {
-  "text": 0,
-  "dm": 1,
-  "voice": 2,
-  "group_dm": 3,
-  "category": 4,
-  "announcement": 5,
-  "announcement_thread": 10,
-  "public_thread": 11,
-  "private_thread": 12,
-  "stage": 13,
-  "directory": 14,
-  "forum": 15,
-}
-
 
 # Interception ----------------------------------------------------------------------
 #
@@ -800,10 +777,6 @@ def _emoji(value: Emoji | None) -> Json | None:
 
 # Buttons and selects -----------------------------------------------------------
 
-type ButtonStyle = Literal[
-  "primary", "secondary", "success", "danger", "link", "premium"
-]
-
 
 @dataclass(frozen=True, slots=True)
 class Button(Component):
@@ -812,7 +785,7 @@ class Button(Component):
   label: str | None = None
   custom_id: str | None = None
   url: str | None = None
-  style: ButtonStyle = "primary"
+  style: ButtonStyle = ButtonStyle.PRIMARY
   emoji: Emoji | None = None
   disabled: bool = False
   sku_id: int | str | None = None
@@ -827,8 +800,14 @@ class Button(Component):
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
-    kind = "premium" if self.sku_id is not None else "link" if self.url else self.style
-    value: Json = {"type": 2, "style": _BUTTON_STYLES[kind], "disabled": self.disabled}
+    style = (
+      ButtonStyle.PREMIUM
+      if self.sku_id is not None
+      else ButtonStyle.LINK
+      if self.url
+      else self.style
+    )
+    value: Json = {"type": 2, "style": int(style), "disabled": self.disabled}
     _put(value, id=self.id, label=self.label, custom_id=self.custom_id, url=self.url)
     if self.sku_id is not None:
       value["sku_id"] = str(self.sku_id)
@@ -1026,7 +1005,7 @@ class MentionableSelect(Component):
 
 @dataclass(frozen=True, slots=True)
 class ChannelSelect(Component):
-  """Channels; `channel_types` limits them: `"text"`, `"voice"`, `"category"`, ..."""
+  """Channels; `channel_types` limits them (`ChannelType.GUILD_TEXT`, ...)."""
 
   custom_id: str
   placeholder: str | None = None
@@ -1034,13 +1013,13 @@ class ChannelSelect(Component):
   max_values: int | None = None
   disabled: bool = False
   required: bool | None = None
-  channel_types: Sequence[str | int] = ()
+  channel_types: Sequence[ChannelType] = ()
   defaults: Sequence[int | str | Default] = ()
   id: int | None = None
 
   def to_dict(self) -> Json:
     """This component as the JSON object Discord expects."""
-    kinds = [_CHANNEL_TYPES[t] if isinstance(t, str) else t for t in self.channel_types]
+    kinds = [int(kind) for kind in self.channel_types]
     return _select(
       8, self.custom_id, self.placeholder, self.min_values, self.max_values,
       self.disabled, self.required, self.id,
@@ -1335,7 +1314,7 @@ class TextInput(Component):
 
   custom_id: str
   label: str | None = None
-  style: Literal["short", "paragraph"] = "short"
+  style: TextInputStyle = TextInputStyle.SHORT
   required: bool = True
   placeholder: str | None = None
   value: str | None = None
@@ -1348,7 +1327,7 @@ class TextInput(Component):
     data: Json = {
       "type": 4,
       "custom_id": self.custom_id,
-      "style": 1 if self.style == "short" else 2,
+      "style": int(self.style),
       "required": self.required,
     }
     return _put(

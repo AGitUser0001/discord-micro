@@ -10,8 +10,8 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_typ
 
 from pydantic import JsonValue
 
+from micro.discord.enums import CommandType
 from micro.discord.objects import Attachment, Channel, Member, Role, User
-from micro.discord.routes import MESSAGE, SLASH, USER
 
 _NAME = re.compile(r"^[-_\w]{1,32}$")
 
@@ -175,7 +175,7 @@ class Command:
   name: str
   handler: Handler
   description: str = "-"
-  type: int = SLASH
+  type: CommandType = CommandType.SLASH
   options: list[OptionSpec] = field(default_factory=list)
   autocompleters: dict[str, Handler] = field(default_factory=dict)
   guild_ids: tuple[int, ...] = ()
@@ -210,7 +210,7 @@ class Command:
       "name": self.name,
       "nsfw": self.nsfw,
     }
-    if self.type == SLASH:
+    if self.type == CommandType.SLASH:
       value["description"] = self.description
       value["options"] = [option.to_dict() for option in self.options]
     _common(value, self)
@@ -244,7 +244,7 @@ class CommandGroup:
   name_localizations: Mapping[str, str] | None = None
   description_localizations: Mapping[str, str] | None = None
   nested: bool = False
-  type: int = SLASH
+  type: CommandType = CommandType.SLASH
 
   def command(
     self, name: str, *, description: str = "-"
@@ -289,7 +289,7 @@ class CommandGroup:
   def to_dict(self) -> dict[str, JsonValue]:
     """This group as Discord's application command JSON."""
     value: dict[str, JsonValue] = {
-      "type": SLASH,
+      "type": CommandType.SLASH,
       "name": self.name,
       "description": self.description,
       "nsfw": self.nsfw,
@@ -335,8 +335,10 @@ def convert_options(
   specs: Sequence[OptionSpec],
   values: Sequence[Mapping[str, Any]],
   resolved: Mapping[str, Any],
+  guild_id: str | None = None,
 ) -> dict[str, JsonValue]:
-  """Turn interaction option values into handler keyword arguments.
+  """Turn interaction option values into handler keyword arguments (`guild_id`: the
+  server the interaction happened in, which resolved members belong to).
 
   Options this handler does not declare are ignored and optional ones it does
   declare fall back to their defaults, so old and new versions both work while
@@ -352,17 +354,21 @@ def convert_options(
         arguments[spec.parameter] = None
       continue
     raw = given[spec.name]
-    arguments[spec.parameter] = _convert(spec, raw, resolved)
+    arguments[spec.parameter] = _convert(spec, raw, resolved, guild_id)
   return arguments
 
 
-def _convert(spec: OptionSpec, raw: Any, resolved: Mapping[str, Any]) -> Any:
+def _convert(
+  spec: OptionSpec, raw: Any, resolved: Mapping[str, Any], guild_id: str | None
+) -> Any:
   users = resolved.get("users") or {}
   members = resolved.get("members") or {}
   if spec.python_type is User:
     return User.model_validate(users[raw])
   if spec.python_type is Member:
-    return Member.model_validate({**members.get(raw, {}), "user": users.get(raw)})
+    return Member.model_validate(
+      {**members.get(raw, {}), "user": users.get(raw), "guild_id": guild_id}
+    )
   if spec.python_type is Role:
     return Role.model_validate((resolved.get("roles") or {})[raw])
   if spec.python_type is Channel:
@@ -377,8 +383,6 @@ def _convert(spec: OptionSpec, raw: Any, resolved: Mapping[str, Any]) -> Any:
 
 
 __all__ = (
-  "MESSAGE",
-  "USER",
   "Choice",
   "Command",
   "CommandGroup",

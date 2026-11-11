@@ -9,6 +9,7 @@ accepts them, and anything a builder lacks can be passed as a plain dict instead
 
 .. code-block:: python
 
+   from micro.discord.enums import ButtonStyle, ChannelType, TextInputStyle
    from micro.discord.ui import (
      AllowedMentions, Button, Colour, Draft, Embed, EmbedField, StringSelect,
    )
@@ -138,11 +139,11 @@ out (buttons fill rows of five, each select gets its own row); wrap them in
 
 .. code-block:: python
 
-   Button("Go", custom_id="go", style="success", emoji=Emoji("🚀"))   # also url=, or sku_id= (premium)
+   Button("Go", custom_id="go", style=ButtonStyle.SUCCESS, emoji=Emoji("🚀"))   # also url=, or sku_id= (premium)
    StringSelect("pick", [SelectOption("a"), SelectOption("B", "b", "second", emoji=Emoji("🅱"))], max_values=2)
    UserSelect("who", defaults=[123]); RoleSelect("role")
    MentionableSelect("m", defaults=[Default.user(1), Default.role(2)])
-   ChannelSelect("where", channel_types=["text", "voice", "category"])
+   ChannelSelect("where", channel_types=[ChannelType.GUILD_TEXT, ChannelType.GUILD_VOICE])
 
 A string select takes :class:`SelectOption` objects (its ``value`` is its label unless you
 give one), a button or option an :class:`Emoji`, a section :class:`TextDisplay` objects and a
@@ -184,7 +185,7 @@ A :class:`Modal` has a ``custom_id``, a title and components: :class:`Label` wra
    Modal("form", "Report", [
      TextDisplay("Tell us what happened."),
      Label("Summary", TextInput("summary", max_length=100)),
-     Label("Details", TextInput("details", style="paragraph", required=False)),
+     Label("Details", TextInput("details", style=TextInputStyle.PARAGRAPH, required=False)),
      Label("Kind", StringSelect("kind", [SelectOption("bug"), SelectOption("abuse")])),
      Label("Who", UserSelect("who")),
      Label("Evidence", FileUpload("files", max_values=3)),
@@ -336,11 +337,12 @@ children).
 
 .. code-block:: python
 
+   from micro.discord.enums import ButtonStyle
    from micro.discord.ui import Button, hooks
 
    @hooks.build(only=Button)                 # construction: change the arguments, or the result
    def default_style(call, next):
-     call.kwargs.setdefault("style", "secondary")
+     call.kwargs.setdefault("style", ButtonStyle.SECONDARY)
      return next()
 
    @hooks.serialize                          # serialization: change the JSON

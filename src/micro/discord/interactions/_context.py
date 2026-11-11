@@ -20,13 +20,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
+from micro.discord.enums import InteractionType
 from micro.discord.objects import Attachment, Channel, Member, Message, Role, User
-from micro.discord.routes import (
-  APPLICATION_COMMAND,
-  AUTOCOMPLETE,
-  MESSAGE_COMPONENT,
-  MODAL_SUBMIT,
-)
 from micro.discord.ui import (
   EPHEMERAL,
   IS_COMPONENTS_V2,
@@ -93,13 +88,18 @@ class Resolved:
   messages: dict[str, Message] = field(default_factory=dict)
 
   @classmethod
-  def parse(cls, data: Mapping[str, Any] | None) -> Resolved:
-    """Build a `Resolved` from Discord's `resolved` object (None gives an empty one)."""
+  def parse(
+    cls, data: Mapping[str, Any] | None, guild_id: str | None = None
+  ) -> Resolved:
+    """Build a `Resolved` from Discord's `resolved` object (None gives an empty one);
+    `guild_id` is the server it happened in, which its members belong to."""
     data = data or {}
     raw_users = data.get("users") or {}
     users = {k: User.model_validate(v) for k, v in raw_users.items()}
     members = {
-      k: Member.model_validate({**v, "user": v.get("user") or raw_users.get(k)})
+      k: Member.model_validate(
+        {**v, "user": v.get("user") or raw_users.get(k), "guild_id": guild_id}
+      )
       for k, v in (data.get("members") or {}).items()
     }
     return cls(
@@ -233,7 +233,7 @@ class Interaction:
     self.id: str = payload["id"]
     self.token: str = payload["token"]
     self.application_id: str = payload["application_id"]
-    self.type: int = payload["type"]
+    self.type = InteractionType(payload["type"])
     self.data: Mapping[str, Any] = payload.get("data") or {}
     self.guild_id: str | None = payload.get("guild_id")
     self.channel_id: str | None = payload.get("channel_id") or (
@@ -241,7 +241,9 @@ class Interaction:
     )
     self.locale: str | None = payload.get("locale")
     member = payload.get("member")
-    self.member: Member | None = Member.model_validate(member) if member else None
+    self.member: Member | None = (
+      Member.model_validate({**member, "guild_id": self.guild_id}) if member else None
+    )
     user = payload.get("user") or (member or {}).get("user")
     self.user: User = User.model_validate(user or {"id": "0"})
     message = payload.get("message")
@@ -367,7 +369,7 @@ class Interaction:
   def resolved(self) -> Resolved:
     """The users, members, roles, channels, attachments and messages the
     interaction's selected values or options refer to."""
-    return Resolved.parse(self.data.get("resolved"))
+    return Resolved.parse(self.data.get("resolved"), self.guild_id)
 
   def users(self, custom_id: str | None = None) -> list[User]:
     """The users picked in a user or mentionable select."""
@@ -432,22 +434,22 @@ class Interaction:
   @property
   def is_command(self) -> bool:
     """True for slash, user and message commands."""
-    return self.type == APPLICATION_COMMAND
+    return self.type == InteractionType.APPLICATION_COMMAND
 
   @property
   def is_component(self) -> bool:
     """True for button clicks and select choices."""
-    return self.type == MESSAGE_COMPONENT
+    return self.type == InteractionType.MESSAGE_COMPONENT
 
   @property
   def is_modal(self) -> bool:
     """True for modal submissions."""
-    return self.type == MODAL_SUBMIT
+    return self.type == InteractionType.MODAL_SUBMIT
 
   @property
   def is_autocomplete(self) -> bool:
     """True for autocomplete requests."""
-    return self.type == AUTOCOMPLETE
+    return self.type == InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE
 
   # Low level: one Discord request each -----------------------------------------
 

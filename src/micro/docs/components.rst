@@ -29,7 +29,7 @@ send it and that Discord returns when someone uses it. How you build the compone
      await ctx.respond(Draft(ctx.fields["text"], ephemeral=True))
 
    Button("Close", custom_id=CLOSE.encode(Ticket(id=42)))
-   Modal(NOTE.encode(), "Add a note", [TextInput("text", "Note", style="paragraph")])
+   Modal(NOTE.encode(), "Add a note", [TextInput("text", "Note", style=TextInputStyle.PARAGRAPH)])
 
 Typed state: ``CustomId``
 -------------------------

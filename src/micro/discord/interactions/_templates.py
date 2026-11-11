@@ -13,16 +13,9 @@ from pydantic import JsonValue
 
 from micro import log, subjects
 from micro._handling import handling
+from micro.discord.enums import CommandType, InteractionType
 from micro.discord.objects import Member, Message, User
-from micro.discord.routes import (
-  AUTOCOMPLETE,
-  MESSAGE,
-  SLASH,
-  USER,
-  command_route,
-  component_route,
-  modal_route,
-)
+from micro.discord.routes import command_route, component_route, modal_route
 from micro.discord.ui import Draft
 from micro.runtime import StreamConsumer
 
@@ -303,7 +296,7 @@ class Commands(InteractionTemplate):
         _validate_name(name),
         handler,
         description,
-        SLASH,
+        CommandType.SLASH,
         parse_options(handler),
         guild_ids=tuple(guild_ids) if guild_ids is not None else self.guild_ids,
         default_member_permissions=default_member_permissions,
@@ -350,16 +343,16 @@ class Commands(InteractionTemplate):
     self, name: str, **settings: Unpack[MenuSettings]
   ) -> Callable[[Handler], Command]:
     """A context-menu command on users: `async def f(ctx, member: Member)`."""
-    return self._context_menu(USER, name, settings)
+    return self._context_menu(CommandType.USER, name, settings)
 
   def message(
     self, name: str, **settings: Unpack[MenuSettings]
   ) -> Callable[[Handler], Command]:
     """A context-menu command on messages: `async def f(ctx, message: Message)`."""
-    return self._context_menu(MESSAGE, name, settings)
+    return self._context_menu(CommandType.MESSAGE, name, settings)
 
   def _context_menu(
-    self, kind: int, name: str, settings: MenuSettings
+    self, kind: CommandType, name: str, settings: MenuSettings
   ) -> Callable[[Handler], Command]:
     def register(handler: Handler) -> Command:
       _require_async(handler)
@@ -413,7 +406,9 @@ class Commands(InteractionTemplate):
 
   def _find(self, ctx: Interaction) -> tuple[Command, list[dict[str, Any]]] | None:
     data = ctx.data
-    declared = self._commands.get((data.get("type", SLASH), data.get("name", "")))
+    declared = self._commands.get(
+      (data.get("type", CommandType.SLASH), data.get("name", ""))
+    )
     if declared is None:
       return None
     options: list[dict[str, Any]] = list(data.get("options") or [])
@@ -429,7 +424,7 @@ class Commands(InteractionTemplate):
     if found is None:
       return None
     command, options = found
-    if ctx.type == AUTOCOMPLETE:
+    if ctx.type == InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE:
       return lambda: self._autocomplete(ctx, command, options)
     return lambda: self._invoke(ctx, command, options)
 
@@ -437,15 +432,19 @@ class Commands(InteractionTemplate):
     self, ctx: Interaction, command: Command, options: list[dict[str, Any]]
   ) -> None:
     resolved = ctx.data.get("resolved") or {}
-    if command.type == SLASH:
-      await command.handler(ctx, **convert_options(command.options, options, resolved))
+    if command.type == CommandType.SLASH:
+      await command.handler(
+        ctx, **convert_options(command.options, options, resolved, ctx.guild_id)
+      )
       return
     target = ctx.data.get("target_id")
-    if command.type == USER:
+    if command.type == CommandType.USER:
       users = resolved.get("users") or {}
       members = resolved.get("members") or {}
       if target in members:
-        member = Member.model_validate({**members[target], "user": users.get(target)})
+        member = Member.model_validate(
+          {**members[target], "user": users.get(target), "guild_id": ctx.guild_id}
+        )
         await command.handler(ctx, member)
       else:
         await command.handler(

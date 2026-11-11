@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from micro import log, subjects
 from micro.coordination import Table
-from micro.discord.routes import AUTOCOMPLETE, SLASH, command_route
+from micro.discord.enums import CommandType, InteractionType
+from micro.discord.routes import command_route
 from micro.runtime import StreamConsumer, default_backoff
 
 from ._commands import Handler, _validate_name
@@ -151,7 +152,7 @@ class RuntimeCommands(InteractionTemplate):
     *,
     guild_id: int | str | None = None,
     options: Sequence[Mapping[str, JsonValue]] = (),
-    kind: int = SLASH,
+    kind: CommandType = CommandType.SLASH,
     default_member_permissions: int | None = None,
     nsfw: bool = False,
   ) -> None:
@@ -161,10 +162,10 @@ class RuntimeCommands(InteractionTemplate):
     """
     definition: dict[str, JsonValue] = {
       "type": kind,
-      "name": _validate_name(name, lower=kind == SLASH),
+      "name": _validate_name(name, lower=kind == CommandType.SLASH),
       "nsfw": nsfw,
     }
-    if kind == SLASH:
+    if kind == CommandType.SLASH:
       definition["description"] = description
       definition["options"] = [dict(item) for item in options]
     if default_member_permissions is not None:
@@ -187,7 +188,11 @@ class RuntimeCommands(InteractionTemplate):
         return
 
   async def remove(
-    self, name: str, *, guild_id: int | str | None = None, kind: int = SLASH
+    self,
+    name: str,
+    *,
+    guild_id: int | str | None = None,
+    kind: CommandType = CommandType.SLASH,
   ) -> bool:
     """Remove a command from a guild (or from everywhere); True if it existed."""
     table = await self._storage()
@@ -321,10 +326,10 @@ class RuntimeCommands(InteractionTemplate):
       await consumer.stop()
 
   def resolve(self, ctx: Interaction) -> Call | None:
-    kind = ctx.data.get("type", SLASH)
+    kind = ctx.data.get("type", CommandType.SLASH)
     if (kind, ctx.data.get("name")) not in self._names:
       return None
-    if ctx.type == AUTOCOMPLETE:
+    if ctx.type == InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE:
       if self._autocomplete is None:
         return None
       function = self._autocomplete

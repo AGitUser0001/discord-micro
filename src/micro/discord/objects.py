@@ -3,19 +3,12 @@
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
+from .asset import Asset
 from .colour import Colour
+from .enums import ChannelType, OverwriteType
 from .permissions import Permissions
-
-CDN = "https://cdn.discordapp.com"
-
-
-def _image(path: str, hash: str, size: int | None) -> str:
-  """A CDN picture URL: animated ones (hash starting `a_`) as GIF, the rest as PNG."""
-  extension = "gif" if hash.startswith("a_") else "png"
-  query = f"?size={size}" if size else ""
-  return f"{CDN}/{path}/{hash}.{extension}{query}"
 
 
 def _created(snowflake: str) -> datetime:
@@ -45,6 +38,19 @@ class _View(BaseModel):
     return TypeAdapter(getattr(http, self._full)).validate_python(
       self.model_dump(mode="json", by_alias=True)
     )
+
+
+def _assets(data: Any, folder: str, *fields: str) -> Any:
+  """Turn the picture hashes Discord sent (`avatar`, `icon`) into `Asset`s, which need the
+  id of the object they belong to for their address."""
+  if not isinstance(data, dict) or not isinstance(data.get("id"), str):
+    return data
+  made = {
+    field: Asset(f"{folder}/{data['id']}", data[field])
+    for field in fields
+    if isinstance(data.get(field), str) and data[field]
+  }
+  return {**data, **made} if made else data
 
 
 class Object(_View):
@@ -82,8 +88,13 @@ class User(Object):
   username: str = ""
   global_name: str | None = None
   bot: bool = False
-  avatar: str | None = None
-  """The avatar's hash, if the user set one; see `avatar_url`."""
+  avatar: Asset | None = None
+  """The picture the user set, if any (`display_avatar` falls back to the default)."""
+
+  @model_validator(mode="before")
+  @classmethod
+  def _pictures(cls, data: Any) -> Any:
+    return _assets(data, "avatars", "avatar")
 
   @property
   def mention(self) -> str:
@@ -95,32 +106,54 @@ class User(Object):
     """The global name, or the username without one."""
     return self.global_name or self.username
 
-  def avatar_url(self, size: int | None = None) -> str:
-    """The user's avatar, or the default one Discord shows without it.
+  @property
+  def default_avatar(self) -> Asset:
+    """The avatar Discord shows for a user without one (it depends on the id)."""
+    return Asset("embed/avatars", str((int(self.id) >> 22) % 6), format="png")
 
-    `size` is a power of two from 16 to 4096.
-    """
-    if self.avatar:
-      return _image(f"avatars/{self.id}", self.avatar, size)
-    return f"{CDN}/embed/avatars/{(int(self.id) >> 22) % 6}.png"
+  @property
+  def display_avatar(self) -> Asset:
+    """The avatar the user set, or the default one."""
+    return self.avatar or self.default_avatar
 
 
 class Member(_View):
-  _full = "GuildMemberResponse"
-  """A guild member; `user` is filled from the interaction when resolved."""
+  """A user in one guild. Its identity is the pair, `(guild_id, user id)`: one user is a
+  different member in every guild, and the same user in all of them (`user`).
 
-  user: User | None = None
+  Discord's JSON leaves both out of a member it sends inside a guild or a resolved
+  interaction, so Micro fills them in; build one yourself with both."""
+
+  _full = "GuildMemberResponse"
+
+  guild_id: str
+  """The guild this is a member of: half of what a member is."""
+  user: User
+  """The person: the same in every guild. Its `id` is the other half."""
   roles: list[str] = []
   nick: str | None = None
   permissions: Permissions | None = None
   """The member's permissions where the interaction happened (interactions only)."""
-  avatar: str | None = None
-  """The hash of the avatar set for this server only, if any."""
+  avatar: Asset | None = None
+  """The picture set for this guild only, if any (`user.display_avatar` is the global one)."""
+
+  @model_validator(mode="before")
+  @classmethod
+  def _pictures(cls, data: Any) -> Any:
+    if not isinstance(data, dict) or not isinstance(data.get("avatar"), str):
+      return data
+    user = data.get("user")
+    user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+    guild_id = data.get("guild_id")
+    if not (guild_id and user_id):
+      return data  # validation reports the missing guild_id or user
+    path = f"guilds/{guild_id}/users/{user_id}/avatars"
+    return {**data, "avatar": Asset(path, data["avatar"])}
 
   @property
-  def id(self) -> str | None:
-    """The member's user id, or None if Discord sent no user."""
-    return self.user.id if self.user is not None else None
+  def id(self) -> str:
+    """The member's user id."""
+    return self.user.id
 
   @property
   def mention(self) -> str:
@@ -130,7 +163,22 @@ class Member(_View):
   @property
   def display_name(self) -> str:
     """The server nickname, else the user's display name."""
-    return self.nick or (self.user.display_name if self.user is not None else "")
+    return self.nick or self.user.display_name
+
+  @property
+  def display_avatar(self) -> Asset:
+    """The picture set for this guild, else the user's own."""
+    return self.avatar or self.user.display_avatar
+
+  def __eq__(self, other: object) -> bool:
+    return (
+      isinstance(other, Member)
+      and other.guild_id == self.guild_id
+      and other.id == self.id
+    )
+
+  def __hash__(self) -> int:
+    return hash(("Member", self.guild_id, self.id))
 
 
 class Role(Object):
@@ -152,14 +200,14 @@ class Role(Object):
 
 
 class PermissionOverwrite(Object):
-  type: int
+  type: OverwriteType
   allow: Permissions = Permissions.NONE
   deny: Permissions = Permissions.NONE
 
 
 class Channel(Object):
   _full = "GetChannelResponse200"
-  type: int = 0
+  type: ChannelType = ChannelType.GUILD_TEXT
   name: str | None = None
   guild_id: str | None = None
   parent_id: str | None = None
@@ -176,12 +224,13 @@ class Guild(Object):
   name: str = ""
   owner_id: str | None = None
   roles: list[Role] = []
-  icon: str | None = None
-  """The icon's hash, if the server has one; see `icon_url`."""
+  icon: Asset | None = None
+  """The server's icon, if it has one."""
 
-  def icon_url(self, size: int | None = None) -> str | None:
-    """The server's icon, or None without one (`size`: a power of two, 16 to 4096)."""
-    return _image(f"icons/{self.id}", self.icon, size) if self.icon else None
+  @model_validator(mode="before")
+  @classmethod
+  def _pictures(cls, data: Any) -> Any:
+    return _assets(data, "icons", "icon")
 
 
 class Attachment(Object):

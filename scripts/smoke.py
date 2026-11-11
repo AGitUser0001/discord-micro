@@ -34,6 +34,7 @@ from pydantic import BaseModel, JsonValue
 
 from micro import subjects
 from micro.discord import DiscordHTTPClient, DiscordHTTPWorker
+from micro.discord.enums import ButtonStyle, ChannelType, TextInputStyle
 from micro.discord.filters import all_of, content_startswith, ignore_bots
 from micro.discord.interactions import (
   Commands,
@@ -108,7 +109,7 @@ class App:
         Modal(
           FEEDBACK.encode(),
           "Feedback",
-          [TextInput("text", "Thoughts", style="paragraph")],
+          [TextInput("text", "Thoughts", style=TextInputStyle.PARAGRAPH)],
         )
       )
 
@@ -1060,7 +1061,7 @@ async def ui_hooks_scenarios() -> None:
     @hooks.build(only=Button)
     def secondary(call: Any, next: Any) -> Any:
       order.append("build")
-      call.kwargs.setdefault("style", "secondary")
+      call.kwargs.setdefault("style", ButtonStyle.SECONDARY)
       return next()
 
     @hooks.serialize
@@ -1081,7 +1082,7 @@ async def ui_hooks_scenarios() -> None:
     button = Button("Go", custom_id="go")
     check(
       "build middleware changes the arguments",
-      button.style == "secondary" and order == ["build"],
+      button.style == ButtonStyle.SECONDARY and order == ["build"],
       button,
     )
     check(
@@ -1290,8 +1291,9 @@ async def helper_scenarios() -> None:
   from datetime import UTC, datetime
 
   from micro.discord import DiscordAPIError, DiscordServerError, NotFound, text
+  from micro.discord.enums import ChannelType
   from micro.discord.http_service import DiscordHTTPResponse
-  from micro.discord.objects import Guild, Member, Message, Role, User
+  from micro.discord.objects import Channel, Guild, Member, Message, Role, User
   from micro.discord.permissions import Permissions
   from micro.discord.state import compute_permissions
 
@@ -1318,7 +1320,9 @@ async def helper_scenarios() -> None:
     "bits newer than the list survive a round trip",
     int(Permissions.parse(str(1 << 60))) == 1 << 60,
   )
-  member = Member.model_validate({"roles": ["1"], "permissions": "2"})
+  member = Member.model_validate(
+    {"guild_id": "9", "user": {"id": "5"}, "roles": ["1"], "permissions": "2"}
+  )
   computed = compute_permissions("9", None, [role], member, "5")
   check(
     "member.permissions and computed permissions are Permissions",
@@ -1359,12 +1363,45 @@ async def helper_scenarios() -> None:
     and "@\u200beveryone" in text.escape_mentions("hi @everyone"),
   )
   check(
-    "picture links: avatar (default without one), animated as gif, server icon",
-    User(id="80351110224678912").avatar_url().endswith("/embed/avatars/5.png")
-    and User(id="1", avatar="a_x").avatar_url(64).endswith("/avatars/1/a_x.gif?size=64")
-    and Guild(id="2").icon_url() is None
-    and (Guild(id="2", icon="h").icon_url() or "").endswith("/icons/2/h.png"),
+    "pictures are Assets: the default avatar without one, animated as gif, a server icon",
+    User(id="80351110224678912").display_avatar.url.endswith("/embed/avatars/5.png")
+    and User(id="80351110224678912").avatar is None
+    and (animated := User(id="1", avatar="a_x").avatar) is not None  # type: ignore[arg-type]
+    and animated.animated
+    and animated.with_size(64).url.endswith("/avatars/1/a_x.gif?size=64")
+    and animated.with_format("png").url.endswith("/avatars/1/a_x.png")
+    and Guild(id="2").icon is None
+    and str(Guild(id="2", icon="h").icon).endswith("/icons/2/h.png")  # type: ignore[arg-type]
+    and User(id="1", avatar="h").model_dump(mode="json")["avatar"] == "h"  # type: ignore[arg-type]
+    and Channel.model_validate({"id": "3", "type": 2}).type is ChannelType.GUILD_VOICE
+    and Channel.model_validate({"id": "3", "type": 99}).type == 99,
   )
+
+  def member_of(guild: str, user: str, **more: Any) -> Member:
+    return Member.model_validate(
+      {"guild_id": guild, "user": {"id": user, "username": "u"}, **more}
+    )
+
+  here = member_of("1", "2", avatar="h")
+  check(
+    "a member is its guild and its user: equal when both are, with its own picture",
+    here == member_of("1", "2", nick="other")
+    and here != member_of("9", "2")
+    and here != member_of("1", "3")
+    and len({here, member_of("1", "2")}) == 1
+    and here.guild_id == "1"
+    and here.id == "2"
+    and here.avatar is not None
+    and here.avatar.url.endswith("/guilds/1/users/2/avatars/h.png")
+    and member_of("1", "2").display_avatar == member_of("1", "2").user.display_avatar
+    and here.model_dump(mode="json")["avatar"] == "h",
+  )
+  try:
+    Member.model_validate({"user": {"id": "2"}})
+    refused_member = False
+  except ValueError:
+    refused_member = True
+  check("a member without its guild is refused", refused_member)
   message = Message.model_validate(
     {"id": "9", "channel_id": "5", "guild_id": "2", "attachments": [{"id": "7"}]}
   )
@@ -4084,11 +4121,16 @@ async def ui_scenarios() -> None:
   case(
     "button primary",
     Button(
-      "Go", custom_id="a", style="primary", emoji=Emoji.parse("🙂"), disabled=True, id=1
+      "Go",
+      custom_id="a",
+      style=ButtonStyle.PRIMARY,
+      emoji=Emoji.parse("🙂"),
+      disabled=True,
+      id=1,
     ),
   )
-  for st in ("secondary", "success", "danger"):
-    case(f"button {st}", Button("x", custom_id="a", style=st))
+  for st in (ButtonStyle.SECONDARY, ButtonStyle.SUCCESS, ButtonStyle.DANGER):
+    case(f"button {st.name.lower()}", Button("x", custom_id="a", style=st))
   case(
     "button custom emoji",
     Button("x", custom_id="a", emoji=Emoji.parse("<a:wave:1234567890>")),
@@ -4120,12 +4162,12 @@ async def ui_scenarios() -> None:
       ChannelSelect(
         "c",
         channel_types=[
-          "text",
-          "voice",
-          "category",
-          "announcement",
-          "public_thread",
-          "forum",
+          ChannelType.GUILD_TEXT,
+          ChannelType.GUILD_VOICE,
+          ChannelType.GUILD_CATEGORY,
+          ChannelType.GUILD_ANNOUNCEMENT,
+          ChannelType.PUBLIC_THREAD,
+          ChannelType.GUILD_FORUM,
         ],
         defaults=[9],
       )
@@ -4176,7 +4218,7 @@ async def ui_scenarios() -> None:
       "Name",
       TextInput(
         "name",
-        style="paragraph",
+        style=TextInputStyle.PARAGRAPH,
         placeholder="p",
         value="v",
         min_length=1,
@@ -4203,7 +4245,7 @@ async def ui_scenarios() -> None:
   )
   case(
     "modal channel select",
-    Label("Chan", ChannelSelect("c", channel_types=["text"])),
+    Label("Chan", ChannelSelect("c", channel_types=[ChannelType.GUILD_TEXT])),
     modal=True,
   )
   case(
@@ -4293,6 +4335,7 @@ async def ui_scenarios() -> None:
       "id": "1",
       "token": "t",
       "application_id": "1",
+      "guild_id": "7",
       "type": kind,
       "data": data,
     }

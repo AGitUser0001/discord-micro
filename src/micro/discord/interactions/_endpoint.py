@@ -8,11 +8,11 @@ from typing import Any
 
 from micro import log, subjects
 from micro._ed25519 import verify
+from micro.discord.enums import InteractionType
 from micro.runtime import Component
 
 from ._context import REPLY_KEY
 
-PING = 1
 PONG = {"type": 1}
 
 
@@ -122,7 +122,7 @@ class InteractionEndpoint(Component):
       payload = json.loads(body)
     except ValueError:
       return Response("invalid body", status_code=400)
-    if payload.get("type") == PING:
+    if payload.get("type") == InteractionType.PING:
       return JSONResponse(PONG)
     async with self.tracked():
       reply = subjects.token(f"reply-{payload['id']}")

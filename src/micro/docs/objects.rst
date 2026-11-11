@@ -35,12 +35,27 @@ Where views come from
 ``User`` or ``Member`` is the ``<@id>`` form. ``Member.id`` is its user's id (``None`` if
 Discord sent no user). The views are **frozen**: read them, do not assign to them.
 
+Kinds Discord numbers are enums (see the reference below): ``channel.type is
+ChannelType.GUILD_VOICE``, ``overwrite.type is OverwriteType.ROLE``. They are ``IntEnum``\ s, so
+they equal the numbers on the wire. A number Discord adds later is kept as a member named
+``UNKNOWN_<n>`` instead of failing the read.
+
 ``full()`` raises ``ValidationError`` when the payload was partial: a member resolved from
 an interaction, for instance, has no ``user`` of its own.
 
-``user.avatar_url()`` is the user's avatar (the default one Discord shows if they set
-none), ``guild.icon_url()`` the server's icon or ``None``; both take ``size=``. ``created_at``
-on a ``User`` or ``Guild`` is read from its id. ``member.display_name`` is the server
+A :class:`Member` is a user **in one guild**, so its identity is the pair: ``member.guild_id``
+and ``member.user`` (``member.id`` is the user's id). Two members are equal when both match.
+Discord leaves both out of the members it nests in a guild or an interaction, so Micro fills
+them in; when you build one from a payload yourself, pass both, or validation fails. A member's
+own ``avatar`` (the picture set for that guild) is an Asset like the user's, and
+``member.display_avatar`` is that or the user's.
+
+Pictures are :class:`Asset` objects, not hashes: ``user.avatar`` is the avatar the user set
+(or ``None``), ``user.display_avatar`` falls back to the default one Discord shows, and
+``guild.icon`` is the server's icon or ``None``. An ``Asset`` has ``.url``, ``.animated``,
+``with_size(256)`` and ``with_format("webp")`` (each gives a new ``Asset``), and ``str(asset)``
+is its URL. It is sent back as the bare hash. ``created_at`` on a ``User`` or ``Guild`` is
+read from its id. ``member.display_name`` is the server
 nickname, else the user's display name.
 
 Permissions
@@ -99,6 +114,13 @@ Reference
    micro.discord.objects.Guild
    micro.discord.objects.Attachment
    micro.discord.objects.Message
+   micro.discord.asset.Asset
+   micro.discord.enums.ChannelType
+   micro.discord.enums.OverwriteType
+   micro.discord.enums.InteractionType
+   micro.discord.enums.CommandType
+   micro.discord.enums.ButtonStyle
+   micro.discord.enums.TextInputStyle
    micro.discord.permissions.Permissions
    micro.discord.text.escape
    micro.discord.text.escape_mentions

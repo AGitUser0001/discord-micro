@@ -141,7 +141,9 @@ class DiscordState:
     """A guild member, with its `user` filled in. A user is a different member in each
     guild, and the same user in all of them."""
     payload = await self._ask_guild(guild_id, "member", user_id=str(user_id))
-    return Member.model_validate(payload) if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+      return None
+    return Member.model_validate({**payload, "guild_id": str(guild_id)})
 
   async def permissions(
     self,
