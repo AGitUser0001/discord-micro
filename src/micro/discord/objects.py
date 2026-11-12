@@ -38,6 +38,13 @@ class _View(BaseModel):
   model_config = ConfigDict(extra="allow", frozen=True, populate_by_name=True)
   _full: ClassVar[str | None] = None
   _context: Any = PrivateAttr(default=None)
+  _before: Any = PrivateAttr(default=None)
+
+  @property
+  def before(self) -> Self | None:
+    """In a handler for an event that changed this object (`GUILD_MEMBER_UPDATE`,
+    `MESSAGE_UPDATE`, ...), the object as it was; `None` for an event that did not."""
+    return self._before
 
   def bind(self, context: Any) -> Self:
     """This object tied to a `Context`, so its actions (`reply`, `ban`, ...) work."""

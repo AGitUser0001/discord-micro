@@ -25,7 +25,7 @@ says "Discord gave this an id".
 Where views come from
 ---------------------
 
-* event payloads annotated with a view, and ``interaction.user``, ``interaction.member``, ``interaction.message``;
+* event payloads (``MESSAGE_CREATE`` is a ``Message``), and ``interaction.user``, ``interaction.member``, ``interaction.message``;
 * command options (``user: User``, ``role: Role``, ``channel: Channel``, ``file: Attachment``);
 * ``DiscordState`` reads (:doc:`state`);
 * resolved entities of a component or modal (``interaction.submitted.users()``, ``interaction.submitted.roles(...)``, see
@@ -114,7 +114,7 @@ channel).
    role.permissions.names                # ["kick_members", "ban_members", ...]
 
    @commands.slash("purge", default_member_permissions=Permissions.MANAGE_MESSAGES)
-   async def purge(interaction): ...
+   async def purge(ctx: Context, interaction): ...
 
 ``allows`` is true for an administrator whatever else is set; ``in`` tests the bits
 themselves. A ``Permissions`` is an ``int``, so it goes anywhere a number is wanted, and

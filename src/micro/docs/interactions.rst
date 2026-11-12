@@ -54,7 +54,7 @@ A minimal bot
    commands = Commands(service)
 
    @commands.slash("hello", description="Say hello")
-   async def hello(interaction: Interaction, name: str = "world") -> None:
+   async def hello(ctx: Context, interaction: Interaction, name: str = "world") -> None:
      await interaction.respond(f"Hello, {name}!")
 
 and in ``micro.toml``, once per deployment:

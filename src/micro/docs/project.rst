@@ -58,7 +58,7 @@ A service is a folder; its ``__init__.py`` defines the components:
    commands = Commands(service)
 
    @commands.slash("tickets", description="tickets")
-   async def tickets(interaction: Interaction) -> None:
+   async def tickets(ctx: Context, interaction: Interaction) -> None:
      await interaction.respond(Draft("tickets is running.", ephemeral=True))
 
 Keep ``services/`` for services only, with the pieces of one service inside its

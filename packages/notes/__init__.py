@@ -8,7 +8,7 @@ import base64
 import time
 from typing import Annotated
 
-from micro.discord.interactions import Commands, Interaction, Option
+from micro.discord.interactions import Commands, Context, Interaction, Option
 from micro.discord.objects import Attachment
 from micro.discord.ui import Draft
 from micro.service import Service
@@ -46,6 +46,7 @@ note = commands.group("note", description="Shared notes")
 
 @note.command("add", description="Write a note, optionally with a file")
 async def add(
+  ctx: Context,
   interaction: Interaction,
   text: Annotated[str, Option("The note", max_length=1000)],
   file: Attachment | None = None,
@@ -73,7 +74,7 @@ async def add(
 
 
 @note.command("list", description="Show recent notes")
-async def list_notes(interaction: Interaction) -> None:
+async def list_notes(ctx: Context, interaction: Interaction) -> None:
   result = await StoreClient(service.client).execute(
     "{ notes(first: 10, offset: 0) { author text } }"
   )

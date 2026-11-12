@@ -32,7 +32,7 @@ from nats.js.api import StorageType
 from pydantic import BaseModel, JsonValue
 
 from micro import subjects
-from micro.discord import DiscordHTTPClient, DiscordHTTPWorker
+from micro.discord import Context, DiscordHTTPClient, DiscordHTTPWorker, Message
 from micro.discord.enums import ButtonStyle, ChannelType, TextInputStyle
 from micro.discord.filters import all_of, content_startswith, ignore_bots
 from micro.discord.interactions import (
@@ -47,7 +47,6 @@ from micro.discord.interactions import (
   RuntimeCommands,
   option,
 )
-from micro.discord.models.gateway import GatewayMessageCreateDispatchData
 from micro.discord.ui import Button, Draft, Modal, TextInput
 from micro.gateway import GatewayWorker
 from micro.runtime import Runtime
@@ -81,14 +80,16 @@ class App:
     @service.listen(
       events.MESSAGE_CREATE, when=all_of(ignore_bots, content_startswith("!ping"))
     )
-    async def ping(message: GatewayMessageCreateDispatchData) -> None:
+    async def ping(ctx: Context, message: Message) -> None:
       api = DiscordHTTPClient(service.runtime).api
       (
         await api.channel(message.channel_id).send(Draft("pong", reply_to=message.id))
       ).unwrap()
 
     @commands.slash("hello", description="Say hello")
-    async def hello(interaction: Interaction, name: str = "world") -> None:
+    async def hello(
+      ctx: Context, interaction: Interaction, name: str = "world"
+    ) -> None:
       await interaction.respond(
         Draft(
           f"Hello, {name}!",
@@ -97,13 +98,13 @@ class App:
       )
 
     @components.match(WAVE)
-    async def wave(interaction: Interaction, state: Wave) -> None:
+    async def wave(ctx: Context, interaction: Interaction, state: Wave) -> None:
       await interaction.respond(
         Draft(f"{interaction.user.display_name} waves at {state.name}.", ephemeral=True)
       )
 
     @commands.slash("feedback", description="Open a modal")
-    async def ask(interaction: Interaction) -> None:
+    async def ask(ctx: Context, interaction: Interaction) -> None:
       await interaction.modal(
         Modal(
           FEEDBACK.encode(),
@@ -113,12 +114,12 @@ class App:
       )
 
     @modals.match(FEEDBACK)
-    async def got(interaction: Interaction) -> None:
+    async def got(ctx: Context, interaction: Interaction) -> None:
       self.feedback.append(interaction.submitted.fields["text"])
       await interaction.respond(Draft("Thanks!", ephemeral=True))
 
     @commands.slash("slow", description="Defer, then answer")
-    async def slow(interaction: Interaction) -> None:
+    async def slow(ctx: Context, interaction: Interaction) -> None:
       await interaction.defer()
       await asyncio.sleep(0.2)
       await interaction.respond("done")
@@ -126,7 +127,7 @@ class App:
     self.dynamic = RuntimeCommands(service)
 
     @self.dynamic.handler
-    async def custom(interaction: Interaction) -> None:
+    async def custom(ctx: Context, interaction: Interaction) -> None:
       await interaction.respond(
         f"{interaction.command_name}@{interaction.guild_id} {interaction.submitted.options}"
       )
@@ -135,7 +136,7 @@ class App:
       guilded = Commands(service, guild_ids=guild_commands)
 
       @guilded.slash("guilded", description="Only in some guilds")
-      async def only(interaction: Interaction) -> None:
+      async def only(ctx: Context, interaction: Interaction) -> None:
         await interaction.respond("guilded")
 
 
@@ -1258,19 +1259,13 @@ async def helper_scenarios() -> None:
 
   from micro.discord import Context
   from micro.discord.interactions._commands import parse_options
-  from micro.discord.interactions._inject import call, leading
+  from micro.discord.interactions._inject import call
 
   async def both(ctx: Context, interaction: Interaction, size: int = 1) -> Any:
     return (ctx, interaction, size)
 
-  async def only(interaction: Interaction) -> Any:
+  async def only(ctx: Context, interaction: Interaction) -> Any:
     return interaction
-
-  async def context_first(ctx: Context) -> Any:
-    return ctx
-
-  async def legacy(ctx) -> Any:
-    return ctx
 
   from micro.service._inject import call_handler
 
@@ -1281,16 +1276,29 @@ async def helper_scenarios() -> None:
     return ctx, message
 
   service = FakeService()
+  from micro import subjects
+
+  earlier = SimpleNamespace(
+    headers={subjects.BEFORE_HEADER: '{"id":"9","channel_id":"5","content":"old"}'}
+  )
   got_ctx, got_message = await call_handler(
-    service, on_message, {"id": "9", "channel_id": "5", "content": "hi"}
+    service,
+    on_message,
+    Message.model_validate({"id": "9", "channel_id": "5", "content": "hi"}),
+    earlier,
   )
   check(
-    "an event handler can ask for the context and the payload as a bound object",
+    "an event handler gets the context and the payload bound to it, with .before",
     isinstance(got_ctx, Context)
     and got_message.id == "9"
     and got_message.context is got_ctx
-    and (await call_handler(service, on_message, {"id": "9", "channel_id": "5"}))[0]
-    is got_ctx,
+    and got_message.before is not None
+    and got_message.before.content == "old"
+    and got_message.before.context is got_ctx
+    and (await call_handler(service, on_message, Message(id="9", channel_id="5")))[
+      1
+    ].before
+    is None,
   )
 
   import inspect
@@ -1347,23 +1355,23 @@ async def helper_scenarios() -> None:
     "GUILD_MEMBER_REMOVE", event_data(guild_id="5", user=person), chunks=False
   )
 
-  async def changed(ctx: Context, before: Member | None, after: Member) -> Any:
-    return before, after
+  async def changed(ctx: Context, member: Member) -> Any:
+    return member.before, member
 
   pair = await call_handler(
     service,
     changed,
-    {"guild_id": "5", "user": person, "roles": ["9"]},
+    Member.model_validate({"guild_id": "5", "user": person, "roles": ["9"]}),
     SimpleNamespace(headers={BEFORE_HEADER: json.dumps(earlier)}),
   )
   first = await call_handler(
     service,
     changed,
-    {"guild_id": "5", "user": person, "roles": []},
+    Member.model_validate({"guild_id": "5", "user": person, "roles": []}),
     SimpleNamespace(headers={}),
   )
   check(
-    "an update event carries the object as it was: handlers can take (before, after)",
+    "an update event carries the object as it was, as event.before",
     earlier is not None
     and earlier["roles"] == []
     and removed is not None
@@ -1378,13 +1386,9 @@ async def helper_scenarios() -> None:
 
   fake = SimpleNamespace(context="the context")
   check(
-    "a handler asks for the context, the interaction, or both, by annotation",
-    leading(both) == ("context", "interaction")
-    and leading(only) == leading(legacy) == ("interaction",)
-    and leading(context_first) == ("context",)
-    and await call(both, fake, 5) == ("the context", fake, 5)
+    "every interaction handler is called with the context, the interaction, then its options",
+    await call(both, fake, 5) == ("the context", fake, 5)
     and await call(only, fake) is fake
-    and await call(context_first, fake) == "the context"
     and [o.name for o in parse_options(both)] == ["size"]
     and parse_options(only) == [],
   )
@@ -3079,14 +3083,14 @@ async def service_scenarios() -> None:
     return Err(ValueError("looked at")).unwrap_or("fine")
 
   @service.listen(HAPPENED)
-  async def happened(event: Say) -> None:
+  async def happened(ctx: Context, event: Say) -> None:
     trace.append(f"event:{event.text}")
     if event.text == "flaky" and flaky["left"]:
       flaky["left"] -= 1
       raise RuntimeError("try again")
 
   @service.work(QUEUE)
-  async def job(item: Say) -> None:
+  async def job(ctx: Context, item: Say) -> None:
     trace.append(f"job:{item.text}")
 
   async with Stack(App()) as s:
@@ -3171,8 +3175,8 @@ async def route_scenarios() -> None:
   service = Service("panel")
   components = Components(service)
 
-  def says(text: str) -> Callable[[Interaction], Awaitable[None]]:
-    async def handler(interaction: Interaction) -> None:
+  def says(text: str) -> Callable[[Context, Interaction], Awaitable[None]]:
+    async def handler(ctx: Context, interaction: Interaction) -> None:
       await interaction.respond(f"{text} {dict(interaction.route)}")
 
     return handler
@@ -4453,11 +4457,11 @@ async def scheduler_scenarios() -> None:
   service = Service("sched-demo")
 
   @service.listen(REMIND)
-  async def on_remind(note: Note) -> None:
+  async def on_remind(ctx: Context, note: Note) -> None:
     arrivals.append(("event", note.text, time.monotonic() - started))
 
   @service.work(CHORE)
-  async def on_chore(note: Note) -> None:
+  async def on_chore(ctx: Context, note: Note) -> None:
     arrivals.append(("job", note.text, time.monotonic() - started))
 
   def got(kind: str, text: str) -> list[float]:
@@ -4484,7 +4488,7 @@ async def scheduler_scenarios() -> None:
       each = Service("every-demo")
 
       @each.every(0.05)
-      async def tick() -> None:
+      async def tick(ctx: Context) -> None:
         ticks[name] += 1
 
       tick.__qualname__ = "tick"  # the same task on every replica
@@ -4494,11 +4498,11 @@ async def scheduler_scenarios() -> None:
     lifecycle = Service("lifecycle-demo")
 
     @lifecycle.startup
-    async def opened() -> None:
+    async def opened(ctx: Context) -> None:
       steps.append("startup")
 
     @lifecycle.shutdown
-    async def closed() -> None:
+    async def closed(ctx: Context) -> None:
       steps.append("shutdown")
 
     await runtime.add(lifecycle)

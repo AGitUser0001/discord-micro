@@ -27,6 +27,8 @@ from ._templates import (
 if TYPE_CHECKING:
   from micro.discord import DiscordHTTPClient
 
+  from ._application import Context
+
 RAW_INTERACTION = DispatchSchema[dict[str, Any]](
   id="INTERACTION_CREATE", payload=dict[str, Any]
 )
@@ -192,7 +194,7 @@ class InteractionRouter(Service):
       }
     await respond_initially(DiscordHTTPClient(self.runtime), payload, body)
 
-  async def _on_interaction(self, payload: dict[str, Any]) -> None:
+  async def _on_interaction(self, ctx: Context, payload: dict[str, Any]) -> None:
     from micro.discord import DiscordHTTPClient
 
     if self._http is None:

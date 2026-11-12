@@ -21,11 +21,11 @@ send it and that Discord returns when someone uses it. How you build the compone
    components, modals = Components(service), Modals(service)
 
    @components.match(CLOSE)
-   async def close(interaction: Interaction, ticket: Ticket) -> None:
+   async def close(ctx: Context, interaction: Interaction, ticket: Ticket) -> None:
      await interaction.update_message(Draft(f"Ticket {ticket.id} closed.", components=[]))
 
    @modals.match(NOTE)
-   async def note(interaction: Interaction) -> None:
+   async def note(ctx: Context, interaction: Interaction) -> None:
      await interaction.respond(Draft(interaction.submitted.fields["text"], ephemeral=True))
 
    Button("Close", custom_id=CLOSE.encode(Ticket(id=42)))
@@ -57,10 +57,10 @@ Matching other shapes
    import re
 
    @components.match("ticket.close")                      # that prefix, and ticket.close.* / ticket.close:*
-   async def close(interaction): ...
+   async def close(ctx: Context, interaction): ...
 
    @components.match("ticket.{action}:{id:\\d+}")          # a template; {name} is one segment
-   async def ticket(interaction): interaction.route                       # {"action": "close", "id": "42"}
+   async def ticket(ctx: Context, interaction): interaction.route                       # {"action": "close", "id": "42"}
 
    components.match(re.compile(r"report\.(?P<kind>spam|abuse)"))(report)
 

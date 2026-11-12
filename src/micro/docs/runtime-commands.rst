@@ -13,7 +13,7 @@ running code, and one handler runs all of them.
    dynamic = RuntimeCommands(service)
 
    @dynamic.handler
-   async def run(interaction: Interaction) -> None:
+   async def run(ctx: Context, interaction: Interaction) -> None:
      body = await lookup(interaction.guild_id, interaction.command_name)   # your own storage
      await interaction.respond(body)
 
@@ -40,9 +40,9 @@ creates a command or changes its definition.
 The handler
 -----------
 
-``@dynamic.handler`` is one ``async def f(interaction)`` for every runtime command. ``interaction.command_name``
+``@dynamic.handler`` is one ``async def f(ctx: Context, interaction)`` for every runtime command. ``interaction.command_name``
 is the invoked name and ``interaction.submitted.options`` the submitted options (``{"who": "bo"}``).
-``@dynamic.autocomplete`` takes ``async def f(interaction, value)`` and returns choices for options you
+``@dynamic.autocomplete`` takes ``async def f(ctx: Context, interaction, value)`` and returns choices for options you
 declared with ``autocomplete=True`` in a raw option dict.
 
 How it works

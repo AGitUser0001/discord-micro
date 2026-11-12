@@ -1,9 +1,9 @@
 Responding
 ==========
 
-A handler asks for what it needs by annotation: an :class:`Interaction` (what the user did
-and every way to answer it), a :class:`Context` (how to reach Discord), or both, in that
-order, before the command's own options:
+Every interaction handler takes the same first two arguments: a :class:`Context` (how to reach
+Discord) and an :class:`Interaction` (what the user did and every way to answer it), then the
+command's own options:
 
 .. code-block:: python
 
@@ -24,9 +24,8 @@ A context carries everything a handler reaches for, apart from the runtime:
 * ``ctx.store``: your durable records, in the Store (:doc:`data`).
 * ``ctx.application_id``: your application's id.
 
-A handler that takes only the interaction (``async def f(interaction: Interaction)``) is fine
-too; the interaction reaches the same context as ``interaction.context``. This page is about
-the interaction.
+The interaction reaches the same context as ``interaction.context``. This page is about the
+interaction.
 
 ``respond`` is the everyday call; it chooses the right Discord request from what the
 interaction has already sent.

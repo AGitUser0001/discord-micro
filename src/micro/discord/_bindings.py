@@ -1,15 +1,11 @@
-"""What event handlers can ask for by annotation (see `micro.service._inject`):
-`ctx: Context`, and a payload as a bound `Message`, `Member`, `User`, `Channel`, `Guild`
-or `Role`. Imported on first use by the service; nothing to call."""
+"""How the service hands Discord objects to handlers (see `micro.service._inject`): the
+service's `Context`, and payloads bound to it. Imported on first use; nothing to call."""
 
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from pydantic import BaseModel
-
 from micro.discord import objects
 from micro.discord.interactions._application import Context
-from micro.service._inject import convertible, injectable
 
 _contexts: WeakKeyDictionary[Any, Context] = WeakKeyDictionary()
 
@@ -25,24 +21,12 @@ def context_of(service: Any) -> Context:
   return context
 
 
-def _data(payload: Any) -> dict[str, Any]:
-  if isinstance(payload, BaseModel):
-    return payload.model_dump(mode="json", by_alias=True)
-  return dict(payload)
-
-
-injectable(Context, context_of)
-for _view in (
-  objects.Message,
-  objects.Member,
-  objects.User,
-  objects.Channel,
-  objects.Guild,
-  objects.Role,
-):
-  convertible(
-    _view,
-    lambda payload, service, view=_view: view.model_validate(_data(payload)).bind(
-      context_of(service)
-    ),
-  )
+def bound(payload: Any, context: Context, before: Any = None) -> Any:
+  """A payload that is a Discord object, bound to `context` (with `before`, the object as
+  it was, when the event changed one); anything else as it is."""
+  if not isinstance(payload, objects._View):
+    return payload
+  result = payload.bind(context)
+  if before is not None:
+    result._before = type(payload).model_validate(before).bind(context)
+  return result

@@ -24,26 +24,20 @@ from pydantic import JsonValue
 from micro.discord.enums import CommandType
 from micro.discord.objects import Attachment, Channel, Member, Role, User
 
-from ._inject import leading
-
 if TYPE_CHECKING:
   from ._application import Context
   from ._context import Interaction
 
 _NAME = re.compile(r"^[-_\w]{1,32}$")
 
-type Handler[**P] = (
-  Callable[Concatenate["Context", "Interaction", P], Awaitable[Any]]
-  | Callable[Concatenate["Interaction", P], Awaitable[Any]]
-  | Callable[Concatenate["Context", P], Awaitable[Any]]
-)
-"""A command, component or modal handler: it asks for the `Context`, the `Interaction`, or
-both (in that order), and the rest is the command's own options (`P`)."""
+type Handler[**P] = Callable[Concatenate["Context", "Interaction", P], Awaitable[Any]]
+"""A command, component or modal handler: `async def f(ctx: Context, interaction: Interaction, ...)`,
+and the rest is the command's own options (`P`)."""
 
 
 class Registrar(Protocol):
-  """What a command decorator returns: it takes a handler of any shape above and gives back
-  the `Command` it registered."""
+  """What a command decorator returns: it takes a `Handler` and gives back the `Command`
+  it registered."""
 
   def __call__[**P](self, handler: Handler[P], /) -> Command: ...
 
@@ -159,11 +153,9 @@ def _validate_name(name: str, *, lower: bool = True) -> str:
 
 
 def parse_options(handler: Handler) -> list[OptionSpec]:
-  """Read slash-command options from a handler's parameters after the first."""
+  """Read slash-command options from a handler's parameters after `ctx, interaction`."""
   hints = get_type_hints(handler, include_extras=True)
-  parameters = list(inspect.signature(handler).parameters.values())[
-    len(leading(handler)) :
-  ]
+  parameters = list(inspect.signature(handler).parameters.values())[2:]
   specs: list[OptionSpec] = []
   for parameter in parameters:
     annotation = hints.get(parameter.name, str)

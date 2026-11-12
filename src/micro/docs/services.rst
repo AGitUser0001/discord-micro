@@ -83,10 +83,10 @@ service may have many handlers for one event.
 .. code-block:: python
 
    @service.listen(GREETED)
-   async def log(event: Greeting) -> None: ...
+   async def log(ctx: Context, event: Greeting) -> None: ...
 
    @service.listen(GREETED, when=lambda e: e.name.startswith("A"))
-   async def only_a(event: Greeting) -> None: ...
+   async def only_a(ctx: Context, event: Greeting) -> None: ...
 
    await service.client.emit(GREETED, Greeting(name="Ada"))
 
@@ -102,7 +102,7 @@ Jobs are kept until exactly one worker finishes them, even if none is running.
 .. code-block:: python
 
    @service.work(AUDIT)
-   async def record(job: Greeting) -> None: ...
+   async def record(ctx: Context, job: Greeting) -> None: ...
 
    await service.client.enqueue(AUDIT, Greeting(name="Ada"))
 
@@ -201,7 +201,7 @@ Doing something on a schedule
 It runs once at start and then an interval after each run ends. It runs on **one replica at a
 time** (a lock; the others wait, and one takes over if it goes away), so work that must happen
 once is not done once per replica. A run that raises is logged and the next one still happens.
-The handler may take ``ctx: Context`` like any other. For a one-off at a moment (a reminder in
+For a one-off at a moment (a reminder in
 an hour, a timeout ending) that must survive restarts, schedule a timer instead (:doc:`scheduler`).
 
 Reference

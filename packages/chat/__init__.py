@@ -10,12 +10,14 @@ from micro.discord import (
   ButtonStyle,
   Commands,
   Components,
+  Context,
   CustomId,
   DiscordHTTPClient,
   Draft,
   Embed,
   Interaction,
   Member,
+  Message,
   Modal,
   Modals,
   Option,
@@ -23,7 +25,6 @@ from micro.discord import (
   TextInputStyle,
 )
 from micro.discord.filters import all_of, content_startswith, ignore_bots
-from micro.discord.models.gateway import GatewayMessageCreateDispatchData
 from micro.schemas import events
 from micro.service import Service
 
@@ -38,7 +39,7 @@ modals = Modals(service)
 @service.listen(
   events.MESSAGE_CREATE, when=all_of(ignore_bots, content_startswith("!ping"))
 )
-async def ping(message: GatewayMessageCreateDispatchData) -> None:
+async def ping(ctx: Context, message: Message) -> None:
   api = DiscordHTTPClient(service.runtime).api
   (
     await api.channel(message.channel_id).send(Draft("pong", reply_to=message.id))
@@ -47,6 +48,7 @@ async def ping(message: GatewayMessageCreateDispatchData) -> None:
 
 @commands.slash("greet", description="Greet someone")
 async def greet(
+  ctx: Context,
   interaction: Interaction,
   name: Annotated[str, Option("Who to greet")],
   shout: bool = False,
@@ -56,7 +58,7 @@ async def greet(
 
 
 @greet.autocomplete("name")
-async def suggest(interaction: Interaction, value: str) -> list[str]:
+async def suggest(ctx: Context, interaction: Interaction, value: str) -> list[str]:
   names = ("Ada", "Grace", "Linus", "Margaret")
   return [name for name in names if name.lower().startswith(value.lower())]
 
@@ -73,6 +75,7 @@ polls = commands.group("poll", description="Quick polls")
 
 @polls.command("start", description="Start a yes/no poll")
 async def start_poll(
+  ctx: Context,
   interaction: Interaction,
   question: Annotated[str, Option("The question", max_length=60)],
 ) -> None:
@@ -90,7 +93,7 @@ async def start_poll(
 
 
 @components.match(VOTE)
-async def vote(interaction: Interaction, poll: Poll) -> None:
+async def vote(ctx: Context, interaction: Interaction, poll: Poll) -> None:
   answer = "yes" if poll.choice else "no"
   await interaction.respond(
     Draft(
@@ -101,13 +104,13 @@ async def vote(interaction: Interaction, poll: Poll) -> None:
 
 
 @commands.slash("feedback", description="Tell us what you think")
-async def ask_feedback(interaction: Interaction) -> None:
+async def ask_feedback(ctx: Context, interaction: Interaction) -> None:
   text = TextInput("text", "Your thoughts", style=TextInputStyle.PARAGRAPH)
   await interaction.modal(Modal(FEEDBACK.encode(), "Feedback", [text]))
 
 
 @modals.match(FEEDBACK)
-async def feedback(interaction: Interaction) -> None:
+async def feedback(ctx: Context, interaction: Interaction) -> None:
   await service.client.enqueue(
     AUDIT, Greeting(name=f"feedback: {interaction.submitted.fields['text'][:40]}")
   )
@@ -115,6 +118,6 @@ async def feedback(interaction: Interaction) -> None:
 
 
 @commands.user("Say hi")
-async def say_hi(interaction: Interaction, member: Member) -> None:
+async def say_hi(ctx: Context, interaction: Interaction, member: Member) -> None:
   mentions = AllowedMentions.only(users=[int(member.id or 0)])
   await interaction.respond(Draft(f"Hi {member.mention}!", allowed_mentions=mentions))

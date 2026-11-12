@@ -14,20 +14,21 @@ run.
    service = Service("moderation")
 
    @service.listen(events.MESSAGE_CREATE)
-   async def on_message(message) -> None:
+   async def on_message(ctx: Context, message: Message) -> None:
      ...
 
 ``events.<NAME>`` is a :class:`DispatchSchema` for each of Discord's dispatches
 (``MESSAGE_CREATE``, ``GUILD_MEMBER_ADD``, ``MESSAGE_REACTION_ADD``, ...), generated from
-Discord's documentation and created the first time you touch it. The handler receives the
-event as the schema's typed model, or as a plain dict if you annotate it that way.
+Discord's documentation and created the first time you touch it. Every event handler takes
+the same two arguments, ``(ctx, event)``, and ``event`` is typed: for the events that are about one
+object (a message, a member, a channel, a guild, a user) it is that object, already bound to
+``ctx``; for the others it is Discord's generated model of the payload.
 
-What a handler can ask for
---------------------------
+What a handler gets
+-------------------
 
-A handler says what it needs by annotation. A leading ``ctx: Context`` is the
-:class:`Context` (``ctx.api``, ``ctx.state``, ``ctx.store``, ...), and the payload can arrive as
-a bound object (:doc:`objects`) instead of the raw model:
+``ctx`` is the :class:`Context` (``ctx.api``, ``ctx.state``, ``ctx.store``, ...) and ``event`` is
+the payload, as a bound object (:doc:`objects`) when the event is about one:
 
 .. code-block:: python
 
@@ -44,29 +45,26 @@ a bound object (:doc:`objects`) instead of the raw model:
      if channel is not None:
        await channel.send(f"Welcome {member.mention}!")
 
-``Message``, ``Member``, ``User``, ``Channel``, ``Guild`` and ``Role`` work as payload types for
-the events that carry them. Anything else is delivered as the schema's model, and still gets
-``ctx`` if it asks.
+``MESSAGE_CREATE`` and ``MESSAGE_UPDATE`` give a ``Message``; ``GUILD_MEMBER_ADD`` and
+``GUILD_MEMBER_UPDATE`` a ``Member``; ``CHANNEL_*`` and ``THREAD_*`` a ``Channel``;
+``GUILD_CREATE`` and ``GUILD_UPDATE`` a ``Guild``; ``USER_UPDATE`` a ``User``. Every other event
+is Discord's generated model of its payload.
 
 Before and after
 ~~~~~~~~~~~~~~~~
 
 When an event **changes or removes** a member, channel, role, guild, voice state or presence the
-shard held, the object as it *was* travels with it. A handler whose parameters are ``before``
-and ``after`` gets both:
+shard held, the object as it *was* travels with it, and the handler reads it from ``event.before``:
 
 .. code-block:: python
 
    @service.listen(events.GUILD_MEMBER_UPDATE)
-   async def changed(ctx: Context, before: Member | None, after: Member) -> None:
-     if before is not None and before.roles != after.roles:
+   async def changed(ctx: Context, member: Member) -> None:
+     if member.before is not None and member.before.roles != member.roles:
        ...                                   # their roles changed
 
-   @service.listen(events.GUILD_MEMBER_REMOVE)
-   async def left(ctx: Context, before: Member | None, after: Member) -> None:
-     ...                                     # before: who they were, with their roles
-
-``before`` is ``None`` when the shard did not hold the object (it had not seen it yet).
+``before`` is ``None`` when the event did not change a held object, or the shard had not seen
+it yet.
 
 When an event does not match its schema
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -98,7 +96,7 @@ Narrowing what you receive
 .. code-block:: python
 
    @service.listen(events.MESSAGE_CREATE, guild_id=1234)
-   async def only_this_guild(message) -> None: ...
+   async def only_this_guild(ctx: Context, message: Message) -> None: ...
 
 ``when=`` filters in your process, with a predicate that sees the payload. The helpers in
 ``micro.discord.filters`` read both dicts and models, and combine:
@@ -113,7 +111,7 @@ Narrowing what you receive
      events.MESSAGE_CREATE,
      when=all_of(ignore_bots, in_channel(123), content_startswith("!")),
    )
-   async def command(message) -> None: ...
+   async def command(ctx: Context, message: Message) -> None: ...
 
 ``ignore_bots`` skips events authored by any bot, including yours. ``not_from(bot_id)``
 skips only given users. Write your own as any ``Callable[[payload], bool]``.

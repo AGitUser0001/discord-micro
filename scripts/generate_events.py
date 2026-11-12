@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from micro.service import DispatchSchema
 
 if TYPE_CHECKING:
+  from micro.discord import objects
   from micro.discord.models import gateway
 
 '''
@@ -33,10 +34,14 @@ def __getattr__(name: str) -> Any:
     payload = _PAYLOADS[name]
   except KeyError:
     raise AttributeError(f"module {{__name__!r}} has no attribute {{name!r}}") from None
+  from micro.discord import objects
   from micro.discord.models import gateway
 
   schema = DispatchSchema[Any](
-    id=name, payload=None if payload is None else getattr(gateway, payload)
+    id=name,
+    payload=None
+    if payload is None
+    else getattr(objects if payload in _VIEWS else gateway, payload),
   )
   globals()[name] = schema
   return schema
@@ -50,6 +55,24 @@ __all__ = (
 {exports}
 )
 '''
+
+
+VIEWS = {
+  "CHANNEL_CREATE": "Channel",
+  "CHANNEL_DELETE": "Channel",
+  "CHANNEL_UPDATE": "Channel",
+  "GUILD_CREATE": "Guild",
+  "GUILD_MEMBER_ADD": "Member",
+  "GUILD_MEMBER_UPDATE": "Member",
+  "GUILD_UPDATE": "Guild",
+  "MESSAGE_CREATE": "Message",
+  "MESSAGE_UPDATE": "Message",
+  "THREAD_CREATE": "Channel",
+  "THREAD_UPDATE": "Channel",
+  "USER_UPDATE": "User",
+}
+"""The events whose payload is one of Micro's objects: a handler gets it bound to its
+`Context`, with `.before` when the event changed it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +110,8 @@ def _dispatches(source: Path) -> tuple[Dispatch, ...]:
     payload = (
       "None" if payload_type is type(None) else f"gateway.{payload_type.__name__}"
     )
+    if event_values[0] in VIEWS:
+      payload = f"objects.{VIEWS[event_values[0]]}"
     dispatches.append(Dispatch(event_values[0], payload))
   if not dispatches:
     raise ValueError("No Discord Gateway dispatch models were found.")
@@ -104,11 +129,14 @@ def generate(source: Path, output: Path) -> None:
   payloads = "\n".join(
     f"  {item.event!r}: "
     + (
-      "None" if item.payload == "None" else repr(item.payload.removeprefix("gateway."))
+      "None"
+      if item.payload == "None"
+      else repr(item.payload.removeprefix("gateway.").removeprefix("objects."))
     )
     + ","
     for item in dispatches
   )
+  views = "\n".join(f"  {name!r}," for name in sorted(set(VIEWS.values())))
   exports = "\n".join(f"  {item.event!r}," for item in dispatches)
   output.parent.mkdir(parents=True, exist_ok=True)
   output.write_text(
@@ -116,6 +144,8 @@ def generate(source: Path, output: Path) -> None:
     + annotations
     + "\n\n_PAYLOADS: dict[str, str | None] = {\n"
     + payloads
+    + "\n}\n\n_VIEWS = {\n"
+    + views
     + "\n}\n"
     + _FOOTER.format(exports=exports)
   )

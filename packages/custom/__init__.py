@@ -8,7 +8,13 @@ store, so they survive restarts and work from every replica.
 
 from typing import Annotated
 
-from micro.discord.interactions import Commands, Interaction, Option, RuntimeCommands
+from micro.discord.interactions import (
+  Commands,
+  Context,
+  Interaction,
+  Option,
+  RuntimeCommands,
+)
 from micro.discord.ui import Draft
 from micro.service import Service
 from micro.store import GraphModule, StoreClient
@@ -62,7 +68,7 @@ def store() -> StoreClient:
 
 
 @dynamic.handler
-async def run(interaction: Interaction) -> None:
+async def run(ctx: Context, interaction: Interaction) -> None:
   result = await store().execute(
     "query($g: ID!, $n: String!) { custom(guildId: $g, name: $n) { text } }",
     variables={"g": interaction.guild_id, "n": interaction.command_name},
@@ -75,6 +81,7 @@ async def run(interaction: Interaction) -> None:
 
 @custom.command("add", description="Make a command (or change its text)")
 async def add(
+  ctx: Context,
   interaction: Interaction,
   name: Annotated[str, Option("Its name, lowercase", max_length=32)],
   text: Annotated[str, Option("What it says", max_length=2000)],
@@ -120,7 +127,7 @@ async def add(
 
 @custom.command("remove", description="Delete a command")
 async def remove(
-  interaction: Interaction, name: Annotated[str, Option("Its name")]
+  ctx: Context, interaction: Interaction, name: Annotated[str, Option("Its name")]
 ) -> None:
   name = name.lower().lstrip("/")
   result = await store().execute(
@@ -136,7 +143,7 @@ async def remove(
 
 
 @custom.command("list", description="Show this server's custom commands")
-async def list_commands(interaction: Interaction) -> None:
+async def list_commands(ctx: Context, interaction: Interaction) -> None:
   result = await store().execute(
     "query($g: ID!) { guild(id: $g) { commands { name } } }",
     variables={"g": interaction.guild_id},

@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
-from micro.discord.interactions import Commands, Interaction
+from micro.discord.interactions import Commands, Context, Interaction
 from micro.discord.ui import Draft
 from micro.runtime import Runtime
 from micro.service import Service
@@ -60,7 +60,7 @@ def table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
   description="Streams, consumers and running components",
   default_member_permissions=ADMINISTRATOR,
 )
-async def health(interaction: Interaction) -> None:
+async def health(ctx: Context, interaction: Interaction) -> None:
   await interaction.defer(ephemeral=True)
   data = await report(service.runtime)
   streams = table(

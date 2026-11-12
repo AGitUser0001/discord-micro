@@ -27,37 +27,17 @@ from ._request import RequestSchema
 
 if TYPE_CHECKING:
   from micro.discord.interactions import Context
-  from micro.discord.objects import Channel, Guild, Member, Message, Role, User
   from micro.store import GraphModule
 
 type _Done = Awaitable[None]
-type EventHandler[T] = (
-  Callable[[T], _Done]
-  | Callable[["Context", T], _Done]
-  | Callable[["Message"], _Done]
-  | Callable[["Member"], _Done]
-  | Callable[["User"], _Done]
-  | Callable[["Channel"], _Done]
-  | Callable[["Guild"], _Done]
-  | Callable[["Role"], _Done]
-  | Callable[["Context", "Message"], _Done]
-  | Callable[["Context", "Member"], _Done]
-  | Callable[["Context", "User"], _Done]
-  | Callable[["Context", "Channel"], _Done]
-  | Callable[["Context", "Guild"], _Done]
-  | Callable[["Context", "Role"], _Done]
-  | Callable[["Context", "Member | None", "Member"], _Done]
-  | Callable[["Context", "Channel | None", "Channel"], _Done]
-  | Callable[["Context", "Guild | None", "Guild"], _Done]
-  | Callable[["Context", "Role | None", "Role"], _Done]
-)
-"""An event handler: `async def f(payload)`, or one that asks for more by annotation: a
-`ctx: Context` first, the payload as a bound `Message`, `Member`, `User`, `Channel`, `Guild`
-or `Role`, or `before` and `after` for an event that changed one (`micro.service._inject`)."""
+type EventHandler[T] = Callable[["Context", T], _Done]
+"""An event or work handler: `async def f(ctx: Context, event: T)`. For a Discord event `T`
+is the object it is about (`Message`, `Member`, ...), bound to `ctx`; `event.before` is the
+object as it was when the event changed one."""
 type RequestHandler[InputT, OutputT] = Callable[[InputT], Awaitable[OutputT]]
 type EventPredicate[T] = Callable[[T], bool]
-type PeriodicHandler = Callable[[], _Done] | Callable[["Context"], _Done]
-"""A handler `every`, `startup` and `shutdown` run: `async def f()` or `async def f(ctx: Context)`."""
+type PeriodicHandler = Callable[["Context"], _Done]
+"""A handler `every`, `startup` and `shutdown` run: `async def f(ctx: Context)`."""
 
 _SERVICE_NAME_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 
@@ -173,7 +153,7 @@ class Service(Component):
 
   def startup(self, handler: PeriodicHandler) -> PeriodicHandler:
     """Run a handler once when the service starts, before it takes any work: open a
-    connection, warm a cache. It may ask for `ctx: Context` like any handler.
+    connection, warm a cache.
 
         @service.startup
         async def setup(ctx: Context) -> None: ...

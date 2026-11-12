@@ -2,7 +2,13 @@
 
 from pydantic import BaseModel
 
-from micro.discord.interactions import Commands, Components, CustomId, Interaction
+from micro.discord.interactions import (
+  Commands,
+  Components,
+  Context,
+  CustomId,
+  Interaction,
+)
 from micro.discord.ui import Button, Draft
 from micro.service import Service
 
@@ -19,7 +25,7 @@ WAVE = CustomId("hello.wave", Wave)
 
 
 @commands.slash("hello", description="Say hello")
-async def hello(interaction: Interaction, name: str = "world") -> None:
+async def hello(ctx: Context, interaction: Interaction, name: str = "world") -> None:
   await interaction.respond(
     Draft(
       f"Hello, {name}!",
@@ -29,7 +35,7 @@ async def hello(interaction: Interaction, name: str = "world") -> None:
 
 
 @components.match(WAVE)
-async def wave(interaction: Interaction, state: Wave) -> None:
+async def wave(ctx: Context, interaction: Interaction, state: Wave) -> None:
   await interaction.respond(
     Draft(f"{interaction.user.display_name} waves at {state.name}.", ephemeral=True)
   )

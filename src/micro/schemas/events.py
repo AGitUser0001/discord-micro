@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from micro.service import DispatchSchema
 
 if TYPE_CHECKING:
+  from micro.discord import objects
   from micro.discord.models import gateway
 
   APPLICATION_COMMAND_PERMISSIONS_UPDATE: DispatchSchema[gateway.GatewayApplicationCommandPermissionsUpdateDispatchData]
@@ -15,25 +16,25 @@ if TYPE_CHECKING:
   AUTO_MODERATION_RULE_CREATE: DispatchSchema[gateway.APIAutoModerationRule]
   AUTO_MODERATION_RULE_DELETE: DispatchSchema[gateway.APIAutoModerationRule]
   AUTO_MODERATION_RULE_UPDATE: DispatchSchema[gateway.APIAutoModerationRule]
-  CHANNEL_CREATE: DispatchSchema[gateway.GatewayChannelModifyDispatchData]
-  CHANNEL_DELETE: DispatchSchema[gateway.GatewayChannelModifyDispatchData]
+  CHANNEL_CREATE: DispatchSchema[objects.Channel]
+  CHANNEL_DELETE: DispatchSchema[objects.Channel]
   CHANNEL_INFO: DispatchSchema[gateway.GatewayChannelInfoDispatchData]
   CHANNEL_PINS_UPDATE: DispatchSchema[gateway.GatewayChannelPinsUpdateDispatchData]
-  CHANNEL_UPDATE: DispatchSchema[gateway.GatewayChannelModifyDispatchData]
+  CHANNEL_UPDATE: DispatchSchema[objects.Channel]
   ENTITLEMENT_CREATE: DispatchSchema[gateway.APIEntitlement]
   ENTITLEMENT_DELETE: DispatchSchema[gateway.APIEntitlement]
   ENTITLEMENT_UPDATE: DispatchSchema[gateway.APIEntitlement]
   GUILD_AUDIT_LOG_ENTRY_CREATE: DispatchSchema[gateway.GatewayGuildAuditLogEntryCreateDispatchData]
   GUILD_BAN_ADD: DispatchSchema[gateway.GatewayGuildBanModifyDispatchData]
   GUILD_BAN_REMOVE: DispatchSchema[gateway.GatewayGuildBanModifyDispatchData]
-  GUILD_CREATE: DispatchSchema[gateway.GatewayGuildCreateDispatchData]
+  GUILD_CREATE: DispatchSchema[objects.Guild]
   GUILD_DELETE: DispatchSchema[gateway.GatewayGuildDeleteDispatchData]
   GUILD_EMOJIS_UPDATE: DispatchSchema[gateway.GatewayGuildEmojisUpdateDispatchData]
   GUILD_INTEGRATIONS_UPDATE: DispatchSchema[gateway.GatewayGuildIntegrationsUpdateDispatchData]
   GUILD_MEMBERS_CHUNK: DispatchSchema[gateway.GatewayGuildMembersChunkDispatchData]
-  GUILD_MEMBER_ADD: DispatchSchema[gateway.GatewayGuildMemberAddDispatchData]
+  GUILD_MEMBER_ADD: DispatchSchema[objects.Member]
   GUILD_MEMBER_REMOVE: DispatchSchema[gateway.GatewayGuildMemberRemoveDispatchData]
-  GUILD_MEMBER_UPDATE: DispatchSchema[gateway.GatewayGuildMemberUpdateDispatchData]
+  GUILD_MEMBER_UPDATE: DispatchSchema[objects.Member]
   GUILD_ROLE_CREATE: DispatchSchema[gateway.GatewayGuildRoleModifyDispatchData]
   GUILD_ROLE_DELETE: DispatchSchema[gateway.GatewayGuildRoleDeleteDispatchData]
   GUILD_ROLE_UPDATE: DispatchSchema[gateway.GatewayGuildRoleModifyDispatchData]
@@ -47,14 +48,14 @@ if TYPE_CHECKING:
   GUILD_SOUNDBOARD_SOUND_DELETE: DispatchSchema[gateway.GatewayGuildSoundboardSoundDeleteDispatchData]
   GUILD_SOUNDBOARD_SOUND_UPDATE: DispatchSchema[gateway.APISoundboardSound]
   GUILD_STICKERS_UPDATE: DispatchSchema[gateway.GatewayGuildStickersUpdateDispatchData]
-  GUILD_UPDATE: DispatchSchema[gateway.APIGuild]
+  GUILD_UPDATE: DispatchSchema[objects.Guild]
   INTEGRATION_CREATE: DispatchSchema[gateway.GatewayIntegrationCreateDispatchData]
   INTEGRATION_DELETE: DispatchSchema[gateway.GatewayIntegrationDeleteDispatchData]
   INTEGRATION_UPDATE: DispatchSchema[gateway.GatewayIntegrationUpdateDispatchData]
   INTERACTION_CREATE: DispatchSchema[gateway.APIInteraction]
   INVITE_CREATE: DispatchSchema[gateway.GatewayInviteCreateDispatchData]
   INVITE_DELETE: DispatchSchema[gateway.GatewayInviteDeleteDispatchData]
-  MESSAGE_CREATE: DispatchSchema[gateway.GatewayMessageCreateDispatchData]
+  MESSAGE_CREATE: DispatchSchema[objects.Message]
   MESSAGE_DELETE: DispatchSchema[gateway.GatewayMessageDeleteDispatchData]
   MESSAGE_DELETE_BULK: DispatchSchema[gateway.GatewayMessageDeleteBulkDispatchData]
   MESSAGE_POLL_VOTE_ADD: DispatchSchema[gateway.GatewayMessagePollVoteDispatchData]
@@ -63,7 +64,7 @@ if TYPE_CHECKING:
   MESSAGE_REACTION_REMOVE: DispatchSchema[gateway.GatewayMessageReactionRemoveDispatchData]
   MESSAGE_REACTION_REMOVE_ALL: DispatchSchema[gateway.GatewayMessageReactionRemoveData]
   MESSAGE_REACTION_REMOVE_EMOJI: DispatchSchema[gateway.GatewayMessageReactionRemoveEmojiDispatchData]
-  MESSAGE_UPDATE: DispatchSchema[gateway.GatewayMessageUpdateDispatchData]
+  MESSAGE_UPDATE: DispatchSchema[objects.Message]
   PRESENCE_UPDATE: DispatchSchema[gateway.GatewayPresenceUpdate]
   RATE_LIMITED: DispatchSchema[gateway.GatewayRateLimitedDispatchDataRequestGuildMembers]
   READY: DispatchSchema[gateway.GatewayReadyDispatchData]
@@ -75,14 +76,14 @@ if TYPE_CHECKING:
   SUBSCRIPTION_CREATE: DispatchSchema[gateway.APISubscription]
   SUBSCRIPTION_DELETE: DispatchSchema[gateway.APISubscription]
   SUBSCRIPTION_UPDATE: DispatchSchema[gateway.APISubscription]
-  THREAD_CREATE: DispatchSchema[gateway.GatewayThreadCreateDispatchData]
+  THREAD_CREATE: DispatchSchema[objects.Channel]
   THREAD_DELETE: DispatchSchema[gateway.GatewayThreadDeleteDispatchData]
   THREAD_LIST_SYNC: DispatchSchema[gateway.GatewayThreadListSync]
   THREAD_MEMBERS_UPDATE: DispatchSchema[gateway.GatewayThreadMembersUpdate]
   THREAD_MEMBER_UPDATE: DispatchSchema[gateway.GatewayThreadMemberUpdateDispatchData]
-  THREAD_UPDATE: DispatchSchema[gateway.GatewayThreadUpdateDispatchData]
+  THREAD_UPDATE: DispatchSchema[objects.Channel]
   TYPING_START: DispatchSchema[gateway.GatewayTypingStartDispatchData]
-  USER_UPDATE: DispatchSchema[gateway.APIUser]
+  USER_UPDATE: DispatchSchema[objects.User]
   VOICE_CHANNEL_EFFECT_SEND: DispatchSchema[gateway.GatewayVoiceChannelEffectSendDispatchData]
   VOICE_CHANNEL_START_TIME_UPDATE: DispatchSchema[gateway.GatewayVoiceChannelStartTimeUpdateDispatchData]
   VOICE_CHANNEL_STATUS_UPDATE: DispatchSchema[gateway.GatewayVoiceChannelStatusUpdateDispatchData]
@@ -96,25 +97,25 @@ _PAYLOADS: dict[str, str | None] = {
   'AUTO_MODERATION_RULE_CREATE': 'APIAutoModerationRule',
   'AUTO_MODERATION_RULE_DELETE': 'APIAutoModerationRule',
   'AUTO_MODERATION_RULE_UPDATE': 'APIAutoModerationRule',
-  'CHANNEL_CREATE': 'GatewayChannelModifyDispatchData',
-  'CHANNEL_DELETE': 'GatewayChannelModifyDispatchData',
+  'CHANNEL_CREATE': 'Channel',
+  'CHANNEL_DELETE': 'Channel',
   'CHANNEL_INFO': 'GatewayChannelInfoDispatchData',
   'CHANNEL_PINS_UPDATE': 'GatewayChannelPinsUpdateDispatchData',
-  'CHANNEL_UPDATE': 'GatewayChannelModifyDispatchData',
+  'CHANNEL_UPDATE': 'Channel',
   'ENTITLEMENT_CREATE': 'APIEntitlement',
   'ENTITLEMENT_DELETE': 'APIEntitlement',
   'ENTITLEMENT_UPDATE': 'APIEntitlement',
   'GUILD_AUDIT_LOG_ENTRY_CREATE': 'GatewayGuildAuditLogEntryCreateDispatchData',
   'GUILD_BAN_ADD': 'GatewayGuildBanModifyDispatchData',
   'GUILD_BAN_REMOVE': 'GatewayGuildBanModifyDispatchData',
-  'GUILD_CREATE': 'GatewayGuildCreateDispatchData',
+  'GUILD_CREATE': 'Guild',
   'GUILD_DELETE': 'GatewayGuildDeleteDispatchData',
   'GUILD_EMOJIS_UPDATE': 'GatewayGuildEmojisUpdateDispatchData',
   'GUILD_INTEGRATIONS_UPDATE': 'GatewayGuildIntegrationsUpdateDispatchData',
   'GUILD_MEMBERS_CHUNK': 'GatewayGuildMembersChunkDispatchData',
-  'GUILD_MEMBER_ADD': 'GatewayGuildMemberAddDispatchData',
+  'GUILD_MEMBER_ADD': 'Member',
   'GUILD_MEMBER_REMOVE': 'GatewayGuildMemberRemoveDispatchData',
-  'GUILD_MEMBER_UPDATE': 'GatewayGuildMemberUpdateDispatchData',
+  'GUILD_MEMBER_UPDATE': 'Member',
   'GUILD_ROLE_CREATE': 'GatewayGuildRoleModifyDispatchData',
   'GUILD_ROLE_DELETE': 'GatewayGuildRoleDeleteDispatchData',
   'GUILD_ROLE_UPDATE': 'GatewayGuildRoleModifyDispatchData',
@@ -128,14 +129,14 @@ _PAYLOADS: dict[str, str | None] = {
   'GUILD_SOUNDBOARD_SOUND_DELETE': 'GatewayGuildSoundboardSoundDeleteDispatchData',
   'GUILD_SOUNDBOARD_SOUND_UPDATE': 'APISoundboardSound',
   'GUILD_STICKERS_UPDATE': 'GatewayGuildStickersUpdateDispatchData',
-  'GUILD_UPDATE': 'APIGuild',
+  'GUILD_UPDATE': 'Guild',
   'INTEGRATION_CREATE': 'GatewayIntegrationCreateDispatchData',
   'INTEGRATION_DELETE': 'GatewayIntegrationDeleteDispatchData',
   'INTEGRATION_UPDATE': 'GatewayIntegrationUpdateDispatchData',
   'INTERACTION_CREATE': 'APIInteraction',
   'INVITE_CREATE': 'GatewayInviteCreateDispatchData',
   'INVITE_DELETE': 'GatewayInviteDeleteDispatchData',
-  'MESSAGE_CREATE': 'GatewayMessageCreateDispatchData',
+  'MESSAGE_CREATE': 'Message',
   'MESSAGE_DELETE': 'GatewayMessageDeleteDispatchData',
   'MESSAGE_DELETE_BULK': 'GatewayMessageDeleteBulkDispatchData',
   'MESSAGE_POLL_VOTE_ADD': 'GatewayMessagePollVoteDispatchData',
@@ -144,7 +145,7 @@ _PAYLOADS: dict[str, str | None] = {
   'MESSAGE_REACTION_REMOVE': 'GatewayMessageReactionRemoveDispatchData',
   'MESSAGE_REACTION_REMOVE_ALL': 'GatewayMessageReactionRemoveData',
   'MESSAGE_REACTION_REMOVE_EMOJI': 'GatewayMessageReactionRemoveEmojiDispatchData',
-  'MESSAGE_UPDATE': 'GatewayMessageUpdateDispatchData',
+  'MESSAGE_UPDATE': 'Message',
   'PRESENCE_UPDATE': 'GatewayPresenceUpdate',
   'RATE_LIMITED': 'GatewayRateLimitedDispatchDataRequestGuildMembers',
   'READY': 'GatewayReadyDispatchData',
@@ -156,14 +157,14 @@ _PAYLOADS: dict[str, str | None] = {
   'SUBSCRIPTION_CREATE': 'APISubscription',
   'SUBSCRIPTION_DELETE': 'APISubscription',
   'SUBSCRIPTION_UPDATE': 'APISubscription',
-  'THREAD_CREATE': 'GatewayThreadCreateDispatchData',
+  'THREAD_CREATE': 'Channel',
   'THREAD_DELETE': 'GatewayThreadDeleteDispatchData',
   'THREAD_LIST_SYNC': 'GatewayThreadListSync',
   'THREAD_MEMBERS_UPDATE': 'GatewayThreadMembersUpdate',
   'THREAD_MEMBER_UPDATE': 'GatewayThreadMemberUpdateDispatchData',
-  'THREAD_UPDATE': 'GatewayThreadUpdateDispatchData',
+  'THREAD_UPDATE': 'Channel',
   'TYPING_START': 'GatewayTypingStartDispatchData',
-  'USER_UPDATE': 'APIUser',
+  'USER_UPDATE': 'User',
   'VOICE_CHANNEL_EFFECT_SEND': 'GatewayVoiceChannelEffectSendDispatchData',
   'VOICE_CHANNEL_START_TIME_UPDATE': 'GatewayVoiceChannelStartTimeUpdateDispatchData',
   'VOICE_CHANNEL_STATUS_UPDATE': 'GatewayVoiceChannelStatusUpdateDispatchData',
@@ -172,16 +173,28 @@ _PAYLOADS: dict[str, str | None] = {
   'WEBHOOKS_UPDATE': 'GatewayWebhooksUpdateDispatchData',
 }
 
+_VIEWS = {
+  'Channel',
+  'Guild',
+  'Member',
+  'Message',
+  'User',
+}
+
 
 def __getattr__(name: str) -> Any:
   try:
     payload = _PAYLOADS[name]
   except KeyError:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+  from micro.discord import objects
   from micro.discord.models import gateway
 
   schema = DispatchSchema[Any](
-    id=name, payload=None if payload is None else getattr(gateway, payload)
+    id=name,
+    payload=None
+    if payload is None
+    else getattr(objects if payload in _VIEWS else gateway, payload),
   )
   globals()[name] = schema
   return schema
