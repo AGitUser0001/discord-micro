@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Mapping
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid7
 
@@ -106,6 +107,10 @@ class HikariShard:
         )
       except BaseException:
         self.bot = None
+        # A start that fails or is cancelled halfway has already opened hikari's REST
+        # session; closing the bot is what releases it. Shielded so a cancel still closes it.
+        with suppress(Exception):
+          await asyncio.shield(bot.close())
         raise
 
   async def close(self) -> None:
