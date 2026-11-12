@@ -59,7 +59,7 @@ nav input { width: 100%; padding: .35rem .5rem; margin: .5rem 0; border: 1px sol
 nav details { margin: 0; } nav summary { cursor: pointer; padding: .2rem .5rem; border-radius: 6px; }
 nav summary a { display: inline; padding: 0; } nav summary:hover { background: var(--line); }
 nav .sub a { padding: .05rem .5rem .05rem 1.4rem; font-size: .85rem; color: var(--muted); }
-#results { margin: 0 0 .5rem; } #results a { padding: .25rem .5rem; }
+#results { margin: 0 0 .5rem; } #results a.pick { background: var(--line); } #results a { padding: .25rem .5rem; }
 #results small { display: block; color: var(--muted); font-size: .75rem; }
 @media (max-width: 760px) { body { display: block; } nav { width: auto; height: auto;
   position: static; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -96,10 +96,39 @@ q.addEventListener('input', async () => {
     a.append(k); out.append(a);
   }
 });
+function pick(step) {
+  const all = [...out.querySelectorAll('a')]; if (!all.length) return;
+  const at = all.findIndex(a => a.classList.contains('pick'));
+  all.forEach(a => a.classList.remove('pick'));
+  const next = all[(at + step + all.length) % all.length];
+  next.classList.add('pick'); next.scrollIntoView({block: 'nearest'});
+}
 q.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { const a = out.querySelector('a'); if (a) location = a.href; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); pick(1); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); pick(-1); }
+  if (e.key === 'Enter') { const a = out.querySelector('a.pick') || out.querySelector('a'); if (a) location = a.href; }
   if (e.key === 'Escape') { q.value = ''; out.textContent = ''; q.blur(); }
 });
+/* Keep the sidebar where it was: its scroll position and which manual pages are open
+   survive a page load, and the current page is brought into view. */
+const side = document.querySelector('nav');
+const store = { get: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { sessionStorage.setItem(k, v); } catch {} } };
+const opened = new Set(JSON.parse(store.get('nav-open') || '[]'));
+for (const d of side.querySelectorAll('details')) {
+  const key = d.querySelector('summary a').getAttribute('href');
+  if (opened.has(key)) d.open = true;
+  d.addEventListener('toggle', () => {
+    d.open ? opened.add(key) : opened.delete(key);
+    store.set('nav-open', JSON.stringify([...opened]));
+  });
+}
+const here = side.querySelector('a.current');
+const saved = store.get('nav-scroll');
+if (saved !== null) side.scrollTop = +saved;
+if (here) { const r = here.getBoundingClientRect(), n = side.getBoundingClientRect();
+  if (r.top < n.top || r.bottom > n.bottom) here.scrollIntoView({block: 'center'}); }
+addEventListener('pagehide', () => store.set('nav-scroll', side.scrollTop));
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== q) { e.preventDefault(); q.focus(); }
 });
