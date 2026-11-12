@@ -34,7 +34,8 @@ type EventHandler[T] = Callable[["Context", T], _Done]
 """An event or work handler: `async def f(ctx: Context, event: T)`. For a Discord event `T`
 is the object it is about (`Message`, `Member`, ...), bound to `ctx`; `event.before` is the
 object as it was when the event changed one."""
-type RequestHandler[InputT, OutputT] = Callable[[InputT], Awaitable[OutputT]]
+type RequestHandler[InputT, OutputT] = Callable[["Context", InputT], Awaitable[OutputT]]
+"""A request handler: `async def f(ctx: Context, request: InputT) -> OutputT`."""
 type EventPredicate[T] = Callable[[T], bool]
 type PeriodicHandler = Callable[["Context"], _Done]
 """A handler `every`, `startup` and `shutdown` run: `async def f(ctx: Context)`."""
@@ -513,7 +514,7 @@ class Service(Component):
     call = Call("request", schema.id, self, message, payload)
 
     async def final(call: Call) -> None:
-      call.output = await handler(call.input)
+      call.output = await call_handler(self, handler, call.input, call.message)
 
     try:
       with handling(self.name, f"request {schema.id}"):

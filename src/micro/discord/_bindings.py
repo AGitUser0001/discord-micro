@@ -28,5 +28,8 @@ def bound(payload: Any, context: Context, before: Any = None) -> Any:
     return payload
   result = payload.bind(context)
   if before is not None:
+    guild_id = getattr(payload, "guild_id", None)
+    if isinstance(before, dict) and guild_id and "guild_id" not in before:
+      before = {**before, "guild_id": guild_id}
     result._before = type(payload).model_validate(before).bind(context)
   return result

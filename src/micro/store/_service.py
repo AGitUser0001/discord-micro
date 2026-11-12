@@ -1,7 +1,7 @@
 import asyncio
 import os
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
@@ -12,6 +12,9 @@ from micro.service import Client, RequestSchema, Service
 
 from ._module import GraphModule
 from ._store import GraphEngine, GraphExecutor, GraphQLBody
+
+if TYPE_CHECKING:
+  from micro.discord import Context
 from .composer import DirectiveMetadata, TypeDirectiveMetadata
 
 DEFAULT_STORE_URL = "sqlite:.micro/store.db"
@@ -129,7 +132,7 @@ class Store(Service):
         await asyncio.sleep(default_backoff(failures))
         self._compose_requested.set()
 
-  async def _execute(self, body: GraphQLBody) -> dict[str, JsonValue]:
+  async def _execute(self, ctx: Context, body: GraphQLBody) -> dict[str, JsonValue]:
     return await self.engine.execute(body)
 
 

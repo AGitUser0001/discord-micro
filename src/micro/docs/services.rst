@@ -57,7 +57,7 @@ move from one service to another without its callers noticing.
 .. code-block:: python
 
    @service.handle(GREET)
-   async def greet(request: Greeting) -> str:
+   async def greet(ctx: Context, request: Greeting) -> str:
      if not request.name:
        raise ServiceError("empty_name", "Say who to greet.", detail={"field": "name"})
      return f"Hello, {request.name}!"

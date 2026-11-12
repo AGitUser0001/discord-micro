@@ -1301,6 +1301,65 @@ async def helper_scenarios() -> None:
     is None,
   )
 
+  from micro.discord import Role
+
+  made = Role.model_validate({"guild_id": "5", "role": {"id": "9", "name": "mods"}})
+  gone = Role.model_validate({"guild_id": "5", "role_id": "9"})
+
+  async def role_changed(ctx: Context, role: Role) -> Any:
+    return role
+
+  seen = await call_handler(
+    service,
+    role_changed,
+    made,
+    SimpleNamespace(headers={"Micro-Before": '{"id":"9","name":"old"}'}),
+  )
+  check(
+    "role events are a Role with its guild, and .before knows the guild too",
+    (made.id, made.guild_id, made.name) == ("9", "5", "mods")
+    and (gone.id, gone.guild_id) == ("9", "5")
+    and seen.before is not None
+    and seen.before.name == "old"
+    and seen.before.guild_id == "5",
+  )
+
+  import threading
+  from http.server import BaseHTTPRequestHandler, HTTPServer
+
+  from micro.discord import DownloadError, Err, download
+
+  class Files(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+      found = self.path == "/a.png"
+      self.send_response(200 if found else 404)
+      self.end_headers()
+      self.wfile.write(b"png-bytes" if found else b"")
+
+    def log_message(self, format: str, *args: Any) -> None:
+      pass
+
+  files = HTTPServer(("127.0.0.1", 0), Files)
+  threading.Thread(target=files.serve_forever, daemon=True).start()
+  base = f"http://127.0.0.1:{files.server_port}"
+  found_file = await download(f"{base}/a.png")
+  missing_file = await download(f"{base}/gone.png")
+  files.shutdown()
+  files.server_close()
+  unreachable = await download(f"{base}/a.png")
+  check(
+    "download returns the bytes, or an Err with the status or the connection failure",
+    found_file.unwrap() == b"png-bytes"
+    and (missing_file.unwrap_or(None) is None)
+    and unreachable.is_err,
+  )
+  check(
+    "a missing file carries its HTTP status",
+    isinstance(missing_file, Err)
+    and isinstance(missing_file.error, DownloadError)
+    and missing_file.error.status == 404,
+  )
+
   import inspect
 
   from micro.discord import objects as object_module
@@ -3055,29 +3114,29 @@ async def service_scenarios() -> None:
     await next()
 
   @service.handle(ECHO)
-  async def echo(request: Say) -> str:
+  async def echo(ctx: Context, request: Say) -> str:
     return request.text
 
   @service.handle(SECRET)
-  async def secret(request: Say) -> str:
+  async def secret(ctx: Context, request: Say) -> str:
     return "the secret"
 
   @service.handle(OTHER)
-  async def other(request: Say) -> str:
+  async def other(ctx: Context, request: Say) -> str:
     return "unreachable"
 
   DROPS = RequestSchema[Say, str](id="mw.drops", input=Say, output=str)
   LOOKS = RequestSchema[Say, str](id="mw.looks", input=Say, output=str)
 
   @service.handle(DROPS)
-  async def drops(request: Say) -> str:
+  async def drops(ctx: Context, request: Say) -> str:
     from micro.result import Err
 
     Err(ValueError("a failure nobody looked at"))
     return "fine"
 
   @service.handle(LOOKS)
-  async def looks(request: Say) -> str:
+  async def looks(ctx: Context, request: Say) -> str:
     from micro.result import Err
 
     return Err(ValueError("looked at")).unwrap_or("fine")

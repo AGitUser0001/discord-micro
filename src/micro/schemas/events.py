@@ -35,9 +35,9 @@ if TYPE_CHECKING:
   GUILD_MEMBER_ADD: DispatchSchema[objects.Member]
   GUILD_MEMBER_REMOVE: DispatchSchema[gateway.GatewayGuildMemberRemoveDispatchData]
   GUILD_MEMBER_UPDATE: DispatchSchema[objects.Member]
-  GUILD_ROLE_CREATE: DispatchSchema[gateway.GatewayGuildRoleModifyDispatchData]
-  GUILD_ROLE_DELETE: DispatchSchema[gateway.GatewayGuildRoleDeleteDispatchData]
-  GUILD_ROLE_UPDATE: DispatchSchema[gateway.GatewayGuildRoleModifyDispatchData]
+  GUILD_ROLE_CREATE: DispatchSchema[objects.Role]
+  GUILD_ROLE_DELETE: DispatchSchema[objects.Role]
+  GUILD_ROLE_UPDATE: DispatchSchema[objects.Role]
   GUILD_SCHEDULED_EVENT_CREATE: DispatchSchema[gateway.APIGuildScheduledEvent]
   GUILD_SCHEDULED_EVENT_DELETE: DispatchSchema[gateway.APIGuildScheduledEvent]
   GUILD_SCHEDULED_EVENT_UPDATE: DispatchSchema[gateway.APIGuildScheduledEvent]
@@ -116,9 +116,9 @@ _PAYLOADS: dict[str, str | None] = {
   'GUILD_MEMBER_ADD': 'Member',
   'GUILD_MEMBER_REMOVE': 'GatewayGuildMemberRemoveDispatchData',
   'GUILD_MEMBER_UPDATE': 'Member',
-  'GUILD_ROLE_CREATE': 'GatewayGuildRoleModifyDispatchData',
-  'GUILD_ROLE_DELETE': 'GatewayGuildRoleDeleteDispatchData',
-  'GUILD_ROLE_UPDATE': 'GatewayGuildRoleModifyDispatchData',
+  'GUILD_ROLE_CREATE': 'Role',
+  'GUILD_ROLE_DELETE': 'Role',
+  'GUILD_ROLE_UPDATE': 'Role',
   'GUILD_SCHEDULED_EVENT_CREATE': 'APIGuildScheduledEvent',
   'GUILD_SCHEDULED_EVENT_DELETE': 'APIGuildScheduledEvent',
   'GUILD_SCHEDULED_EVENT_UPDATE': 'APIGuildScheduledEvent',
@@ -178,6 +178,7 @@ _VIEWS = {
   'Guild',
   'Member',
   'Message',
+  'Role',
   'User',
 }
 

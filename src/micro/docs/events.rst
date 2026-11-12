@@ -47,7 +47,7 @@ the payload, as a bound object (:doc:`objects`) when the event is about one:
 
 ``MESSAGE_CREATE`` and ``MESSAGE_UPDATE`` give a ``Message``; ``GUILD_MEMBER_ADD`` and
 ``GUILD_MEMBER_UPDATE`` a ``Member``; ``CHANNEL_*`` and ``THREAD_*`` a ``Channel``;
-``GUILD_CREATE`` and ``GUILD_UPDATE`` a ``Guild``; ``USER_UPDATE`` a ``User``. Every other event
+``GUILD_CREATE`` and ``GUILD_UPDATE`` a ``Guild``; ``GUILD_ROLE_*`` a ``Role`` (with ``guild_id`` filled in; for a delete only its ``id`` is known); ``USER_UPDATE`` a ``User``. Every other event
 is Discord's generated model of its payload.
 
 Before and after

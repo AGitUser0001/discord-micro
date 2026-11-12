@@ -39,6 +39,8 @@ if TYPE_CHECKING:
   from micro.discord.enums import InteractionType as InteractionType
   from micro.discord.enums import OverwriteType as OverwriteType
   from micro.discord.enums import TextInputStyle as TextInputStyle
+  from micro.discord.files import DownloadError as DownloadError
+  from micro.discord.files import download as download
   from micro.discord.http_service import BadRequest as BadRequest
   from micro.discord.http_service import DiscordAPIError as DiscordAPIError
   from micro.discord.http_service import DiscordHTTPClient as DiscordHTTPClient
@@ -164,6 +166,8 @@ __getattr__, __dir__ = exports(
     "DiscordHTTPWorker": ".http_service",
     "DiscordServerError": ".http_service",
     "DiscordState": ".state",
+    "DownloadError": ".files",
+    "download": ".files",
     "Draft": ".ui",
     "Embed": ".ui",
     "EmbedAuthor": ".ui",
@@ -243,6 +247,7 @@ __all__ = [
   "DiscordHTTPWorker",
   "DiscordServerError",
   "DiscordState",
+  "DownloadError",
   "Draft",
   "Embed",
   "EmbedAuthor",
@@ -298,6 +303,7 @@ __all__ = [
   "VoiceState",
   "asset",
   "colour",
+  "download",
   "enums",
   "filters",
   "http_operations",

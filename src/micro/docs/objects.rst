@@ -58,6 +58,10 @@ is its URL. It is sent back as the bare hash. ``created_at`` on a ``User`` or ``
 read from its id. ``member.display_name`` is the server
 nickname, else the user's display name.
 
+To get the file itself, ``download(url)`` returns its bytes as a :class:`Result` (a missing file is an
+``Err`` with the HTTP ``status``): ``data = (await download(user.display_avatar.url)).unwrap()``,
+or ``await download(message.attachments[0].url)``.
+
 Objects act
 -----------
 
@@ -151,6 +155,8 @@ Reference
    micro.discord.objects.Attachment
    micro.discord.objects.Message
    micro.discord.asset.Asset
+   micro.discord.files.download
+   micro.discord.files.DownloadError
    micro.discord.enums.ChannelType
    micro.discord.enums.OverwriteType
    micro.discord.enums.InteractionType

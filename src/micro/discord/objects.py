@@ -241,6 +241,19 @@ class Member(_View, MemberActions):
 
 class Role(Object, RoleActions):
   _full = "GuildRoleResponse"
+
+  @model_validator(mode="before")
+  @classmethod
+  def _from_event(cls, data: Any) -> Any:
+    """Read a role as Discord's role events send it: `{"guild_id", "role"}` (created,
+    updated) or `{"guild_id", "role_id"}` (deleted)."""
+    if isinstance(data, dict):
+      if isinstance(data.get("role"), dict):
+        return {**data["role"], "guild_id": data.get("guild_id")}
+      if "role_id" in data and "id" not in data:
+        return {"id": data["role_id"], "guild_id": data.get("guild_id")}
+    return data
+
   guild_id: str | None = None
   """The guild this role is in (Micro fills it in where it builds a role; its actions
   need it)."""
