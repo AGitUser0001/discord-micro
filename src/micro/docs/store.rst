@@ -101,6 +101,17 @@ Rules of the schema
   lists of those (``[String!]!``), ``Bytes`` (declare ``scalar Bytes``; values are base64
   strings; files up to tens of megabytes are fine), and any other ``scalar`` you declare
   (a ``scalar DateTime`` is stored and returned as the string you give it).
+* **Maps and anything-goes values**: declare ``scalar Map`` and a field ``settings: Map`` holds
+  any JSON object (nested maps, lists, numbers, strings), read and written as a plain dict.
+  Change one key without rewriting the rest, atomically, with map arithmetic in ``@update``::
+
+     put(id: ID!, patch: Map!): User
+       @update(key: {id: id}, set: {settings: "current.settings + $patch"})   # {k: v} sets keys
+     drop(id: ID!, keys: [String!]!): User
+       @update(key: {id: id}, set: {settings: "current.settings - $keys"})    # removes keys
+
+  A missing map counts as empty. Keys of a map are strings (JSON); you cannot filter on
+  what is inside a map, so anything you look things up by belongs in its own field.
 * **``Int`` is 32 bits.** Discord ids (snowflakes) do not fit: use ``ID`` or ``String``
   for them. ``Float`` is exact up to 2^53.
 * **Every root field needs a directive.** The store never guesses where something is

@@ -1,7 +1,7 @@
 """An embedded, disk-backed, schemaless graph executor on SQLite.
 
 The graph lives in one file: nodes (label, identity, JSON properties), edges
-(label, source, target), and large property values (files, big JSON) in a side
+(label, source, target, JSON properties), and large property values (files, big JSON) in a side
 table so node rows stay small. Many store processes on one machine can share
 the file (WAL mode); RAM holds only SQLite's page cache. It executes exactly
 the ISO GQL subset Micro's compiler emits and rejects anything else clearly.
@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS edges (
   id INTEGER PRIMARY KEY,
   label TEXT NOT NULL,
   src INTEGER NOT NULL REFERENCES nodes(id),
-  dst INTEGER NOT NULL REFERENCES nodes(id)
+  dst INTEGER NOT NULL REFERENCES nodes(id),
+  props TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS edges_out ON edges(src, label);
 CREATE INDEX IF NOT EXISTS edges_in ON edges(dst, label);
@@ -83,6 +84,7 @@ class _Edge:
   label: str
   src: int
   dst: int
+  props: dict[str, Any] = field(default_factory=dict)
   deleted: bool = False
 
 
@@ -132,11 +134,11 @@ class _Run:
   def edges(self, node: _Node, label: str, outgoing: bool) -> list[_Edge]:
     column, other = ("src", "dst") if outgoing else ("dst", "src")
     rows = self.db.execute(
-      f"SELECT id, label, src, dst FROM edges WHERE {column} = ? AND label = ? ORDER BY id",
+      f"SELECT id, label, src, dst, props FROM edges WHERE {column} = ? AND label = ? ORDER BY id",
       (node.id, label),
     ).fetchall()
     del other
-    return [_Edge(*row) for row in rows]
+    return [_Edge(row[0], row[1], row[2], row[3], json.loads(row[4])) for row in rows]
 
   def get(self, node: _Node, key: str) -> Any:
     if node.deleted:
@@ -193,12 +195,19 @@ class _Run:
       (json.dumps(node.props, separators=(",", ":")), node.id),
     )
 
-  def connect(self, label: str, source: _Node, target: _Node) -> _Edge:
+  def connect(
+    self,
+    label: str,
+    source: _Node,
+    target: _Node,
+    props: Mapping[str, Any] | None = None,
+  ) -> _Edge:
+    kept = dict(props or {})
     cursor = self.db.execute(
-      "INSERT INTO edges (label, src, dst) VALUES (?, ?, ?)",
-      (label, source.id, target.id),
+      "INSERT INTO edges (label, src, dst, props) VALUES (?, ?, ?, ?)",
+      (label, source.id, target.id, json.dumps(kept, separators=(",", ":"))),
     )
-    return _Edge(cursor.lastrowid or 0, label, source.id, target.id)
+    return _Edge(cursor.lastrowid or 0, label, source.id, target.id, kept)
 
   def delete_node(self, node: _Node, *, detach: bool) -> None:
     if node.deleted:
@@ -539,9 +548,23 @@ class _Run:
     value = self.eval(node.base, row)
     for step in node.steps or []:
       other = self.eval(step.term, row)
+      plus = step.sign.name == "PLUS_SIGN"
+      if (
+        isinstance(other, dict) and plus and (value is None or isinstance(value, dict))
+      ):
+        # A map plus a map: the entries of the second set or replace those of the first
+        # (a missing map counts as empty), so one key changes atomically.
+        value = {**(value or {}), **other}  # pyright: ignore[reportUnknownVariableType]
+        continue
+      if isinstance(value, dict) and not plus and isinstance(other, str | list):
+        # A map minus a key (or a list of keys): those entries are gone.
+        gone = {other} if isinstance(other, str) else set(other)  # pyright: ignore[reportUnknownArgumentType]
+        value = {k: v for k, v in value.items() if k not in gone}  # pyright: ignore[reportUnknownVariableType]
+        continue
       if value is None or other is None:
         return None
-      value = value + other if step.sign.name == "PLUS_SIGN" else value - other
+      left: Any = value
+      value = left + other if plus else left - other
     return value
 
   def _eval_ArithmeticTerm(self, node: Any, row: _Row) -> Any:
@@ -579,6 +602,8 @@ class _Run:
       key = name.identifier.name
       if isinstance(target, _Node):
         target = self.get(target, key)
+      elif isinstance(target, _Edge):
+        target = target.props.get(key)
       elif isinstance(target, dict):
         target = target.get(key)  # pyright: ignore[reportUnknownMemberType]
       else:
@@ -797,6 +822,11 @@ class SQLiteGraph:
     # Wait for other store processes' writes instead of failing (SQLite's lock).
     db.execute("PRAGMA busy_timeout=2147483647")
     db.executescript(_SCHEMA)
+    if not any(
+      column[1] == "props" for column in db.execute("PRAGMA table_info(edges)")
+    ):
+      # A store made before edges had properties: add the column; old edges get {}.
+      db.execute("ALTER TABLE edges ADD COLUMN props TEXT NOT NULL DEFAULT '{}'")
     self._db = db
 
   def _connection(self) -> sqlite3.Connection:

@@ -4101,6 +4101,57 @@ async def store_scenarios() -> None:
       engine.composition_error is None and engine.available,
     )
 
+    maps = SQLiteGraph(os.path.join(raw, "maps.db"))
+    await maps.start()
+    map_engine = GraphEngine(maps)
+    await map_engine.apply_modules(
+      [
+        GraphModule(
+          id="maps",
+          schema="""
+            scalar Map
+            type User @entity(key: ["id"]) { id: ID!  settings: Map }
+            type Query { user(id: ID!): User @from(key: {id: id}) }
+            type Mutation {
+              addUser(id: ID!, settings: Map): User!
+                @insert(key: {id: id}, set: {id: id, settings: settings})
+              put(id: ID!, patch: Map!): User
+                @update(key: {id: id}, set: {settings: "current.settings + $patch"})
+              drop(id: ID!, keys: [String!]!): User
+                @update(key: {id: id}, set: {settings: "current.settings - $keys"})
+            }
+          """,
+        )
+      ]
+    )
+    nested = {"theme": "dark", "n": 3, "nested": {"a": [1, 2]}}
+    await ask(
+      map_engine,
+      'mutation($s: Map) { addUser(id: "1", settings: $s) { id } }',
+      {"s": nested},
+    )
+    got = await ask(map_engine, '{ user(id: "1") { settings } }')
+    check(
+      "a Map field holds any nested dict and returns it as it was",
+      got["data"]["user"]["settings"] == nested,
+      got,
+    )
+    await ask(
+      map_engine,
+      'mutation($p: Map!) { put(id: "1", patch: $p) { id } }',
+      {"p": {"theme": "light", "x": 1}},
+    )
+    await ask(
+      map_engine, 'mutation { drop(id: "1", keys: ["n", "nested", "nope"]) { id } }'
+    )
+    after = await ask(map_engine, '{ user(id: "1") { settings } }')
+    check(
+      "map + {k: v} sets one key and map - [k] removes keys, leaving the rest",
+      after["data"]["user"]["settings"] == {"theme": "light", "x": 1},
+      after,
+    )
+    await maps.close()
+
     await ask(engine, 'mutation { addGuild(id: "1", name: "Home") { id name prefix } }')
     dup = await ask(engine, 'mutation { addGuild(id: "1", name: "Again") { id } }')
     check(
