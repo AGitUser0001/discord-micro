@@ -15,6 +15,7 @@ import re
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -4110,13 +4111,19 @@ async def store_scenarios() -> None:
           id="maps",
           schema="""
             scalar Map
-            type User @entity(key: ["id"]) { id: ID!  settings: Map }
+            type User @entity(key: ["id"]) {
+              id: ID!
+              settings: Map
+              labels: Map @map(key: String, value: String)
+            }
             type Query { user(id: ID!): User @from(key: {id: id}) }
             type Mutation {
               addUser(id: ID!, settings: Map): User!
                 @insert(key: {id: id}, set: {id: id, settings: settings})
               put(id: ID!, patch: Map!): User
                 @update(key: {id: id}, set: {settings: "current.settings + $patch"})
+              label(id: ID!, patch: Map!): User
+                @update(key: {id: id}, set: {labels: "current.labels + $patch"})
               drop(id: ID!, keys: [String!]!): User
                 @update(key: {id: id}, set: {settings: "current.settings - $keys"})
             }
@@ -4149,6 +4156,106 @@ async def store_scenarios() -> None:
       "map + {k: v} sets one key and map - [k] removes keys, leaving the rest",
       after["data"]["user"]["settings"] == {"theme": "light", "x": 1},
       after,
+    )
+    from micro.store import GraphBatch, GraphStatement
+
+    await maps.execute(
+      GraphBatch(
+        (
+          GraphStatement("INSERT (a:A {_micro_id: 'a'})"),
+          GraphStatement("INSERT (b:B {_micro_id: 'b'})"),
+          GraphStatement(
+            "MATCH (a:A), (b:B) WHERE a._micro_id = 'a' AND b._micro_id = 'b' "
+            "INSERT (a)-[:r {slot: 7, note: 'x'}]->(b)"
+          ),
+          GraphStatement("MATCH (a:A)-[e:r]->(b:B) SET e.slot = 8"),
+          GraphStatement("MATCH (a:A)-[e:r]->(b:B) SET e.note = NULL"),
+        )
+      )
+    )
+    stored = (
+      sqlite3.connect(os.path.join(raw, "maps.db"))
+      .execute("SELECT props FROM edges WHERE label = 'r'")
+      .fetchall()
+    )
+    check(
+      "an edge's properties are written on insert, changed by SET, and removed by NULL",
+      stored == [('{"slot":8}',)],
+      stored,
+    )
+    good = await ask(
+      map_engine,
+      'mutation($p: Map!) { label(id: "1", patch: $p) { labels } }',
+      {"p": {"theme": "dark"}},
+    )
+    bad = await ask(
+      map_engine,
+      'mutation($p: Map!) { label(id: "1", patch: $p) { labels } }',
+      {"p": {"theme": 5}},
+    )
+    check(
+      "a typed map (@map(key: String, value: String)) accepts its types and refuses others",
+      good["data"]["label"]["labels"] == {"theme": "dark"}
+      and bad["data"] is None
+      and "is not a String" in bad["errors"][0]["message"],
+      (good, bad),
+    )
+    keyed = GraphEngine(maps)
+    await keyed.apply_modules(
+      [
+        GraphModule(
+          id="keyed",
+          schema="""
+            type Guild @entity(key: ["id"]) { id: ID!  roleAt: [RoleAt!]! }
+            type RoleAt @edge(target: "role") { position: Int!  role: Role! }
+            type Role @entity(key: ["id"]) { id: ID!  name: String! }
+            type Query { guild(id: ID!): Guild @from(key: {id: id}) }
+            type Mutation {
+              addGuild(id: ID!): Guild! @insert(key: {id: id}, set: {id: id})
+              addRole(id: ID!, name: String!): Role!
+                @insert(key: {id: id}, set: {id: id, name: name})
+              place(guild: ID!, position: Int!, role: ID!): Boolean
+                @connect(fromType: "Guild", fromKey: {id: guild}, toType: "Role",
+                         toKey: {id: role}, field: "roleAt", edge: {position: position})
+              vacate(guild: ID!, position: Int!, role: ID!): Boolean
+                @disconnect(fromType: "Guild", fromKey: {id: guild}, toType: "Role",
+                            toKey: {id: role}, field: "roleAt", edge: {position: position})
+            }
+          """,
+        )
+      ]
+    )
+    await ask(keyed, 'mutation { addGuild(id: "g") { id } }')
+    for role in ("r1", "r2"):
+      await ask(keyed, f'mutation {{ addRole(id: "{role}", name: "{role}") {{ id }} }}')
+    for position, role in ((1, "r1"), (2, "r2"), (3, "r1")):
+      await ask(
+        keyed,
+        f'mutation {{ place(guild: "g", position: {position}, role: "{role}") }}',
+      )
+    listed = await ask(
+      keyed, '{ guild(id: "g") { roleAt { position role { name } } } }'
+    )
+    check(
+      "a keyed list reads back each key with its entity, one entity under two keys",
+      listed["data"]["guild"]["roleAt"]
+      == [
+        {"position": 1, "role": {"name": "r1"}},
+        {"position": 2, "role": {"name": "r2"}},
+        {"position": 3, "role": {"name": "r1"}},
+      ],
+      listed,
+    )
+    await ask(keyed, 'mutation { vacate(guild: "g", position: 3, role: "r1") }')
+    entries = sorted(
+      sqlite3.connect(os.path.join(raw, "maps.db")).execute(
+        "SELECT props FROM edges WHERE label LIKE 'roleAt%'"
+      )
+    )
+    check(
+      "@connect and @disconnect take edge properties: one role under two keys, one removed",
+      entries == [('{"position":1}',), ('{"position":2}',)],
+      entries,
     )
     await maps.close()
 

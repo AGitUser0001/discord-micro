@@ -112,6 +112,11 @@ Rules of the schema
 
   A missing map counts as empty. Keys of a map are strings (JSON); you cannot filter on
   what is inside a map, so anything you look things up by belongs in its own field.
+
+  Declare the types and writes are checked: ``labels: Map @map(key: String, value: String)``
+  refuses a number as a value, whether the map is written whole or by ``+ $patch`` or
+  ``- $keys``. Key and value may each be ``String``, ``ID``, ``Int``, ``Float`` or
+  ``Boolean`` (a key is a JSON string that must read as that type: ``"7"`` for ``Int``).
 * **``Int`` is 32 bits.** Discord ids (snowflakes) do not fit: use ``ID`` or ``String``
   for them. ``Float`` is exact up to 2^53.
 * **Every root field needs a directive.** The store never guesses where something is
@@ -230,6 +235,22 @@ An entity-typed field is an **edge** to another entity. You make and remove edge
               toType: "Command", toKey: {guildId: guildId, name: name},
               field: "commands")
 
+* **Keyed entries (a map of anything to an entity).** ``@connect`` and ``@disconnect`` take an
+  optional ``edge: {name: argument}``: the entry's own properties, stored on the edge. The
+  same entity can be there under several keys, and ``@disconnect`` with ``edge`` removes only
+  the entry with those properties::
+
+     place(guild: ID!, position: Int!, role: ID!): Boolean
+       @connect(fromType: "Guild", fromKey: {id: guild}, toType: "Role", toKey: {id: role},
+                field: "roleAt", edge: {position: position})
+
+  To read the keys back, make the field's type an **entry type** marked ``@edge(target: ...)``:
+  its fields are the edge's properties, and ``target`` is the field that is the entity::
+
+     type Guild  @entity(key: ["id"]) { id: ID!  roleAt: [RoleAt!]! }
+     type RoleAt @edge(target: "role") { position: Int!  role: Role! }
+
+     { guild(id: "g") { roleAt { position role { name } } } }
 * A list-valued field (``[Command!]!``) holds many; a single-valued one (``guild: Guild``)
   holds one.
 * Edges go one way. For both directions, declare both fields and connect both.

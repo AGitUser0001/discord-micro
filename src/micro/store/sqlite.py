@@ -195,6 +195,18 @@ class _Run:
       (json.dumps(node.props, separators=(",", ":")), node.id),
     )
 
+  def update_edge(self, edge: _Edge, values: Mapping[str, Any]) -> None:
+    """Set (or, for None, remove) properties of an edge."""
+    for key, value in values.items():
+      if value is None:
+        edge.props.pop(key, None)
+      else:
+        edge.props[key] = value
+    self.db.execute(
+      "UPDATE edges SET props = ? WHERE id = ?",
+      (json.dumps(edge.props, separators=(",", ":")), edge.id),
+    )
+
   def connect(
     self,
     label: str,
@@ -265,9 +277,11 @@ class _Run:
           if type(item).__name__ != "SetPropertyItem":
             raise Unsupported(type(item).__name__)
           target = row.get(item.binding_variable_reference.binding_variable.name)
+          name = item.property_name.identifier.name
           if isinstance(target, _Node):
-            name = item.property_name.identifier.name
             self.update(target, {name: self.eval(item.value_expression, row)})
+          elif isinstance(target, _Edge):
+            self.update_edge(target, {name: self.eval(item.value_expression, row)})
       return rows
     if kind == "DeleteStatement":
       detach = statement.mode is not None and statement.mode.name == "DETACH"
@@ -393,12 +407,12 @@ class _Run:
         if previous is None or node is None:
           previous = node
           continue
-        name, label = _insert_filler(edge, self, row)[:2]
+        name, label, edge_props = _insert_filler(edge, self, row)
         if label is None:
           raise Unsupported("inserting an edge without a label")
         pointing_right = type(edge).__name__ == "InsertEdgePointingRight"
         source, destination = (previous, node) if pointing_right else (node, previous)
-        created = self.connect(label, source, destination)
+        created = self.connect(label, source, destination, edge_props)
         if name:
           row[name] = created
         previous = node
@@ -603,7 +617,7 @@ class _Run:
       if isinstance(target, _Node):
         target = self.get(target, key)
       elif isinstance(target, _Edge):
-        target = target.props.get(key)
+        target = str(target.id) if key == "_micro_id" else target.props.get(key)
       elif isinstance(target, dict):
         target = target.get(key)  # pyright: ignore[reportUnknownMemberType]
       else:

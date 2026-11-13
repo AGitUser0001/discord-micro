@@ -195,6 +195,77 @@ class GraphCompiler:
 
     return CompiledOperation(GraphBatch((statement,)), shape)
 
+  def _project_edge(
+    self,
+    request: GraphQLRequest,
+    entry_type: GraphQLObjectType,
+    edge: Any,
+    selection: FieldNode,
+    variable: str,
+    coordinate: str,
+    fragments: Mapping[str, FragmentDefinitionNode],
+    clauses: list[str],
+    parameters: dict[str, JsonValue],
+    returns: list[str],
+    counters: dict[str, int],
+  ) -> _Projection:
+    """One keyed entry of a list: the edge's properties, and the entity it points at."""
+    response_name = selection.alias.value if selection.alias else selection.name.value
+    if selection.selection_set is None:
+      raise GraphQLError(f"Field {response_name!r} requires a selection set.")
+    target_type = get_named_type(entry_type.fields[edge.target].type)
+    if (
+      not isinstance(target_type, GraphQLObjectType)
+      or target_type.name not in self.graph.entities
+    ):
+      raise GraphQLError(f"{entry_type.name}.{edge.target} must be an entity.")
+    edge_variable = _node(counters)
+    target_variable = _node(counters)
+    clauses.append(
+      f"OPTIONAL MATCH ({variable})-[{edge_variable}:{physical_reference(coordinate)}]->"
+      f"({target_variable}:{physical_type(target_type.name)})"
+    )
+    identity_column = _column(counters)
+    returns.append(f"{edge_variable}._micro_id AS {identity_column}")
+    entry = _Projection(response_name, identity_column, [], [])
+    for child in _collect_fields(
+      request.schema,
+      entry_type,
+      selection.selection_set,
+      fragments,
+      request.variables,
+    ):
+      name = child.alias.value if child.alias else child.name.value
+      if child.name.value == edge.target:
+        entry.object_fields.append(
+          (
+            name,
+            self._project_object(
+              request,
+              target_type,
+              child,
+              target_variable,
+              target_type.name,
+              fragments,
+              clauses,
+              parameters,
+              returns,
+              counters,
+            ),
+            False,
+          )
+        )
+      elif child.name.value == "__typename" or child.name.value in entry_type.fields:
+        column = _column(counters)
+        if child.name.value == "__typename":
+          returns.append(f"'{entry_type.name}' AS {column}")
+        else:
+          returns.append(f"{edge_variable}.{child.name.value} AS {column}")
+        entry.scalar_fields.append((name, column))
+      else:
+        raise GraphQLError(f"Type {entry_type.name} has no field {child.name.value!r}.")
+    return entry
+
   def _project_object(
     self,
     request: GraphQLRequest,
@@ -282,6 +353,28 @@ class GraphCompiler:
         raise GraphQLError(
           f"Field {object_type.name}.{child.name.value} has an unsupported type."
         )
+      edge_binding = self.graph.type_bindings.get(named.name, {}).get("edge")
+      if edge_binding is not None:
+        projection.object_fields.append(
+          (
+            child_name,
+            self._project_edge(
+              request,
+              named,
+              edge_binding.value,
+              child,
+              variable,
+              f"{path}.{child.name.value}",
+              fragments,
+              clauses,
+              parameters,
+              returns,
+              counters,
+            ),
+            True,
+          )
+        )
+        continue
       node_variable = _node(counters)
       coordinate = f"{path}.{child.name.value}"
       child_path = named.name if named.name in self.graph.entities else coordinate

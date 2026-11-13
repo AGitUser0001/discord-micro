@@ -12,6 +12,7 @@ from ._composer import (
   KeyBinding,
   _compile_key,
   _is_list_type,
+  check_map,
 )
 
 _GQL = Dialect.get_or_raise("fullgql")
@@ -124,6 +125,8 @@ class RelationshipMutation:
   target: Entity
   target_key: KeyBinding
   field: str
+  edge: KeyBinding | None = None
+  """Properties of the edge itself, each named after the argument that supplies it."""
 
 
 def _directive_argument(context: DirectiveBindContext, name: str):
@@ -238,11 +241,16 @@ def _compile_entity_mutation(context: DirectiveCompileContext) -> DirectiveResul
     if assignment.argument is not None:
       if assignment.argument not in context.arguments:
         continue  # not passed: an insert leaves it unset, an update leaves it as it is
+      check_map(
+        binding.entity, assignment.field, context.arguments[assignment.argument]
+      )
       parameter = f"{context.parameter_prefix}_{assignment.argument}"
       parameters[parameter] = cast(JsonValue, context.arguments[assignment.argument])
       value = f"${parameter}"
     else:
       assert assignment.expression is not None
+      for name in assignment.expression.parameters:  # `current.f + $patch`, `- $keys`
+        check_map(binding.entity, assignment.field, context.arguments.get(name))
       value, expression_parameters = assignment.expression.render(
         binding.entity,
         context.variable,
@@ -351,7 +359,20 @@ def _attach_relationship(
     source_key.key_fields not in source.keys or target_key.key_fields not in target.keys
   ):
     raise GraphCompositionError(f"@{action} key does not match an @entity key.")
-  return RelationshipMutation(action, source, source_key, target, target_key, field)
+  directive = next(
+    item for item in context.field.directives or () if item.name.value == action
+  )
+  edge_argument = next(
+    (item for item in directive.arguments or () if item.name.value == "edge"), None
+  )
+  edge = (
+    _compile_key(edge_argument.value, arguments, action)
+    if edge_argument is not None
+    else None
+  )
+  return RelationshipMutation(
+    action, source, source_key, target, target_key, field, edge
+  )
 
 
 def _attach_connect(context: DirectiveBindContext) -> RelationshipMutation:
@@ -384,9 +405,19 @@ def _compile_relationship(context: DirectiveCompileContext) -> DirectiveResult:
       f"{target_variable}._micro_id = ${target_parameter}"
     ),
   ]
+  edge_parameters: dict[str, JsonValue] = {}
+  edge_properties: list[str] = []
+  edge_filters: list[str] = []
+  for name, argument in binding.edge.fields if binding.edge is not None else ():
+    parameter = f"{context.parameter_prefix}_edge_{name}"
+    edge_parameters[parameter] = cast(JsonValue, context.arguments.get(argument))
+    edge_properties.append(f"{name}: ${parameter}")
+    edge_filters.append(f"{relationship_variable}.{name} = ${parameter}")
   if binding.action == "connect":
+    properties = f" {{{', '.join(edge_properties)}}}" if edge_properties else ""
     clauses.append(
-      f"INSERT ({source_variable})-[:{relationship_type}]->({target_variable})"
+      f"INSERT ({source_variable})-[:{relationship_type}{properties}]->"
+      f"({target_variable})"
     )
   else:
     clauses[0] = (
@@ -394,6 +425,8 @@ def _compile_relationship(context: DirectiveCompileContext) -> DirectiveResult:
       f"[{relationship_variable}:{relationship_type}]->"
       f"({target_variable}:{physical_type(binding.target.name)})"
     )
+    if edge_filters:  # only the entry under that key (and any other edge property)
+      clauses[1] += " AND " + " AND ".join(edge_filters)
     clauses.append(f"DELETE {relationship_variable}")
   return DirectiveResult(
     tuple(clauses),
@@ -404,6 +437,7 @@ def _compile_relationship(context: DirectiveCompileContext) -> DirectiveResult:
       target_parameter: entity_identity(
         binding.target.name, binding.target_key.evaluate(context.arguments)
       ),
+      **edge_parameters,
     },
     "",
     "true",
@@ -436,7 +470,7 @@ DELETE_DIRECTIVE = DirectiveMetadata(
 
 _RELATIONSHIP_DEFINITION = (
   "(fromType: String!, fromKey: GQL!, toType: String!, "
-  "toKey: GQL!, field: String!) on FIELD_DEFINITION"
+  "toKey: GQL!, field: String!, edge: GQL) on FIELD_DEFINITION"
 )
 
 CONNECT_DIRECTIVE = DirectiveMetadata(

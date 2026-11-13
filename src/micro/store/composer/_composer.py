@@ -85,6 +85,8 @@ class Entity:
   name: str
   keys: tuple[tuple[str, ...], ...]
   fields: frozenset[str]
+  maps: tuple[tuple[str, str, str], ...] = ()
+  """`(field, key scalar, value scalar)` for each `Map @map(key: K, value: V)` field."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +127,7 @@ def compose_graph(
   directive_map = {directive.name: directive for directive in registered}
   if len(directive_map) != len(registered):
     raise GraphCompositionError("Graph directive names must be unique.")
-  registered_types = (ENTITY_DIRECTIVE, *type_directives)
+  registered_types = (ENTITY_DIRECTIVE, EDGE_DIRECTIVE, *type_directives)
   type_directive_map = {directive.name: directive for directive in registered_types}
   if len(type_directive_map) != len(registered_types):
     raise GraphCompositionError("Graph type directive names must be unique.")
@@ -224,6 +226,7 @@ def _merge_documents(
   metadata_sdl = "\n".join(
     (
       "scalar GQL",
+      "directive @map(key: String!, value: String!) on FIELD_DEFINITION",
       *(item.definition for item in type_directives),
       *(item.definition for item in directives),
     )
@@ -427,8 +430,111 @@ def _attach_entity(context: TypeDirectiveBindContext) -> Entity:
       f"Entity {definition.name.value} has key fields which it does not define: "
       f"{', '.join(sorted(missing))}."
     )
-  return Entity(definition.name.value, tuple(keys), frozenset(declared_fields))
+  maps: list[tuple[str, str, str]] = []
+  for field in definition.fields or ():
+    for directive in field.directives or ():
+      if directive.name.value != "map":
+        continue
+      scalars = {
+        argument.name.value: argument.value.value
+        for argument in directive.arguments or ()
+        if isinstance(argument.value, StringValueNode | EnumValueNode)
+      }
+      if set(scalars) != {"key", "value"} or not all(
+        name in MAP_SCALARS for name in scalars.values()
+      ):
+        raise GraphCompositionError(
+          f"{definition.name.value}.{field.name.value}: @map(key:, value:) takes "
+          f"scalars: {', '.join(MAP_SCALARS)}."
+        )
+      maps.append((field.name.value, scalars["key"], scalars["value"]))
+  return Entity(
+    definition.name.value, tuple(keys), frozenset(declared_fields), tuple(maps)
+  )
 
+
+MAP_SCALARS = ("String", "ID", "Int", "Float", "Boolean")
+# What a map's keys and values may be declared as.
+
+
+def _matches(scalar: str, value: object) -> bool:
+  if scalar in ("String", "ID"):
+    return isinstance(value, str)
+  if scalar == "Boolean":
+    return isinstance(value, bool)
+  if scalar == "Int":
+    return isinstance(value, int) and not isinstance(value, bool)
+  return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def check_map(entity: Entity, field: str, patch: object) -> None:
+  """Raise ValueError unless every key and value of `patch` (a dict, or for a removal a
+  list of keys) is of the type the field's `@map` declares."""
+  declared = next((m for m in entity.maps if m[0] == field), None)
+  if declared is None or patch is None:
+    return
+  _, key_scalar, value_scalar = declared
+  if isinstance(patch, list):
+    entries: list[tuple[object, object | None]] = [(key, None) for key in patch]
+  elif isinstance(patch, dict):
+    entries = list(patch.items())
+  else:
+    raise ValueError(f"{entity.name}.{field} is a map: pass an object.")  # noqa: TRY004
+  for key, value in entries:
+    if key_scalar not in ("String", "ID"):
+      try:
+        {
+          "Int": int,
+          "Float": float,
+          "Boolean": lambda k: {"true": True, "false": False}[k],
+        }[key_scalar](key)
+      except ValueError, KeyError, TypeError:
+        raise ValueError(
+          f"{entity.name}.{field}: key {key!r} is not a {key_scalar}."
+        ) from None
+    elif not isinstance(key, str):
+      raise ValueError(f"{entity.name}.{field}: key {key!r} is not a {key_scalar}.")
+    if value is not None and not _matches(value_scalar, value):
+      raise ValueError(
+        f"{entity.name}.{field}[{key!r}]: {value!r} is not a {value_scalar}."
+      )
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeType:
+  """An object type that is one keyed entry of an entity's list: its fields are the
+  edge's own properties, and `target` names the field that is the entity it points at."""
+
+  name: str
+  target: str
+
+
+def _attach_edge(context: TypeDirectiveBindContext) -> EdgeType:
+  definition = context.type
+  directive = next(
+    item for item in definition.directives or () if item.name.value == "edge"
+  )
+  target = next(
+    (
+      argument.value.value
+      for argument in directive.arguments or ()
+      if argument.name.value == "target" and isinstance(argument.value, StringValueNode)
+    ),
+    None,
+  )
+  declared = {field.name.value for field in definition.fields or ()}
+  if target is None or target not in declared:
+    raise GraphCompositionError(
+      f"@edge on {definition.name.value} must name one of its fields as target."
+    )
+  return EdgeType(definition.name.value, target)
+
+
+EDGE_DIRECTIVE = TypeDirectiveMetadata(
+  "edge",
+  "directive @edge(target: String!) on OBJECT",
+  _attach_edge,
+)
 
 ENTITY_DIRECTIVE = TypeDirectiveMetadata(
   "entity",
