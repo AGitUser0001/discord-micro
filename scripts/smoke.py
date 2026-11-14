@@ -1148,6 +1148,10 @@ async def helper_scenarios() -> None:
     return {"id": "100", "name": "bot", "description": "", **more}
 
   person = {"id": "1", "username": "owner"}
+  generated = {
+    "bot": None,
+    "avatar": None,
+  }  # what the generated model dumps for what Discord left out
   solo = Application.model_validate(application(owner=person))
   team = Application.model_validate(
     application(
@@ -1176,15 +1180,24 @@ async def helper_scenarios() -> None:
       },
     )
   )
-  served: list[dict[str, Any]] = [application(owner=person)]
+  served: list[dict[str, Any]] = [application(owner={**person, **generated})]
   fetches: list[int] = []
 
   class Fetched:
     def __init__(self, data: dict[str, Any]) -> None:
       self.data = data
 
-    def model_dump(self, **_: Any) -> dict[str, Any]:
-      return self.data
+    def model_dump(self, *, exclude_none: bool = False, **_: Any) -> dict[str, Any]:
+      """Like the generated model: what was left out is None unless told to drop it."""
+
+      def drop(value: Any) -> Any:
+        if isinstance(value, dict):
+          return {k: drop(v) for k, v in value.items() if v is not None}
+        if isinstance(value, list):
+          return [drop(v) for v in value]
+        return value
+
+      return drop(self.data) if exclude_none else self.data
 
   async def get_my_application() -> Any:
     fetches.append(1)
@@ -1202,7 +1215,7 @@ async def helper_scenarios() -> None:
   )
   first = await state.application()
   again = await state.application()
-  served[0] = application(owner={"id": "7", "username": "new owner"})
+  served[0] = application(owner={"id": "7", "username": "new owner", **generated})
   cached_ids = await state.owner_ids()
   refreshed_ids = await state.owner_ids(refresh=True)
   check(
@@ -1270,7 +1283,7 @@ async def helper_scenarios() -> None:
   async def respond(draft: object) -> None:
     sent.append(draft)
 
-  def flow(responded: bool) -> Any:
+  def flow(responded: bool, answer: Any = respond) -> Any:
     from micro.discord.enums import InteractionType
 
     return SimpleNamespace(
@@ -1278,7 +1291,7 @@ async def helper_scenarios() -> None:
         expired=False,
         type=InteractionType.APPLICATION_COMMAND,
         responded=responded,
-        respond=respond,
+        respond=answer,
       )
     )
 
@@ -1286,6 +1299,29 @@ async def helper_scenarios() -> None:
   silent = not sent
   await report_failure(flow(False), RuntimeError("boom"))
   await report_failure(flow(True), refused(50013, 403))
+  import logging
+
+  logged: list[logging.LogRecord] = []
+
+  class Catch(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+      logged.append(record)
+
+  async def too_late(draft: object) -> None:
+    raise refused(10062)
+
+  hook_logger = logging.getLogger("micro.discord.interactions._templates")
+  catch = Catch()
+  hook_logger.addHandler(catch)
+  try:
+    await report_failure(flow(False, too_late), RuntimeError("boom"))
+  finally:
+    hook_logger.removeHandler(catch)
+  check(
+    "a hook reply that is itself too late is one line in the log, not a traceback",
+    len(logged) == 1 and logged[0].exc_info is None,
+    [(r.getMessage(), r.exc_info) for r in logged],
+  )
   check(
     "the default error hook stays quiet for an interaction Discord already dropped",
     silent and len(sent) == 2,

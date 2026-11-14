@@ -126,7 +126,10 @@ class DiscordState:
           api = DiscordHTTPClient(self.runtime).api
         fetched = (await api.get_my_application()).unwrap()
         cache.value = self._make(
-          Application, fetched.model_dump(mode="json", by_alias=True)
+          Application,
+          # What Discord left out is None in the generated model: leave it out, so the
+          # view's own defaults apply.
+          fetched.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
       return cache.value
 

@@ -288,8 +288,13 @@ async def report_failure(flow: Flow, error: BaseException) -> None:
     else:
       text = "Something went wrong."
     await interaction.respond(Draft(text, ephemeral=True))
-  except Exception:
-    log.warning("Could not report an interaction error", exc_info=True)
+  except Exception as failure:
+    if _answered_too_late(failure):
+      log.warning(
+        "The interaction expired before its error could be reported to the user"
+      )
+    else:
+      log.warning("Could not report an interaction error", exc_info=True)
 
 
 class Commands(InteractionTemplate):
