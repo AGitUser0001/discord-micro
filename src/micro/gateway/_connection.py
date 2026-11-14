@@ -107,10 +107,7 @@ class HikariShard:
         )
       except BaseException:
         self.bot = None
-        # A start that fails or is cancelled halfway has already opened hikari's REST
-        # session; closing the bot is what releases it. Shielded so a cancel still closes it.
-        with suppress(Exception):
-          await asyncio.shield(bot.close())
+        await _close_bot(bot)  # it may have opened hikari's REST session already
         raise
 
   async def close(self) -> None:
@@ -118,7 +115,7 @@ class HikariShard:
     async with self._lock:
       bot, self.bot = self.bot, None
       if bot is not None:
-        await bot.close()
+        await _close_bot(bot)
       if self.connection_id is not None:
         await self.host.on_connection(self, ConnectionEventKind.CLOSED)
       self.connection_id = None
@@ -237,3 +234,27 @@ class HikariShard:
       limit=0,
       nonce=f"micro:{guild_id}",
     )
+
+
+async def _close_bot(bot: Any) -> None:
+  """Close a hikari bot completely, even if the caller is cancelled while it does.
+
+  `bot.close()` stops the shards first and closes hikari's REST session (an aiohttp
+  session) last. A cancel between the two, such as a roll stopping this worker, would
+  leave that session open and asyncio would report "Unclosed client session". So the
+  close runs as its own task that a cancel cannot interrupt, and the REST client is
+  closed explicitly in case `close()` had nothing left to do (a start that failed).
+  """
+
+  async def close() -> None:
+    with suppress(Exception):
+      await bot.close()
+    with suppress(Exception):
+      await bot.rest.close()
+
+  closing = asyncio.ensure_future(close())
+  try:
+    await asyncio.shield(closing)
+  except asyncio.CancelledError:
+    await closing  # finish closing before the cancel goes on
+    raise

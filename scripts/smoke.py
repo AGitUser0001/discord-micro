@@ -1132,7 +1132,34 @@ async def helper_scenarios() -> None:
     and seen.before.guild_id == "5",
   )
 
+  from contextlib import suppress
+
   from micro.discord.text import escape
+  from micro.gateway._connection import _close_bot
+
+  class SlowBot:
+    def __init__(self) -> None:
+      self.closed: list[str] = []
+      self.rest = SimpleNamespace(close=self.close_rest)
+
+    async def close(self) -> None:
+      await asyncio.sleep(0.2)  # the shards stopping
+      self.closed.append("bot")
+
+    async def close_rest(self) -> None:
+      self.closed.append("rest")
+
+  slow = SlowBot()
+  closing = asyncio.ensure_future(_close_bot(slow))
+  await asyncio.sleep(0.05)
+  closing.cancel()  # a roll stops the worker in the middle of the close
+  with suppress(asyncio.CancelledError):
+    await closing
+  check(
+    "a shard close that is cancelled halfway still finishes and closes the REST session",
+    slow.closed == ["bot", "rest"],
+    slow.closed,
+  )
 
   check(
     "escape shows text literally, keeps links, and can escape them too",

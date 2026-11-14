@@ -23,6 +23,8 @@ A context carries everything a handler reaches for, apart from the runtime:
 * ``ctx.client``: request, emit or enqueue to your own services (:doc:`services`).
 * ``ctx.store``: your durable records, in the Store (:doc:`data`).
 * ``ctx.application_id``: your application's id.
+* ``ctx.command_id(name)`` and ``ctx.mention_command(name)``: the id Discord gave one of your
+  commands, and the clickable ``</name:id>`` (:doc:`commands`).
 
 The interaction reaches the same context as ``interaction.context``. This page is about the
 interaction.
@@ -205,6 +207,23 @@ Errors
    micro.discord.interactions.InvalidResponse
    micro.discord.interactions.AlreadyResponded
    micro.discord.interactions.InteractionExpired
+
+Text helpers
+------------
+
+``micro.discord.text`` is the small toolbox for message text, all plain functions:
+
+.. code-block:: python
+
+   from micro.discord import text
+
+   text.escape(member.display_name)          # Markdown switched off, links kept: shown as typed
+   text.escape_mentions(note)                # @everyone and <@id> made inert
+   text.timestamp(when, "R")                 # <t:...:R>, "3 hours ago"
+   text.user(user_id)                        # <@id>; also role, channel and command
+   text.snowflake_time(message.id)           # when an id was created
+
+Escape anything a user typed before putting it inside your own formatting.
 
 Reference
 ---------

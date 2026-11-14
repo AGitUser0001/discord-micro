@@ -132,6 +132,10 @@ releases, so a shard changes hands without a gap in events. Identifies are space
 a gate in ``micro_locks`` so that all workers together respect Discord's
 ``max_concurrency``.
 
+A shard that is released, or whose lease another worker took over, is closed completely,
+the Gateway connection and the HTTP session behind it. That holds even if the worker is
+stopped in the middle of it (a roll), so no "Unclosed client session" is left behind.
+
 Only the **owner** of a shard publishes its dispatches. A connection that is not the
 owner (a standby while handing over, or a new generation warming up) publishes nothing, but
 still keeps what it hears of its guilds in memory (:doc:`state`), so it can answer as soon

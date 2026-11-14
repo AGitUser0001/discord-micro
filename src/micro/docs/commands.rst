@@ -104,6 +104,24 @@ Behaviour worth knowing
 * **Handlers must be ``async``.**
 * To make commands at runtime instead of in code, see :doc:`runtime-commands`.
 
+Command ids and mentions
+------------------------
+
+Discord gives every command an id when it is synced, and Micro keeps them. Use them to
+point at a command in a message, where Discord shows it as a clickable chip:
+
+.. code-block:: python
+
+   await interaction.respond(f"Open one with {await ctx.mention_command('ticket open')}")
+   found = await ctx.command_id("ticket")                    # the id, or None before the first sync
+   menu = await ctx.command_id("Say hi", type=CommandType.USER)   # a context-menu command
+
+``mention_command`` takes the name with its subcommand (``"ticket open"``) and looks up the
+top-level command's id: a guild's own command first, then the global one (pass ``guild_id=``).
+Only slash commands can be mentioned; without a stored id it falls back to plain, escaped
+text (``/ticket open``). For a context-menu command, ``command_id`` takes the exact name
+and ``type`` (``CommandType.USER`` or ``CommandType.MESSAGE``).
+
 Reference
 ---------
 
