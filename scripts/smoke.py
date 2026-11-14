@@ -1132,6 +1132,17 @@ async def helper_scenarios() -> None:
     and seen.before.guild_id == "5",
   )
 
+  from micro.discord.text import escape
+
+  check(
+    "escape shows text literally, keeps links, and can escape them too",
+    escape("/ticket _open_ *x*") == r"/ticket \_open\_ \*x\*"
+    and escape("# a\n- b\n1. c\n> d") == "\\# a\n\\- b\n1\\. c\n\\> d"
+    and escape("see https://a.b/c_d_e") == "see https://a.b/c_d_e"
+    and escape("[x](https://a.b/c)") == "\\[x](https://a.b/c)"
+    and escape("https://a.b/c_d", ignore_links=False) == r"https://a.b/c\_d",
+  )
+
   import threading
   from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -1928,6 +1939,14 @@ async def sync_scenarios() -> None:
     await f.until(lambda: s.names() == ["feedback", "hello", "slow"], 10)
     puts = len(f.where("PUT", r"/commands$"))
     check("registered with one bulk overwrite", puts == 1, puts)
+    from micro.discord.interactions._sync import command_id
+
+    hello = await command_id(s.runtime, "hello")
+    check(
+      "the ids Discord gave the commands are stored and can be looked up",
+      bool(hello) and await command_id(s.runtime, "nope") is None,
+      hello,
+    )
     await s.sync.sync()
     check(
       "an unchanged pass does not call Discord again",

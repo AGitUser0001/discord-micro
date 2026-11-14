@@ -35,6 +35,8 @@ class _Synced(BaseModel):
   model_config = ConfigDict(extra="ignore")
 
   hash: str
+  ids: dict[str, str] = {}
+  """Discord's id of each command in this scope, by `"<type>:<name>"` (`"1:ticket"`)."""
 
 
 class CommandSync(Component):
@@ -181,7 +183,7 @@ async def sync_commands(
       scopes_of.setdefault(key, []).append(scope)
   synced = await runtime.table(subjects.STATE_BUCKET, _Synced)
   previous = {
-    key.removeprefix(SYNCED_PREFIX): entry.value.hash
+    key.removeprefix(SYNCED_PREFIX): entry.value
     for key, entry in (await synced.items(SYNCED_PREFIX + ">")).items()
   }
   changed = False
@@ -195,12 +197,17 @@ async def sync_commands(
     digest = hashlib.sha256(
       json.dumps(commands, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+    ids: dict[str, str] = {}
     try:
-      if previous.get(scope) == digest and not (
-        verify and await _drifted(http, application_id, scope, commands)
+      known = previous.get(scope)
+      if (
+        known is not None
+        and known.hash == digest
+        and (known.ids or not commands)  # a record from before ids were kept is redone
+        and not (verify and await _drifted(http, application_id, scope, commands))
       ):
         continue
-      await _overwrite(http, application_id, scope, commands)
+      ids = _command_ids(await _overwrite(http, application_id, scope, commands))
     except Exception as error:
       if not commands and _unreachable(error):
         # Nothing to clear in a guild the bot is no longer in.
@@ -210,7 +217,7 @@ async def sync_commands(
       continue
     changed = True
     if commands:
-      await synced.put(SYNCED_PREFIX + scope, _Synced(hash=digest))
+      await synced.put(SYNCED_PREFIX + scope, _Synced(hash=digest, ids=ids))
     else:
       await synced.delete(SYNCED_PREFIX + scope)
     log.info("Synced %d commands for %s", len(commands), scope)
@@ -222,17 +229,41 @@ async def sync_commands(
   return changed
 
 
+def _command_ids(response: Any) -> dict[str, str]:
+  """`{"<type>:<name>": id}` from Discord's answer to a bulk overwrite."""
+  return {
+    f"{item.get('type', 1)}:{item['name']}": str(item["id"]) for item in response or ()
+  }
+
+
+async def command_id(
+  runtime: Any,
+  name: str,
+  *,
+  guild_id: int | str | None = None,
+  type: int = 1,
+) -> str | None:
+  """The id Discord gave a synced command: the guild's own, else the global one. None
+  until a sync has stored it (or if there is no such command)."""
+  synced = await runtime.table(subjects.STATE_BUCKET, _Synced)
+  for scope in (*([str(guild_id)] if guild_id is not None else ()), "global"):
+    entry = await synced.get(SYNCED_PREFIX + scope)
+    if entry is not None and f"{type}:{name}" in entry.value.ids:
+      return entry.value.ids[f"{type}:{name}"]
+  return None
+
+
 async def _overwrite(
   http: Any, application_id: str, scope: str, commands: list[JsonValue]
-) -> None:
+) -> Any:
   if scope == "global":
-    await http.call(
+    return await http.call(
       "bulk_set_application_commands",
       path={"application_id": application_id},
       body=commands,
     )
   else:
-    await http.call(
+    return await http.call(
       "bulk_set_guild_application_commands",
       path={"application_id": application_id, "guild_id": scope},
       body=commands,

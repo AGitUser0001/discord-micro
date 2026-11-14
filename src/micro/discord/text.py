@@ -7,6 +7,7 @@ await ctx.respond(f"{text.escape(name)} joined {text.timestamp(when, 'R')}")
 
 import re
 from datetime import UTC, datetime
+from re import Match
 from typing import Literal
 
 DISCORD_EPOCH_MS = 1420070400000
@@ -16,16 +17,39 @@ type TimestampStyle = Literal["t", "T", "d", "D", "f", "F", "s", "S", "R"]
 """How Discord shows a timestamp: `t`/`T` time, `d`/`D` date, `f`/`F` date and time,
 `s`/`S` short date and time, `R` relative ("3 hours ago")."""
 
-_MARKDOWN = re.compile(r"([\\*_~`|>#\-\[\]()])")
-_LINE_START = re.compile(r"^(\s*)(\d+)\.(\s)", re.MULTILINE)
+_URL = r"<[^:\s>]+:/[^\s>]+>|(?:https?|steam)://[^\s<]+[^<.,:;\"'\]\s]"
+_MARKDOWN = (
+  r"(?P<indent>^[ \t]*)(?P<marker>>|#|-)"
+  r"|(?P<ordinal>^[ \t]*\d+)(?P<dot>\.)(?=[ \t])"
+  r"|(?P<char>[\\*_~|`]|\[(?=[^\n]*\]\([^\n]*\)))"
+)
+_ESCAPE_MARKDOWN = re.compile(_MARKDOWN, re.MULTILINE)
+_ESCAPE_MARKDOWN_KEEP_LINKS = re.compile(rf"(?P<url>{_URL})|{_MARKDOWN}", re.MULTILINE)
 
 
-def escape(text: str) -> str:
-  """`text` with Discord's Markdown switched off, so it shows exactly as written.
+def _escape_match(match: Match[str]) -> str:
+  if (url := match.groupdict().get("url")) is not None:
+    return url
+  if (marker := match["marker"]) is not None:
+    return f"{match['indent']}\\{marker}"
+  if (dot := match["dot"]) is not None:
+    return f"{match['ordinal']}\\{dot}"
+  return f"\\{match['char']}"
+
+
+def escape(text: str, *, ignore_links: bool = True) -> str:
+  """Escape everything Discord would render as markdown, so `text` shows literally.
+
+  Escapes ``\\ * _ ~ | ```, the ``[`` of a masked link ``[x](y)``, and the markers
+  that mean something at the start of a line: ``>`` quotes, ``#`` headings, ``-``
+  lists and ``-#`` subtext, and ``1.`` numbered lists. With `ignore_links`, URLs
+  and ``<scheme:...>`` links are left untouched. Mentions are not markdown; control
+  those with allowed mentions.
 
   Use it on anything a user typed (names, titles) that goes inside your own formatting.
   """
-  return _LINE_START.sub(r"\1\2\\.\3", _MARKDOWN.sub(r"\\\1", text))
+  pattern = _ESCAPE_MARKDOWN_KEEP_LINKS if ignore_links else _ESCAPE_MARKDOWN
+  return pattern.sub(_escape_match, text)
 
 
 def escape_mentions(text: str) -> str:

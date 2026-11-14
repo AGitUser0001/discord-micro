@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
   from micro.discord.api import DiscordAPI
+  from micro.discord.enums import CommandType
   from micro.discord.http_service import DiscordHTTPClient
   from micro.discord.state import DiscordState
   from micro.gateway import GatewayControl
@@ -63,6 +64,35 @@ class Context:
     from micro.gateway import GatewayControl
 
     return GatewayControl(self.http.runtime)
+
+  async def command_id(
+    self,
+    name: str,
+    *,
+    guild_id: int | str | None = None,
+    type: CommandType | None = None,
+  ) -> str | None:
+    """Discord's id for one of your commands (the guild's own, else the global one), or
+    None until a sync has stored it. `type` is None for a slash command, or a
+    `CommandType.USER` / `CommandType.MESSAGE` context-menu command, by its exact name
+    (`"Say hi"`). For a subcommand give its top-level command."""
+    from ._sync import command_id
+
+    return await command_id(
+      self.http.runtime, name, guild_id=guild_id, type=int(type or 1)
+    )
+
+  async def mention_command(
+    self, name: str, *, guild_id: int | str | None = None
+  ) -> str:
+    """A command as Discord shows it, clickable: `</ticket open:1234>`. `name` may include
+    the subcommand (`"ticket open"`). Only slash commands can be mentioned: Discord has no
+    clickable form for context-menu commands. Without a synced id it is plain text (`/ticket open`,
+    with Markdown switched off so a name like `_x_` shows as written)."""
+    from micro.discord import text
+
+    found = await self.command_id(name.split()[0], guild_id=guild_id)
+    return text.command(name, found) if found else text.escape(f"/{name}")
 
   @cached_property
   def timers(self) -> Timers:
