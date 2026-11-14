@@ -18,6 +18,7 @@ from ._control import (
   GuildMembersRequest,
   PresenceUpdate,
   ShardLease,
+  ShardPresenceUpdate,
   VoiceStateUpdate,
 )
 from ._settings import SETTINGS_NAME, GatewaySettings
@@ -197,15 +198,38 @@ class GatewayControl:
     activity: ActivityUpdate | None = None,
     idle_since: datetime | None = None,
     afk: bool = False,
+    shard_id: int | None = None,
   ) -> None:
-    """Set the bot's presence on every current and future shard connection.
+    """Set the bot's presence on every current and future shard connection, or, with
+    `shard_id`, on that one shard only.
 
-    Stored in the `presence` field of the `gateway` config table.
+    The shared presence is stored in the `presence` field of the `gateway` config table.
+    A shard's own presence is a live command to the worker that owns the shard: it keeps
+    it (through reconnects and a handover to another worker) whatever the shared presence
+    becomes, until `reset_presence`, but not through a restart of the whole deployment.
+
+    Raises:
+      ValueError: `shard_id` is negative.
+      RoutingError: No Gateway worker owns that shard.
     """
     update = PresenceUpdate.model_validate(
       {"status": status, "activity": activity, "idle_since": idle_since, "afk": afk}
     )
-    await (await self.settings()).update(presence=update)
+    settings = await self.settings()
+    if shard_id is None:
+      await settings.update(presence=update)
+      return
+    await self._send_shard(
+      _shard(shard_id), "presence", ShardPresenceUpdate(presence=update)
+    )
+
+  async def reset_presence(self, shard_id: int) -> None:
+    """Take a shard back to the shared presence (or plain online, if there is none).
+
+    Raises:
+      ValueError: `shard_id` is negative.
+    """
+    await self._send_shard(_shard(shard_id), "presence", ShardPresenceUpdate())
 
   async def request_guild_members(
     self,
@@ -268,7 +292,11 @@ class GatewayControl:
     return lease.value.connection_id
 
   async def _send(self, guild_id: int, operation: str, command: BaseModel) -> None:
-    shard_id = await self.shard_for(guild_id)
+    await self._send_shard(await self.shard_for(guild_id), operation, command)
+
+  async def _send_shard(
+    self, shard_id: int, operation: str, command: BaseModel
+  ) -> None:
     try:
       reply = await self.runtime.nats.request(
         subjects.gateway_control(shard_id, operation),
@@ -281,3 +309,9 @@ class GatewayControl:
       raise RequestTimeoutError(f"Gateway {operation} timed out.") from exc
     if (reply.headers or {}).get("Micro-Status") == "error":
       raise RemoteError(f"gateway.{operation}", "handler_failed", reply.data.decode())
+
+
+def _shard(shard_id: int) -> int:
+  if shard_id < 0:
+    raise ValueError(f"A shard id is zero or more, not {shard_id}.")
+  return shard_id

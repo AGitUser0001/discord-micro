@@ -40,7 +40,9 @@ Routes
    * - ``POST /gateway/roll``
      - Replaces every connection.
    * - ``PUT /gateway/presence``
-     - Sets the bot's presence.
+     - Sets the bot's presence; with ``"shard_id"`` in the body, one shard's only.
+   * - ``DELETE /gateway/presence/{shard_id}``
+     - Takes that shard back to the shared presence.
 
 Request errors map to HTTP: ``invalid_input`` and ``incompatible_schema`` are 422,
 ``handler_failed`` and ``invalid_output`` are 500, a request nobody handles is 503, and an

@@ -22,6 +22,7 @@ from ._control import (
   GuildMembersRequest,
   PresenceUpdate,
   ShardLease,
+  ShardPresenceUpdate,
   VoiceStateUpdate,
 )
 from ._events import (
@@ -57,6 +58,8 @@ class _Held:
   starter: asyncio.Task[None] | None = None
   controls: list[Subscription] = field(default_factory=list)
   publishing: bool = False
+  presence: PresenceUpdate | None = None
+  """The presence given to this shard alone (None: it shows the shared one)."""
   state: ShardState = field(default_factory=ShardState)
   """What this connection knows of its guilds (answered while it publishes)."""
 
@@ -315,7 +318,7 @@ class GatewayWorker(Component):
       await self._presence.update({"max_concurrency": self.max_concurrency})
     if applied.new.presence != applied.old.presence:
       for held in tuple(self._held.values()):
-        if held.ready:
+        if held.ready and held.presence is None:  # a shard with its own keeps it
           await self._apply_status(held)
     self._wake.set()
 
@@ -456,6 +459,7 @@ class GatewayWorker(Component):
         ready=held.ready,
         releasing=releasing,
         connection_id=held.session.connection_id,
+        presence=held.presence,
       )
       assert held.revision is not None
       revision = await self._shards.update(
@@ -529,8 +533,12 @@ class GatewayWorker(Component):
         continue
       if not held.ready:
         continue
+      inherited = lease.value.presence if lease is not None else None
       claim = ShardLease(
-        owner=self.address, ready=True, connection_id=held.session.connection_id
+        owner=self.address,
+        ready=True,
+        connection_id=held.session.connection_id,
+        presence=inherited,
       )
       # Publish before claiming: an overlap duplicates events, a gap would lose them.
       active = self._active
@@ -640,6 +648,13 @@ class GatewayWorker(Component):
           ),
         ),
         await nats.subscribe(
+          subjects.gateway_control(shard_id, "presence"),
+          queue="micro.gateway",
+          cb=self._control(
+            held, ShardPresenceUpdate, lambda s, c: self._set_presence(held, c)
+          ),
+        ),
+        await nats.subscribe(
           subjects.gateway_control(shard_id, "voice"),
           queue="micro.gateway",
           cb=self._control(
@@ -653,6 +668,13 @@ class GatewayWorker(Component):
       for subscription in controls:
         with suppress(Exception):
           await subscription.unsubscribe()
+
+  async def _set_presence(self, held: _Held, command: ShardPresenceUpdate) -> None:
+    """Show a presence on this shard alone (None: the shared one again). It is remembered
+    while this worker owns the shard and travels with the lease."""
+    held.presence = command.presence
+    await self._apply_status(held, default=True)
+    self._wake.set()  # renew the lease soon, so a handover carries it
 
   def _control[ModelT: BaseModel](
     self,
@@ -698,11 +720,16 @@ class GatewayWorker(Component):
 
     return callback
 
-  async def _apply_status(self, held: _Held) -> None:
-    if self._status is None:
-      return
+  async def _apply_status(self, held: _Held, *, default: bool = False) -> None:
+    """Show this shard's presence: its own if it has one, else the shared one. With
+    `default`, a shard left with neither goes back to plain online."""
+    status = held.presence or self._status
+    if status is None:
+      if not default:
+        return
+      status = PresenceUpdate()
     try:
-      await held.session.update_presence(self._status)
+      await held.session.update_presence(status)
     except Exception:
       log.warning("Could not apply presence to %s", held.key, exc_info=True)
 

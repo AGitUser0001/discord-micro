@@ -74,6 +74,11 @@ class HTTPBridge(Component):
       Route("/gateway/shards", self.gateway_shards, methods=["PUT"]),
       Route("/gateway/roll", self.gateway_roll, methods=["POST"]),
       Route("/gateway/presence", self.gateway_presence, methods=["PUT"]),
+      Route(
+        "/gateway/presence/{shard_id:int}",
+        self.gateway_reset_presence,
+        methods=["DELETE"],
+      ),
     ]
 
   async def on_start(self) -> None:
@@ -171,7 +176,7 @@ class HTTPBridge(Component):
     return JSONResponse((await self._gateway().roll()).model_dump(), 202)
 
   async def gateway_presence(self, request: Request) -> Response:
-    """`PUT /gateway/presence`: set the bot's presence."""
+    """`PUT /gateway/presence`: set the bot's presence (of one shard, with `shard_id`)."""
     from micro.gateway import ActivityUpdate
 
     body = await request.json()
@@ -180,7 +185,13 @@ class HTTPBridge(Component):
       status=body.get("status", "online"),
       activity=ActivityUpdate.model_validate(activity) if activity else None,
       afk=bool(body.get("afk", False)),
+      shard_id=body.get("shard_id"),
     )
+    return Response(status_code=204)
+
+  async def gateway_reset_presence(self, request: Request) -> Response:
+    """`DELETE /gateway/presence/{shard_id}`: take a shard back to the shared presence."""
+    await self._gateway().reset_presence(request.path_params["shard_id"])
     return Response(status_code=204)
 
   def _gateway(self) -> Any:

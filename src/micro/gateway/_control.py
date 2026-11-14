@@ -24,6 +24,9 @@ class ShardLease(BaseModel):
   ready: bool = False
   releasing: bool = False
   connection_id: str | None = None
+  presence: PresenceUpdate | None = None
+  """What this shard shows when it was given a presence of its own (it travels with the
+  lease, so a worker that takes the shard over keeps showing it)."""
 
 
 class ActivityUpdate(BaseModel):
@@ -42,6 +45,14 @@ class PresenceUpdate(BaseModel):
   idle_since: datetime | None = None
   activity: ActivityUpdate | None = None
   afk: bool = False
+
+
+class ShardPresenceUpdate(BaseModel):
+  """A command to the owner of one shard: show this presence, or None for the shared one."""
+
+  model_config = ConfigDict(extra="ignore", frozen=True)
+
+  presence: PresenceUpdate | None = None
 
 
 class GuildMembersRequest(BaseModel):
@@ -70,3 +81,6 @@ class VoiceStateUpdate(BaseModel):
   channel_id: int | None = Field(default=None, gt=0)
   self_mute: bool = False
   self_deaf: bool = False
+
+
+ShardLease.model_rebuild()

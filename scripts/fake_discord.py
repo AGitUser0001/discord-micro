@@ -104,6 +104,8 @@ class FakeDiscord:
     self.members: dict[str, list[dict[str, Any]]] = {}
     """Members Discord returns for a guild when asked (op 8)."""
     self.member_requests: list[dict[str, Any]] = []
+    self.presence_updates: list[tuple[int, dict[str, Any]]] = []
+    """`(shard id, payload)` of every presence update a client sent (op 3)."""
     self.resumes = 0
     self._faults: list[Fault] = []
     self._acked: set[str] = set()
@@ -248,6 +250,9 @@ class FakeDiscord:
         session.identify = d
         self.sessions[session.id] = session
         await self._ready(session)
+      elif op == 3:
+        shard = session.identify.get("shard") or [0, 1]
+        self.presence_updates.append((int(shard[0]), frame["d"]))
       elif op == 8:
         d = frame["d"]
         self.member_requests.append(d)

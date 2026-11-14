@@ -1957,7 +1957,60 @@ async def gateway_config_scenarios() -> None:
       ),
     )
     await control.update_presence(status="idle")
+
+    async def sent(command: Any) -> None:
+      """Send a shard control once some worker owns that shard (they connect in turn)."""
+      from micro.errors import RoutingError
+
+      deadline = time.monotonic() + 20
+      while True:
+        try:
+          return await command()
+        except RoutingError:
+          if time.monotonic() > deadline:
+            raise
+          await asyncio.sleep(0.1)
+
+    await sent(lambda: control.update_presence(status="dnd", shard_id=1))
+
+    def shard_status(shard: int) -> list[str]:
+      return [d["status"] for number, d in f.presence_updates if number == shard]
+
+    await eventually(lambda: _value(shard_status(1)), lambda got: "dnd" in got)
+    check(
+      "a shard's own presence reaches that shard only, the shared one reaches the rest",
+      shard_status(1)[-1] == "dnd" and "dnd" not in shard_status(0),
+      (shard_status(0), shard_status(1)),
+    )
+    from micro.gateway._control import ShardLease
+
+    leases = await s.runtime.table(subjects.SHARDS_BUCKET, ShardLease)
+
+    async def lease_presence() -> list[Any]:
+      held = await leases.items()
+      return [entry.value.presence for key, entry in held.items() if key.endswith(".1")]
+
+    carried = await eventually(
+      lease_presence,
+      lambda found: any(p is not None and p.status == "dnd" for p in found),
+    )
+    check(
+      "a shard's own presence is kept in its lease, so a handover carries it",
+      any(p is not None and p.status == "dnd" for p in carried),
+      carried,
+    )
+    await sent(lambda: control.reset_presence(1))
+    await eventually(lambda: _value(shard_status(1)), lambda got: got[-1] == "idle")
+    check(
+      "resetting a shard's presence takes it back to the shared one",
+      shard_status(1)[-1] == "idle",
+      shard_status(1),
+    )
     await config.read()
+
+
+async def _value(value: Any) -> Any:
+  return value
 
 
 async def eventually(read: Any, ok: Any = bool, timeout: float = 15) -> Any:

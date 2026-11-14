@@ -167,6 +167,8 @@ or the :doc:`bridge` can use it.
 .. code-block:: python
 
    await control.update_presence(status="idle", activity=ActivityUpdate(name="maintenance"))
+   await control.update_presence(status="dnd", shard_id=3)   # only shard 3, live
+   await control.reset_presence(3)                           # back to the shared one
    await control.request_guild_members(guild_id, query="", limit=0)   # members arrive as events
    await control.update_voice_state(guild_id, channel_id, self_mute=True)
    shard = await control.shard_for(guild_id)
@@ -174,6 +176,12 @@ or the :doc:`bridge` can use it.
 
 * ``update_presence`` writes the presence to a table that every worker watches, so it is
   applied to every shard now and to any that connect later. It is not tied to a guild.
+  With ``shard_id`` it is not stored in the table: it is a live command to the worker that
+  owns that shard, which shows it at once and keeps it through reconnects and a handover to
+  another worker (it travels in the shard's lease), whatever the shared presence becomes, until
+  ``reset_presence(shard_id)``. A restart of the whole deployment forgets it, so set it again
+  from ``startup`` or ``every`` (shard ids belong to one generation: a new shard count makes
+  new shards). It raises ``RoutingError`` if no worker owns that shard yet.
 * ``request_guild_members`` and ``update_voice_state`` go to the one worker that owns the
   shard of that guild (``(guild_id >> 22) % shard_count``). They raise ``RoutingError`` if
   no worker owns it right now and ``RequestTimeoutError`` if it does not answer.
