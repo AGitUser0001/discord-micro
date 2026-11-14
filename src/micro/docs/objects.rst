@@ -149,6 +149,9 @@ Reference
    micro.discord.objects.User
    micro.discord.objects.Member
    micro.discord.objects.Role
+   micro.discord.objects.Application
+   micro.discord.objects.Team
+   micro.discord.objects.TeamMember
    micro.discord.objects.PermissionOverwrite
    micro.discord.objects.Channel
    micro.discord.objects.Guild

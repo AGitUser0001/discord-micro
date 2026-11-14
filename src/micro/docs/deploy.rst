@@ -41,7 +41,10 @@ projects need.
 
    micro dev                      # everything described in micro.toml
    micro dev scale app 4          # change a running group's replicas
-   micro dev roll app             # new replica, wait until ready, drain the old; repeat
+   micro dev roll app             # new replica, wait until ready, drain the old; repeat (on every node running it)
+   micro dev roll app worker      # several groups, one after another
+   micro dev roll --all           # every group on every node
+   micro dev roll app --node b    # only on node b (--node works with --all too)
    micro nodes list               # the machines running it, their processes, live components (--json for scripts)
 
 Logs go to stderr at ``INFO`` (``MICRO_LOG_LEVEL`` or ``-v`` changes it; ``-v`` also
@@ -86,7 +89,8 @@ CLI
 
    micro dev [-c micro.toml] [--name NAME]
    micro dev scale PROCESS N [--node NAME]
-   micro dev roll PROCESS [--node NAME]
+   micro dev roll PROCESS... [--node NAME]
+   micro dev roll --all [--node NAME]
    micro nodes list
    micro server start | status
    micro worker app | discord app | mybot.services.* micro.discord:DiscordHTTPWorker

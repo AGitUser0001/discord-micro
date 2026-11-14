@@ -239,6 +239,48 @@ class Member(_View, MemberActions):
     return await self.context.state.permissions(self.guild_id, self.id, channel_id)
 
 
+class TeamMember(_View):
+  """One member of the team that owns the application."""
+
+  user: User
+  membership_state: int
+  """`1` invited, `2` accepted (only an accepted member counts as an owner)."""
+  role: str = ""
+  """`admin`, `developer` or `read_only`."""
+
+
+class Team(Object):
+  """The team that owns the application, when it is not owned by one person."""
+
+  name: str = ""
+  owner_user_id: str = ""
+  members: list[TeamMember] = []
+
+
+class Application(Object):
+  """Your application (the bot), as Discord describes it. `ctx.state.application()`
+  fetches it once and keeps it; `ctx.api.get_my_application()` is the uncached call."""
+
+  _full = "PrivateApplicationResponse"
+
+  name: str = ""
+  description: str = ""
+  owner: User | None = None
+  """The person who owns it, or, for a team, the team's owner."""
+  team: Team | None = None
+
+  @property
+  def owner_ids(self) -> frozenset[int]:
+    """Who owns the bot: its owner, or, for a team, the owner and every member who has
+    accepted the invitation."""
+    if self.team is None:
+      return frozenset({int(self.owner.id)}) if self.owner is not None else frozenset()
+    accepted = {int(m.user.id) for m in self.team.members if m.membership_state == 2}
+    if self.team.owner_user_id:
+      accepted.add(int(self.team.owner_user_id))
+    return frozenset(accepted)
+
+
 class Role(Object, RoleActions):
   _full = "GuildRoleResponse"
 

@@ -124,6 +124,24 @@ the context (:doc:`objects`), so it can act and navigate:
    * - ``permissions``
      - a member's effective permissions, in a channel if given
 
+Your own application
+--------------------
+
+Everything above comes from the Gateway. The one exception is your application (the bot's
+own record: name, owner, team), which state fetches from Discord **once** and keeps for the
+life of the process, so asking again costs nothing:
+
+.. code-block:: python
+
+   app = await ctx.state.application()
+   app = await ctx.state.application(refresh=True)   # fetch it again (you changed the team, say)
+   ids = await ctx.state.owner_ids()                 # frozenset of ints
+   if interaction.user.id in {str(i) for i in ids}: ...
+
+``owner_ids()`` is the owner, or, when a team owns the bot, the owner and every member who
+has accepted the invitation (an invited member does not count yet). It is also
+``app.owner_ids``. ``ctx.api.get_my_application()`` stays the plain, uncached call.
+
 What a miss means
 -----------------
 

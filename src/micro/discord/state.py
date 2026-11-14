@@ -24,11 +24,15 @@ holds nothing until it is back, and members are only known to the extent events 
 Anything that is not about one guild (a user, a role or channel by id alone) is asked of
 every shard at once: whichever shards know it answer, and the newest copy of a user wins.
 A shard that is down simply does not contribute.
+
+The one thing that does come from Discord is your own application (`application()`,
+`owner_ids()`): fetched once per process and then kept, with `refresh=True` to fetch it again.
 """
 
 import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from weakref import WeakKeyDictionary
 
 from nats.errors import NoRespondersError
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -37,6 +41,7 @@ from pydantic_core import from_json, to_json
 
 from micro import subjects
 from micro.discord.objects import (
+  Application,
   Channel,
   Guild,
   GuildEmoji,
@@ -54,6 +59,19 @@ from micro.errors import RoutingError
 
 if TYPE_CHECKING:
   from micro.runtime import Runtime
+
+
+class _Cached:
+  """The application of one runtime, fetched once."""
+
+  def __init__(self) -> None:
+    self.value: Application | None = None
+    self.lock = asyncio.Lock()
+
+
+_applications: WeakKeyDictionary[Any, _Cached] = WeakKeyDictionary()
+"""One per runtime, so every `ctx.state` of a process shares it (an interaction gets a
+fresh context each time)."""
 
 ADMINISTRATOR = Permissions.ADMINISTRATOR
 ALL_PERMISSIONS = Permissions((1 << 53) - 1)
@@ -87,6 +105,35 @@ class DiscordState:
     self._control = GatewayControl(runtime)
     self._context = context
     """The `Context` the objects it returns are bound to (`ctx.state` has it)."""
+
+  async def application(self, *, refresh: bool = False) -> Application:
+    """Your application: fetched from Discord once, then kept (per process), so asking again
+    costs nothing. Pass `refresh=True` after changing it (a new owner, a team member) to
+    fetch it again. It is the one thing here that comes from Discord and not the Gateway;
+    `ctx.api.get_my_application()` is the call itself, uncached.
+
+    Raises:
+      DiscordAPIError: Discord refused the request (only on a fetch).
+    """
+    cache = _applications.setdefault(self.runtime, _Cached())
+    async with cache.lock:
+      if cache.value is None or refresh:
+        if self._context is not None:
+          api = self._context.api
+        else:
+          from micro.discord.http_service import DiscordHTTPClient
+
+          api = DiscordHTTPClient(self.runtime).api
+        fetched = (await api.get_my_application()).unwrap()
+        cache.value = self._make(
+          Application, fetched.model_dump(mode="json", by_alias=True)
+        )
+      return cache.value
+
+  async def owner_ids(self, *, refresh: bool = False) -> frozenset[int]:
+    """The ids of who owns the bot: its owner, or, for a team, the owner and every member
+    who has accepted (`await ctx.state.owner_ids()`, then `interaction.user.id in ids`)."""
+    return (await self.application(refresh=refresh)).owner_ids
 
   async def guild(self, guild_id: int | str) -> Guild | None:
     """The guild itself (its name, owner, settings). Its roles, channels and members

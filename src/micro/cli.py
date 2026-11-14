@@ -347,13 +347,24 @@ def _parser() -> argparse.ArgumentParser:
   dev_scale.set_defaults(handler=_dev, action="scale")
   dev_roll = dev_actions.add_parser(
     "roll",
-    help="replace every replica of a process group, one at a time",
+    help="replace every replica of process groups, one at a time",
+    description="Replaces every replica of each named process group (or of every group "
+    "with --all): a new one starts, and the old one drains once it is ready. A group is "
+    "rolled on every node that runs it (--node: only that one). Groups and nodes go one "
+    "after another, in the order given (--all: the order of micro.toml), and the first "
+    "that fails stops the rest.",
     parents=[config],
   )
-  dev_roll.add_argument("process")
+  dev_roll.add_argument("process", nargs="*", help="the groups to roll")
+  dev_roll.add_argument("--all", action="store_true", help="every group on every node")
   dev_roll.set_defaults(handler=_dev, action="roll")
-  for leaf in (dev_scale, dev_roll):
-    leaf.add_argument("--node", help="which node (default: the one running the group)")
+  dev_scale.add_argument(
+    "--node", help="which node (default: the one running the group)"
+  )
+  dev_roll.add_argument(
+    "--node",
+    help="roll only on this node (default: every node that runs the group)",
+  )
 
   nodes = command("nodes", "the machines running your bot")
   nodes_actions = nodes.add_subparsers()
@@ -830,19 +841,67 @@ def _age(seconds: int) -> str:
 async def _operate(args: argparse.Namespace) -> int:
   name, servers = _deployment(args.config)
   async with _connect(servers) as runtime:
-    target = _target(args, _nodes_of(runtime, name))
-    request: dict[str, Any] = {"process": args.process}
+    nodes = _nodes_of(runtime, name)
     if args.action == "scale":
-      request["replicas"] = args.replicas
-    reply = await runtime.nats.request(
-      subjects.node(name, target, args.action),
-      json.dumps(request).encode(),
-      # Rolling waits for each replacement to become ready, however long that is.
-      timeout=math.inf if args.action == "roll" else 30,
+      steps = [(_target(args.process, args.node, nodes), args.process)]
+    else:
+      steps = _roll_steps(args, nodes)
+    for number, (node, group) in enumerate(steps):
+      request: dict[str, Any] = {"process": group}
+      if args.action == "scale":
+        request["replicas"] = args.replicas
+      if len(steps) > 1:
+        print(f"Rolling {group} on {node} ({number + 1}/{len(steps)})", file=sys.stderr)
+      reply = await runtime.nats.request(
+        subjects.node(name, node, args.action),
+        json.dumps(request).encode(),
+        # Rolling waits for each replacement to become ready, however long that is.
+        timeout=math.inf if args.action == "roll" else 30,
+      )
+      body = json.loads(reply.data)
+      print(json.dumps(body, indent=2))
+      if not body.get("ok"):
+        left = [f"{rest} on {where}" for where, rest in steps[number + 1 :]]
+        if left:
+          print(f"Not rolled: {', '.join(left)}.", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _roll_steps(
+  args: argparse.Namespace, nodes: dict[str, Any]
+) -> list[tuple[str, str]]:
+  """`(node, group)` for everything a roll should replace, in order."""
+  if args.all and args.process:
+    raise ValueError("Name process groups, or pass --all, not both.")
+  if not args.all and not args.process:
+    raise ValueError("Name at least one process group to roll, or pass --all.")
+  if args.all:
+    steps = [
+      (node, group)
+      for node in sorted(nodes)
+      if not args.node or node == args.node
+      for group in nodes[node].metadata.get("processes") or []
+    ]
+    if args.node and args.node not in nodes:
+      raise ValueError(f"No node {args.node!r}; running: {', '.join(sorted(nodes))}.")
+    if not steps:
+      raise ValueError("No node runs any process group.")
+    return steps
+  steps: list[tuple[str, str]] = []
+  for group in dict.fromkeys(args.process):
+    if args.node:
+      steps.append((_target(group, args.node, nodes), group))
+      continue
+    running = sorted(
+      node
+      for node, entry in nodes.items()
+      if group in (entry.metadata.get("processes") or [])
     )
-    body = json.loads(reply.data)
-    print(json.dumps(body, indent=2))
-    return 0 if body.get("ok") else 1
+    if not running:
+      raise ValueError(f"No node runs a process group {group!r}.")
+    steps.extend((node, group) for node in running)  # on every node that runs it
+  return steps
 
 
 async def _services(args: argparse.Namespace) -> int:
@@ -880,22 +939,22 @@ async def _services(args: argparse.Namespace) -> int:
   return 0
 
 
-def _target(args: argparse.Namespace, nodes: dict[str, Any]) -> str:
-  """The node a scale or roll goes to: --node, or the one running that group."""
-  if args.node:
-    if args.node not in nodes:
-      raise ValueError(f"No node {args.node!r}; running: {', '.join(sorted(nodes))}.")
-    return args.node
+def _target(process: str, node: str | None, nodes: dict[str, Any]) -> str:
+  """The node a scale or roll goes to: `node`, or the one running that group."""
+  if node:
+    if node not in nodes:
+      raise ValueError(f"No node {node!r}; running: {', '.join(sorted(nodes))}.")
+    return node
   running = sorted(
-    node
-    for node, entry in nodes.items()
-    if args.process in (entry.metadata.get("processes") or [])
+    name
+    for name, entry in nodes.items()
+    if process in (entry.metadata.get("processes") or [])
   )
   if not running:
-    raise ValueError(f"No node runs a process group {args.process!r}.")
+    raise ValueError(f"No node runs a process group {process!r}.")
   if len(running) > 1:
     raise ValueError(
-      f"Several nodes run {args.process!r} ({', '.join(running)}); pass --node."
+      f"Several nodes run {process!r} ({', '.join(running)}); pass --node."
     )
   return running[0]
 

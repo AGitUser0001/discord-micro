@@ -58,6 +58,7 @@ if TYPE_CHECKING:
   from micro.discord.interactions import Interaction as Interaction
   from micro.discord.interactions import Modals as Modals
   from micro.discord.interactions import Option as Option
+  from micro.discord.objects import Application as Application
   from micro.discord.objects import Attachment as Attachment
   from micro.discord.objects import Channel as Channel
   from micro.discord.objects import Guild as Guild
@@ -71,6 +72,8 @@ if TYPE_CHECKING:
   from micro.discord.objects import ScheduledEvent as ScheduledEvent
   from micro.discord.objects import StageInstance as StageInstance
   from micro.discord.objects import Sticker as Sticker
+  from micro.discord.objects import Team as Team
+  from micro.discord.objects import TeamMember as TeamMember
   from micro.discord.objects import User as User
   from micro.discord.objects import VoiceState as VoiceState
   from micro.discord.permissions import Permissions as Permissions
@@ -199,6 +202,9 @@ __getattr__, __dir__ = exports(
     "RadioGroup": ".ui",
     "RateLimited": ".http_service",
     "Role": ".objects",
+    "Application": ".objects",
+    "Team": ".objects",
+    "TeamMember": ".objects",
     "RoleSelect": ".ui",
     "Section": ".ui",
     "SelectOption": ".ui",
@@ -221,6 +227,7 @@ __getattr__, __dir__ = exports(
 __all__ = [
   "ActionRow",
   "AllowedMentions",
+  "Application",
   "Asset",
   "Attachment",
   "BadRequest",
@@ -292,6 +299,8 @@ __all__ = [
   "StageInstance",
   "Sticker",
   "StringSelect",
+  "Team",
+  "TeamMember",
   "TextDisplay",
   "TextInput",
   "TextInputStyle",

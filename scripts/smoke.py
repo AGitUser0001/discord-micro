@@ -1132,12 +1132,119 @@ async def helper_scenarios() -> None:
     and seen.before.guild_id == "5",
   )
 
+  import argparse
   from contextlib import suppress
 
+  from micro.cli import _roll_steps
   from micro.discord.http_service import DiscordAPIError
   from micro.discord.interactions._pattern import RouteTable, as_route, wire_of
   from micro.discord.interactions._templates import report_failure
+  from micro.discord.objects import Application
+  from micro.discord.state import DiscordState
   from micro.discord.text import escape
+  from micro.result import Ok
+
+  def application(**more: Any) -> dict[str, Any]:
+    return {"id": "100", "name": "bot", "description": "", **more}
+
+  person = {"id": "1", "username": "owner"}
+  solo = Application.model_validate(application(owner=person))
+  team = Application.model_validate(
+    application(
+      owner={"id": "2", "username": "lead"},
+      team={
+        "id": "9",
+        "name": "crew",
+        "owner_user_id": "2",
+        "members": [
+          {
+            "user": {"id": "2", "username": "lead"},
+            "membership_state": 2,
+            "role": "admin",
+          },
+          {
+            "user": {"id": "3", "username": "dev"},
+            "membership_state": 2,
+            "role": "developer",
+          },
+          {
+            "user": {"id": "4", "username": "new"},
+            "membership_state": 1,
+            "role": "developer",
+          },
+        ],
+      },
+    )
+  )
+  served: list[dict[str, Any]] = [application(owner=person)]
+  fetches: list[int] = []
+
+  class Fetched:
+    def __init__(self, data: dict[str, Any]) -> None:
+      self.data = data
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+      return self.data
+
+  async def get_my_application() -> Any:
+    fetches.append(1)
+    return Ok(Fetched(served[0]))
+
+  state = DiscordState.__new__(DiscordState)
+
+  class FakeRuntime:
+    pass
+
+  fake_runtime: Any = FakeRuntime()
+  state.runtime = fake_runtime
+  state._context = SimpleNamespace(
+    api=SimpleNamespace(get_my_application=get_my_application)
+  )
+  first = await state.application()
+  again = await state.application()
+  served[0] = application(owner={"id": "7", "username": "new owner"})
+  cached_ids = await state.owner_ids()
+  refreshed_ids = await state.owner_ids(refresh=True)
+  check(
+    "the application is fetched once and kept; refresh fetches it again; owners are the "
+    "owner, or a team's owner and accepted members",
+    solo.owner_ids == {1}
+    and team.owner_ids == {2, 3}
+    and first is again
+    and cached_ids == {1}
+    and refreshed_ids == {7}
+    and len(fetches) == 2,
+    (solo.owner_ids, team.owner_ids, cached_ids, refreshed_ids, len(fetches)),
+  )
+
+  def machine(*groups: str) -> Any:
+    return SimpleNamespace(metadata={"processes": list(groups)})
+
+  fleet = {"a": machine("app", "worker"), "b": machine("app", "cron")}
+
+  def steps(*process: str, all: bool = False, node: str | None = None) -> Any:
+    try:
+      return _roll_steps(
+        argparse.Namespace(process=list(process), all=all, node=node), fleet
+      )
+    except ValueError as error:
+      return str(error)
+
+  check(
+    "roll takes several groups or --all, on every node that runs each; --node narrows it",
+    steps("worker", "cron") == [("a", "worker"), ("b", "cron")]
+    and steps("worker", "worker") == [("a", "worker")]
+    and steps(all=True) == [("a", "app"), ("a", "worker"), ("b", "app"), ("b", "cron")]
+    and steps(all=True, node="b") == [("b", "app"), ("b", "cron")]
+    and steps("app", node="a") == [("a", "app")]
+    and steps("app") == [("a", "app"), ("b", "app")]
+    and steps("app", "cron") == [("a", "app"), ("b", "app"), ("b", "cron")]
+    and "No node runs" in steps("nope")
+    and "not both" in steps("app", all=True)
+    and "at least one" in steps()
+    and "No node 'z'" in steps(all=True, node="z"),
+    steps("app"),
+  )
 
   table = RouteTable.build(
     {
