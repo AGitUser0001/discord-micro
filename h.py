@@ -3,3 +3,4 @@
 # this is a revolutionary change and will improve the bot in so many ways
 
 # this is very steamhappy
+print("hi h :D")
