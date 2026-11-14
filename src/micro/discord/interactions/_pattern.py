@@ -202,6 +202,8 @@ class RouteTable:
     """
     hits: list[str] = []
     for length in self._lengths:
+      if length > len(custom_id):
+        continue  # the slice would be the whole ID again: one bucket, hit once per length
       for queue, route in self._buckets.get(custom_id[:length], ()):
         if queue.startswith(scope) and route.match(custom_id) is not None:
           hits.append(queue)

@@ -1134,7 +1134,56 @@ async def helper_scenarios() -> None:
 
   from contextlib import suppress
 
+  from micro.discord.http_service import DiscordAPIError
+  from micro.discord.interactions._pattern import RouteTable, as_route, wire_of
+  from micro.discord.interactions._templates import report_failure
   from micro.discord.text import escape
+
+  table = RouteTable.build(
+    {
+      "cmp.exact": wire_of(as_route("ticket.7")),
+      "cmp.long": wire_of(as_route("abcdefghijklm")),
+      "cmp.mid": wire_of(as_route("abcdefghij")),
+    }
+  )
+  check(
+    "one route is found once, however many longer prefixes are declared",
+    table.find("ticket.7", "cmp.") == "cmp.exact",
+  )
+
+  def refused(code: int, status: int = 404) -> DiscordAPIError:
+    body = f'{{"code": {code}, "message": "Unknown interaction"}}'.encode()
+    return DiscordAPIError(
+      "create_interaction_response",
+      DiscordHTTPResponse(status=status, headers=(), body=body),
+    )
+
+  sent: list[object] = []
+
+  async def respond(draft: object) -> None:
+    sent.append(draft)
+
+  def flow(responded: bool) -> Any:
+    from micro.discord.enums import InteractionType
+
+    return SimpleNamespace(
+      interaction=SimpleNamespace(
+        expired=False,
+        type=InteractionType.APPLICATION_COMMAND,
+        responded=responded,
+        respond=respond,
+      )
+    )
+
+  await report_failure(flow(False), refused(10062))  # answered too late
+  silent = not sent
+  await report_failure(flow(False), RuntimeError("boom"))
+  await report_failure(flow(True), refused(50013, 403))
+  check(
+    "the default error hook stays quiet for an interaction Discord already dropped",
+    silent and len(sent) == 2,
+    sent,
+  )
   from micro.gateway._connection import _close_bot
 
   class SlowBot:

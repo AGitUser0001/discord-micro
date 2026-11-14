@@ -212,11 +212,22 @@ class InteractionTemplate:
       ):
         await self._middleware.run(flow, self._dispatch)
     except Exception as error:
-      log.exception(
-        "Interaction handler failed in %s (%.1f s after Discord created it)",
-        self.service.name,
-        flow.interaction.age,
-      )
+      if _answered_too_late(error):
+        log.warning(
+          "Interaction %s was answered too late in %s: Discord had already dropped it "
+          "(%.1f s after it created it; it allows %d s). This is timing, not a bug in "
+          "the handler: answer sooner, or defer first.",
+          flow.interaction.id,
+          self.service.name,
+          flow.interaction.age,
+          RESPONSE_DEADLINE,
+        )
+      else:
+        log.exception(
+          "Interaction handler failed in %s (%.1f s after Discord created it)",
+          self.service.name,
+          flow.interaction.age,
+        )
       await run_error_hook(self._on_error, flow, error)
       return
     if not flow.reached and not flow.interaction.responded:
@@ -241,13 +252,35 @@ async def run_error_hook(hook: ErrorHook, flow: Flow, error: BaseException) -> N
     log.warning("The interaction error hook failed", exc_info=True)
 
 
+UNKNOWN_INTERACTION = 10062
+"""Discord's error code for an interaction it no longer knows: answered too late."""
+
+
+def _answered_too_late(error: BaseException) -> bool:
+  """Whether Discord refused an answer because it had already dropped the interaction
+  (`404`, code 10062), possibly inside an `UnhandledResult`."""
+  from micro.discord.http_service import NotFound
+  from micro.result import UnhandledResult
+
+  if isinstance(error, NotFound):
+    return error.code == UNKNOWN_INTERACTION
+  if isinstance(error, UnhandledResult):
+    return any(_answered_too_late(item.error) for item in error.unhandled)
+  return False
+
+
 async def report_failure(flow: Flow, error: BaseException) -> None:
-  """The default error hook: tell the user, in an ephemeral reply, that it failed."""
+  """The default error hook: tell the user, in an ephemeral reply, that it failed.
+
+  It says nothing when Discord can no longer take an answer: the token expired, or the
+  failure was the first answer coming too late (`404`, code 10062).
+  """
   try:
     interaction = flow.interaction
     if (
       interaction.expired
       or interaction.type is InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE
+      or _answered_too_late(error)
     ):
       return
     if isinstance(error, CommandOutdated):
