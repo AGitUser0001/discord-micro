@@ -85,7 +85,7 @@ most on it. Nothing is fetched until you call a method.
    from micro.discord import Draft
 
    channel = api.channel(5)
-   await channel.send(Draft("hello"), components=[...])
+   await channel.send(Draft("hello" components=[...]))
    await channel.message(9).reply(Draft("yes"))                   # same as api.message(5, 9)
    await channel.message(9).react("👍")                    # or Emoji("wave", 123)
    thread = await channel.message(9).start_thread(name="discuss")
