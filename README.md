@@ -14,7 +14,7 @@ DISCORD_TOKEN=... micro dev
 
 ```python
 # services/hello/__init__.py
-from micro.discord.interactions import Commands, Context, Interaction
+from micro.discord import Commands, Context, Draft, Interaction
 from micro.service import Service
 
 service = Service("hello")

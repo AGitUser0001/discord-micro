@@ -37,7 +37,7 @@ interaction has already sent.
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    await interaction.respond(Draft("hi", ephemeral=True, embeds=[...], components=[...]))
    await interaction.defer()                       # button: silent, update mode. Command: "thinking..."
@@ -89,7 +89,7 @@ build away from the handler, test, and reuse.
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    await interaction.respond(Draft("hi"))
    await interaction.respond(Draft("hi", ephemeral=True, embeds=[Embed("T")]))
@@ -103,8 +103,16 @@ to spell.
 
 .. code-block:: python
 
-   from micro.discord.ui import (
-     Draft, Embed, File, MediaGallery, MediaItem, Section, TextDisplay, Thumbnail, Upload,
+   from micro.discord import (
+     Draft,
+     Embed,
+     File,
+     MediaGallery,
+     MediaItem,
+     Section,
+     TextDisplay,
+     Thumbnail,
+     Upload,
    )
 
    chart = Upload("chart.png", png_bytes, description="Sales by week")
@@ -118,7 +126,7 @@ A file that is only attached, not shown, goes in the draft's ``files``:
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    await interaction.respond(Draft("Here you go.", files=[Upload.from_path("report.pdf")]))
 
@@ -132,7 +140,7 @@ edit new files are **added** and the ones already there stay; ``keep`` says othe
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    await interaction.update_message(Draft(components=[MediaGallery(MediaItem(new_chart))], keep=[]))    # replace all
    await interaction.edit_response(Draft("trimmed", keep=[interaction.message.attachments[0]]))      # keep one

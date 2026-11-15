@@ -58,6 +58,7 @@ if TYPE_CHECKING:
   from micro.discord.interactions import Interaction as Interaction
   from micro.discord.interactions import Modals as Modals
   from micro.discord.interactions import Option as Option
+  from micro.discord.invite import invite_url as invite_url
   from micro.discord.objects import Application as Application
   from micro.discord.objects import Attachment as Attachment
   from micro.discord.objects import Channel as Channel
@@ -158,6 +159,7 @@ __getattr__, __dir__ = exports(
     "ColourLike": ".colour",
     "CommandType": ".enums",
     "Commands": ".interactions",
+    "invite_url": ".invite",
     "Context": ".interactions",
     "Component": ".ui",
     "Components": ".interactions",
@@ -319,6 +321,7 @@ __all__ = [
   "http_service",
   "interactions",
   "invite",
+  "invite_url",
   "models",
   "objects",
   "permissions",

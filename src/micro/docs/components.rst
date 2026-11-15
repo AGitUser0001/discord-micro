@@ -9,8 +9,16 @@ send it and that Discord returns when someone uses it. How you build the compone
 .. code-block:: python
 
    from pydantic import BaseModel
-   from micro.discord.interactions import Components, CustomId, Modals, Context
-   from micro.discord.ui import Button, Draft, Modal, TextInput
+   from micro.discord import (
+     Button,
+     Components,
+     Context,
+     CustomId,
+     Draft,
+     Modal,
+     Modals,
+     TextInput,
+   )
 
    class Ticket(BaseModel):
      id: int

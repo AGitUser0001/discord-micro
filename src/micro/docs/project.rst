@@ -50,10 +50,9 @@ A service is a folder; its ``__init__.py`` defines the components:
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Commands, Context, Draft, Interaction
 
    # services/tickets/__init__.py
-   from micro.discord.interactions import Commands, Interaction, Context
    from micro.service import Service
 
    service = Service("tickets")

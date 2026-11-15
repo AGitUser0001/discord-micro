@@ -38,7 +38,7 @@ same answers.
 
 .. code-block:: python
 
-   from micro.discord.state import DiscordState
+   from micro.discord import DiscordState
 
    state = DiscordState(runtime)
    role = await state.role(role_id)                  # by id alone

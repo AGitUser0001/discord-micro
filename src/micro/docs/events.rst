@@ -139,8 +139,7 @@ safe mention defaults:
 
 .. code-block:: python
 
-   from micro.discord import DiscordHTTPClient
-   from micro.discord.ui import AllowedMentions, Draft
+   from micro.discord import AllowedMentions, DiscordHTTPClient, Draft
 
    api = DiscordHTTPClient(service.runtime).api
    (await api.channel(message.channel_id).send(Draft("pong", reply_to=message.id))).unwrap()

@@ -1,5 +1,7 @@
 """Interaction templates: commands, components, and modals on any service.
 
+    from micro.discord import Commands, Context, Draft, Interaction
+
     service = Service("tickets")
     commands = Commands(service)
 

@@ -9,11 +9,18 @@ then the options.
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import (
+     Commands,
+     Context,
+     Draft,
+     Interaction,
+     Member,
+     Message,
+     Option,
+     User,
+   )
 
    from typing import Annotated, Literal
-   from micro.discord.interactions import Commands, Interaction, Option, Context
-   from micro.discord.objects import Member, Message, User
 
    commands = Commands(service, guild_ids=[...])   # guild_ids optional: guild commands
 
@@ -115,7 +122,7 @@ point at a command in a message, where Discord shows it as a clickable chip:
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    await interaction.respond(Draft(f"Open one with {await ctx.mention_command('ticket open')}"))
    found = await ctx.command_id("ticket")                    # the id, or None before the first sync

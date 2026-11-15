@@ -15,7 +15,7 @@ one of those, or raise**.
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    from micro.discord.interactions import defers
 
@@ -78,7 +78,7 @@ place you sign when sending.
 
    # myapp/router.py: the router, with the check as middleware
    from micro.discord.interactions import InteractionRouter
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    from .signing import verify
 
@@ -121,7 +121,7 @@ call site changes. Services keep writing the plain id, and the handlers keep mat
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    await ctx.respond(Draft("Close it?", components=[
      Button("Close", custom_id=CLOSE.encode(Ticket(id=42))),     # sent as ...~<mac>
@@ -156,7 +156,7 @@ with ``on_error``:
 .. code-block:: python
 
    from micro.discord.interactions import Flow
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    @commands.on_error
    async def failed(flow: Flow, error: BaseException) -> None:

@@ -47,9 +47,8 @@ A minimal bot
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Commands, Context, Draft, Interaction
 
-   from micro.discord.interactions import Commands, Interaction, Context
    from micro.service import Service
 
    service = Service("hello")

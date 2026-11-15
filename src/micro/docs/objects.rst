@@ -71,7 +71,7 @@ matching :doc:`api` call.
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    await message.reply(Draft("pong"))
    await message.react("👍")
@@ -110,9 +110,8 @@ channel).
 
 .. code-block:: python
 
-   from micro.discord import Context, Draft
+   from micro.discord import Context, Draft, Permissions
 
-   from micro.discord.permissions import Permissions
 
    if not interaction.member.permissions.allows(Permissions.MANAGE_MESSAGES):
      await interaction.respond(Draft("You need Manage Messages.", ephemeral=True))

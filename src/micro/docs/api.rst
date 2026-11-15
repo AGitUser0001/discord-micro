@@ -82,7 +82,7 @@ most on it. Nothing is fetched until you call a method.
 
 .. code-block:: python
 
-   from micro.discord.ui import Draft
+   from micro.discord import Draft
 
    channel = api.channel(5)
    await channel.send(Draft("hello"), components=[...])

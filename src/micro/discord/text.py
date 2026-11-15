@@ -1,8 +1,10 @@
 """Small helpers for message text: escaping, mentions, timestamps, snowflakes.
 
-from micro.discord import text
+from micro.discord import Draft, text
 
-await ctx.respond(Draft(f"{text.escape(name)} joined {text.timestamp(when, 'R')}"))
+await interaction.respond(
+  Draft(f"{text.escape(name)} joined {text.timestamp(when, 'R')}")
+)
 """
 
 import re

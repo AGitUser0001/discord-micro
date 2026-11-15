@@ -8,7 +8,8 @@ running code, and one handler runs all of them.
 
 .. code-block:: python
 
-   from micro.discord.interactions import RuntimeCommands, option, Context
+   from micro.discord import Context, Interaction
+   from micro.discord.interactions import RuntimeCommands, option
 
    dynamic = RuntimeCommands(service)
 

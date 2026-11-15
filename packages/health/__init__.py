@@ -8,8 +8,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
-from micro.discord.interactions import Commands, Context, Interaction
-from micro.discord.ui import Draft
+from micro.discord import Commands, Context, Draft, Interaction
 from micro.runtime import Runtime
 from micro.service import Service
 

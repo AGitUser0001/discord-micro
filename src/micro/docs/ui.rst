@@ -9,10 +9,17 @@ accepts them, and anything a builder lacks can be passed as a plain dict instead
 
 .. code-block:: python
 
-   from micro.discord.enums import ButtonStyle, ChannelType, TextInputStyle
-   from micro.discord.ui import (
+   from micro.discord import (
+     AllowedMentions,
+     Button,
+     ButtonStyle,
+     ChannelType,
+     Colour,
      Draft,
-     AllowedMentions, Button, Colour, Draft, Embed, EmbedField, StringSelect,
+     Embed,
+     EmbedField,
+     StringSelect,
+     TextInputStyle,
    )
 
    await channel.send(Draft(
@@ -56,7 +63,7 @@ and flags that make it, held as a value. Nothing is sent until you hand it to so
 
 .. code-block:: python
 
-   from micro.discord.ui import Button, Draft, Embed
+   from micro.discord import Button, Draft, Embed
 
    report = Draft(
      "Report ready",
@@ -338,8 +345,8 @@ children).
 
 .. code-block:: python
 
-   from micro.discord.enums import ButtonStyle
-   from micro.discord.ui import Button, hooks
+   from micro.discord import Button, ButtonStyle
+   from micro.discord.ui import hooks
 
    @hooks.build(only=Button)                 # construction: change the arguments, or the result
    def default_style(call, next):

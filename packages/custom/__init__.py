@@ -8,14 +8,8 @@ store, so they survive restarts and work from every replica.
 
 from typing import Annotated
 
-from micro.discord.interactions import (
-  Commands,
-  Context,
-  Interaction,
-  Option,
-  RuntimeCommands,
-)
-from micro.discord.ui import Draft
+from micro.discord import Commands, Context, Draft, Interaction, Option
+from micro.discord.interactions import RuntimeCommands
 from micro.service import Service
 from micro.store import GraphModule, StoreClient
 

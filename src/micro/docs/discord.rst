@@ -24,6 +24,12 @@ any of them can be restarted, scaled or replaced independently.
      - :doc:`api`, :doc:`ui`, run by the :doc:`http-worker`
    * - look up members, roles and channels without a REST call
      - :doc:`state`
+   * - know who owns the bot (its owner, or its team)
+     - :doc:`state` (``await ctx.state.owner_ids()``)
+   * - download an avatar, an attachment or any file Discord links to
+     - :doc:`objects` (``await download(asset.url)``)
+   * - send embeds, buttons, files, a poll or stickers
+     - :doc:`ui` (one ``Draft`` for all of it)
    * - add commands while the bot runs
      - :doc:`runtime-commands`
    * - run without a Gateway connection
@@ -75,7 +81,7 @@ Installation in the Developer Portal for the second link to work. In code:
 
 .. code-block:: python
 
-   from micro.discord.invite import Permissions, invite_url
+   from micro.discord import Permissions, invite_url
 
    invite_url("1234", permissions=Permissions.SEND_MESSAGES | Permissions.EMBED_LINKS)
    invite_url("1234", install="user")      # also: guild_id=, redirect_uri=, state=
