@@ -33,8 +33,11 @@ ever holds and returns ``Counter``.
   (``*`` for one token, ``>`` for the rest).
 * **A watch tells you when it has caught up.** ``watch`` first yields every current value,
   then ``None`` once, then live :class:`Change` objects (``value`` is ``None`` for a delete or
-  an expiry). Expiry is only visible to watchers on buckets opened with
-  ``ttl_markers=True``.
+  an expiry). Every table is made the same way, so an expiry is always visible to watchers.
+* **A delete is a purge.** Every revision of the key goes, and the one marker left behind is
+  removed by the server after a second, so a table does not keep a record of every key it
+  ever deleted. Nothing about this is configurable. A bucket made by an older Micro is brought
+  in line when it is opened, and its old delete markers are cleared once.
 * Watching and listing use short-lived NATS consumers that Micro cleans up for you, so many
   reads leave nothing behind.
 

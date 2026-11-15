@@ -241,7 +241,7 @@ class GatewayWorker(Component):
     self._use_settings(self.settings.value)
     self._generations = await runtime.table(subjects.GATEWAY_BUCKET, GatewayGeneration)
     self._shards: Table[ShardLease] = await runtime.table(
-      subjects.SHARDS_BUCKET, ShardLease, ttl_markers=True
+      subjects.SHARDS_BUCKET, ShardLease
     )
     self._locks: Locks = await runtime.locks()
     value = self.settings.value

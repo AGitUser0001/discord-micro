@@ -20,6 +20,7 @@ from pydantic import BaseModel, JsonValue
 
 from micro import log, subjects
 from micro.coordination import LockHolder, Locks, Table
+from micro.coordination._table import MARKER_TTL
 
 if TYPE_CHECKING:
   from micro.config import Config
@@ -159,9 +160,7 @@ class Runtime:
       retention=RetentionPolicy.INTEREST,
       retire=subjects.RETIRED_EVENT_STREAM_SUBJECTS,
     )
-    presence = await self.table(
-      subjects.PRESENCE_BUCKET, Registration, ttl_markers=True
-    )
+    presence = await self.table(subjects.PRESENCE_BUCKET, Registration)
     self._directory = Directory(presence)
     await self._directory.start()
     self._started = True
@@ -378,16 +377,31 @@ class Runtime:
       info.config.subjects = sorted(wanted)
       await self.jetstream.update_stream(info.config)
 
+  async def _ensure_markers(self, bucket: str, store: Any) -> None:
+    """Make sure the bucket's stream allows per-message TTL (a purge marker needs one) and
+    expires its markers. nats-py sets both when it creates a bucket, but that is its choice
+    and not ours, and a bucket made earlier may lack them: so they are checked on every open
+    and set here, and what an older bucket's plain deletes left behind is purged once."""
+    info = await self.jetstream.stream_info(f"KV_{bucket}")
+    config = info.config
+    upgrade_ttl = not config.allow_msg_ttl
+    if upgrade_ttl or not config.subject_delete_marker_ttl:
+      config.allow_msg_ttl = True
+      config.subject_delete_marker_ttl = MARKER_TTL
+      await self.jetstream.update_stream(config)
+    if upgrade_ttl:
+      await store.purge_deletes(olderthan=0)
+
   async def table[T](
     self,
     bucket: str,
     value_type: type[T] | Any,
-    *,
-    ttl_markers: bool = False,
   ) -> Table[T]:
     """Open (creating if needed) a typed table.
 
-    `ttl_markers` makes per-key TTL expiry visible to watchers.
+    Every table is made the same way: a key that expires or is deleted leaves a marker
+    that watchers see and the server then removes after `MARKER_TTL`, so nothing a table
+    has ever deleted is kept for ever. There is nothing to configure.
     """
     if bucket in self._tables:
       return Table(self._tables[bucket]._store, value_type)  # pyright: ignore[reportPrivateUsage]
@@ -396,11 +410,12 @@ class Runtime:
         bucket=bucket,
         storage=self.storage,
         replicas=self.replicas,
-        limit_marker_ttl=1.0 if ttl_markers else None,
+        limit_marker_ttl=MARKER_TTL,
       )
     except BadRequestError:
       # The bucket already exists with other settings (for example replicas).
       store = await self.jetstream.key_value(bucket)
+    await self._ensure_markers(bucket, store)
     table = Table[T](store, value_type)
     self._tables[bucket] = table
     return table
@@ -431,7 +446,7 @@ class Runtime:
   async def locks(self) -> Locks:
     """The cluster-wide `Locks` for this deployment."""
     return Locks(
-      await self.table(subjects.LOCKS_BUCKET, LockHolder, ttl_markers=True),
+      await self.table(subjects.LOCKS_BUCKET, LockHolder),
       self.instance,
     )
 
@@ -449,7 +464,7 @@ class Runtime:
     name = name or (component.name if component is not None else None)
     if kind is None or name is None:
       raise ValueError("register needs a component or an explicit kind and name.")
-    table = await self.table(subjects.PRESENCE_BUCKET, Registration, ttl_markers=True)
+    table = await self.table(subjects.PRESENCE_BUCKET, Registration)
     presence = Presence(
       table,
       Registration(

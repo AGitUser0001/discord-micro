@@ -5,11 +5,18 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from nats.js.errors import KeyWrongLastSequenceError, NotFoundError
+from nats.js.errors import APIError, KeyWrongLastSequenceError, NotFoundError
 from nats.js.kv import KeyValue
 from pydantic import TypeAdapter, ValidationError
 
 _PURGE_OPERATIONS = frozenset(("DEL", "PURGE"))
+
+_WRONG_LAST_SEQUENCE = (10071, 10164)
+"""Server error codes for "the key is no longer at the revision you expected"."""
+
+MARKER_TTL = 1.0
+"""Seconds a purge marker lives before the server removes it (1 s is the least NATS
+allows). It only has to outlast delivery to the watchers that are listening."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,11 +128,29 @@ class Table[T]:
       return None
 
   async def delete(self, key: str, *, revision: int | None = None) -> bool:
-    """Delete `key` (only at `revision`, if given). Returns whether it deleted."""
+    """Delete `key` (only at `revision`, if given). Returns whether it deleted.
+
+    It is a purge: every revision goes, and what is left is one marker that the server
+    removes by itself after `MARKER_TTL`. (A plain KV delete leaves its marker for ever,
+    one for every key that ever existed.) The revision check is the server's own
+    expected-last-sequence check, as with a plain delete.
+    """
+    headers = {"KV-Operation": "PURGE", "Nats-Rollup": "sub"}
+    if revision:
+      headers["Nats-Expected-Last-Subject-Sequence"] = str(revision)
+    js = self._store._js  # pyright: ignore[reportPrivateUsage]
+    prefix = self._store._pre  # pyright: ignore[reportPrivateUsage]
     try:
-      return await self._store.delete(key, last=revision)
+      await js.publish(f"{prefix}{key}", headers=headers, msg_ttl=MARKER_TTL)
     except KeyWrongLastSequenceError:
       return False
+    except APIError as error:
+      if error.err_code in _WRONG_LAST_SEQUENCE:
+        return (
+          False  # nats-py only turns these into KeyWrongLastSequenceError in update()
+        )
+      raise
+    return True
 
   async def _open(self, keys: str) -> KeyValue.KeyWatcher:
     """Start a watcher that is never left half-made if we are cancelled meanwhile.

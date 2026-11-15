@@ -2211,6 +2211,76 @@ async def sync_scenarios() -> None:
     await f.until(lambda: s.names() == ["feedback", "hello", "slow"], 10)
     puts = len(f.where("PUT", r"/commands$"))
     check("registered with one bulk overwrite", puts == 1, puts)
+
+    from nats.js.api import DiscardPolicy, StreamConfig
+
+    js = s.runtime.jetstream
+
+    async def stored(bucket: str) -> int:
+      return (await js.stream_info(f"KV_{bucket}")).state.messages
+
+    table = await s.runtime.table("smoke_purge", dict)
+    made = (await js.stream_info("KV_smoke_purge")).config
+    check(
+      "a table's stream allows message TTL and expires its markers, set by Micro",
+      bool(made.allow_msg_ttl) and bool(made.subject_delete_marker_ttl),
+      (made.allow_msg_ttl, made.subject_delete_marker_ttl),
+    )
+    revision = await table.put("a", {"x": 1})
+    wrong = await table.delete("a", revision=revision + 100)
+    kept = await table.get("a")
+    right = await table.delete("a", revision=revision)
+    gone = await table.get("a")
+    emptied = await eventually(
+      lambda: stored("smoke_purge"), lambda count: count == 0, 15
+    )
+    check(
+      "a delete is a purge: the revision check still holds, and the marker goes by itself",
+      wrong is False
+      and kept is not None
+      and right is True
+      and gone is None
+      and emptied == 0,
+      (wrong, kept, right, gone, emptied),
+    )
+
+    # A bucket an older nats-py made (no message TTL), with a tombstone from a plain delete.
+    await js.add_stream(
+      StreamConfig(
+        name="KV_smoke_old",
+        subjects=["$KV.smoke_old.>"],
+        allow_direct=True,
+        allow_rollup_hdrs=True,
+        deny_delete=True,
+        discard=DiscardPolicy.NEW,
+        duplicate_window=120,
+        max_consumers=-1,
+        max_msgs=-1,
+        max_msgs_per_subject=1,
+        num_replicas=s.runtime.replicas,
+        storage=s.runtime.storage,
+      )
+    )
+    old = await js.key_value("smoke_old")
+    await old.put("k", b"{}")
+    await old.delete("k")
+    before = await stored("smoke_old")
+    upgraded = await s.runtime.table("smoke_old", dict)
+    upgraded_config = (await js.stream_info("KV_smoke_old")).config
+    allowed = (
+      upgraded_config.allow_msg_ttl and upgraded_config.subject_delete_marker_ttl
+    )
+    after = await stored("smoke_old")
+    revision = await upgraded.put("b", {"y": 2})
+    await upgraded.delete("b", revision=revision)
+    cleared = await eventually(
+      lambda: stored("smoke_old"), lambda count: count == 0, 15
+    )
+    check(
+      "an older bucket is upgraded when opened: its old tombstones are purged and deletes then purge",
+      before == 1 and bool(allowed) and after == 0 and cleared == 0,
+      (before, allowed, after, cleared),
+    )
     from micro.discord.interactions._sync import command_id
 
     hello = await command_id(s.runtime, "hello")
