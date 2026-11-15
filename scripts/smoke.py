@@ -123,14 +123,16 @@ class App:
     async def slow(ctx: Context, interaction: Interaction) -> None:
       await interaction.defer()
       await asyncio.sleep(0.2)
-      await interaction.respond("done")
+      await interaction.respond(Draft("done"))
 
     self.dynamic = RuntimeCommands(service)
 
     @self.dynamic.handler
     async def custom(ctx: Context, interaction: Interaction) -> None:
       await interaction.respond(
-        f"{interaction.command_name}@{interaction.guild_id} {interaction.submitted.options}"
+        Draft(
+          f"{interaction.command_name}@{interaction.guild_id} {interaction.submitted.options}"
+        )
       )
 
     if guild_commands:
@@ -138,7 +140,7 @@ class App:
 
       @guilded.slash("guilded", description="Only in some guilds")
       async def only(ctx: Context, interaction: Interaction) -> None:
-        await interaction.respond("guilded")
+        await interaction.respond(Draft("guilded"))
 
 
 def free_port() -> int:
@@ -1136,12 +1138,46 @@ async def helper_scenarios() -> None:
   from contextlib import suppress
 
   from micro.cli import _roll_steps
+  from micro.discord._api import UNSET, check_draft
+  from micro.discord.ui import Draft as FullDraft
+
+  full = FullDraft(
+    "hi",
+    poll={"question": {"text": "ok?"}, "answers": [{"poll_media": {"text": "yes"}}]},
+    sticker_ids=[7, "8"],
+  ).to_dict()
+  check(
+    "a poll and stickers are part of the Draft, and so go out with the message",
+    full.get("poll")
+    == {"question": {"text": "ok?"}, "answers": [{"poll_media": {"text": "yes"}}]}
+    and full.get("sticker_ids") == ["7", "8"]
+    and "poll" not in FullDraft("hi").to_dict()
+    and "sticker_ids" not in FullDraft("hi").to_dict(),
+    full,
+  )
   from micro.discord.http_service import DiscordAPIError
   from micro.discord.interactions._pattern import RouteTable, as_route, wire_of
   from micro.discord.interactions._templates import report_failure
   from micro.discord.objects import Application
   from micro.discord.state import DiscordState
   from micro.discord.text import escape
+  from micro.discord.ui import Draft as SendDraft
+
+  def not_a_draft(value: Any) -> bool:
+    try:
+      check_draft(value)
+    except TypeError:
+      return True
+    return False
+
+  check(
+    "a message is a Draft and nothing else: a string or None is refused, a Draft or not passing it is fine",
+    not_a_draft("hi")
+    and not_a_draft(None)
+    and not not_a_draft(SendDraft("hi"))
+    and not not_a_draft(UNSET)
+    and check_draft(UNSET) is UNSET,
+  )
   from micro.result import Ok
 
   def application(**more: Any) -> dict[str, Any]:
@@ -3107,7 +3143,7 @@ async def route_scenarios() -> None:
 
   def says(text: str) -> Callable[[Context, Interaction], Awaitable[None]]:
     async def handler(ctx: Context, interaction: Interaction) -> None:
-      await interaction.respond(f"{text} {dict(interaction.route)}")
+      await interaction.respond(Draft(f"{text} {dict(interaction.route)}"))
 
     return handler
 
@@ -3624,6 +3660,7 @@ async def api_scenarios() -> None:
       # A message operation takes a Draft for everything a Draft carries.
       wanted -= {"content", "embeds", "components", "allowed_mentions", "tts", "flags"}
       wanted -= {"message_reference", "attachments"}
+      wanted -= {"poll", "sticker_ids", "shared_client_theme"}
       if "message" not in params:
         gaps.append(f"{op.id}: no message=")
     for name in wanted:
@@ -3856,7 +3893,7 @@ async def api_scenarios() -> None:
           list(parts),
         )
 
-        (await api.update_message(5, 9, "edited")).unwrap()
+        (await api.update_message(5, 9, Draft("edited"))).unwrap()
         call = seen[-1]
         (await api.delete_message(5, 9, reason="spam & ünïcode")).unwrap()
         call = seen[-1]
@@ -3922,7 +3959,7 @@ async def api_scenarios() -> None:
         (
           await api.channel(5).send(ui.Draft("via ref", embeds=[ui.Embed("E")]))
         ).unwrap()
-        (await api.message(5, 9).reply("yo")).unwrap()
+        (await api.message(5, 9).reply(Draft("yo"))).unwrap()
         check(
           "message.reply sets message_reference to the message",
           json_of(seen[-1])["message_reference"]["message_id"] == "9"
@@ -3942,9 +3979,9 @@ async def api_scenarios() -> None:
           200,
           {"id": "55", "type": 1, "recipients": []},
         )
-        (await api.user(8).send("hello there")).unwrap()
+        (await api.user(8).send(Draft("hello there"))).unwrap()
         _opened, _sent_dm = seen[-2], seen[-1]
-        (await api.webhook_token(3, "tok").execute("hook", wait=True)).unwrap()
+        (await api.webhook_token(3, "tok").execute(Draft("hook"), wait=True)).unwrap()
         await api.channel(5).edit(topic=None, name="renamed")
 
         # Interaction shortcuts reach the same methods.
@@ -3956,14 +3993,14 @@ async def api_scenarios() -> None:
         from micro.discord.interactions import Interaction
 
         interaction = Interaction(payload, DiscordHTTPClient(runtime))
-        (await interaction.channel_ref.send("from interaction")).unwrap()
+        (await interaction.channel_ref.send(Draft("from interaction"))).unwrap()
         await interaction.member_ref.add_role(30)
         await interaction.message_ref.pin()
         await interaction.guild_ref.unban(8)
 
         before = len(seen)
         try:
-          await api.create_message(5, enforce_nonce="maybe")  # type: ignore[arg-type]
+          await api.create_message(5, Draft("x"), enforce_nonce="maybe")  # type: ignore[arg-type]
           refused = False
         except ValidationError:
           refused = True
@@ -4047,7 +4084,7 @@ async def api_scenarios() -> None:
         body = json_of(seen[-1])
         interaction = make_interaction()
         await interaction.defer(thinking=True)
-        await interaction.respond("plain")
+        await interaction.respond(Draft("plain"))
         chart = Upload("chart.png", b"png", description="Sales by week")
         interaction = make_interaction()
         await interaction.respond(
@@ -4115,7 +4152,7 @@ async def api_scenarios() -> None:
         )
         answers["POST /channels/777/messages"] = (504, {"message": "upstream"})
         before = len(seen)
-        refused = await api.create_message(777, "once")
+        refused = await api.create_message(777, Draft("once"))
         gave_up = isinstance(refused, Err) and refused.error.status == 504
         check(
           "a 504 on a POST is not: it may have been carried out",

@@ -8,6 +8,8 @@ run.
 
 .. code-block:: python
 
+   from micro.discord import Context
+
    from micro.schemas import events
    from micro.service import Service
 
@@ -32,18 +34,18 @@ the payload, as a bound object (:doc:`objects`) when the event is about one:
 
 .. code-block:: python
 
-   from micro.discord import Context, Member, Message
+   from micro.discord import Context, Member, Message, Draft
 
    @service.listen(events.MESSAGE_CREATE)
    async def ping(ctx: Context, message: Message) -> None:
      if message.content == "!ping":
-       await message.reply("pong")
+       await message.reply(Draft("pong"))
 
    @service.listen(events.GUILD_MEMBER_ADD)
    async def joined(ctx: Context, member: Member) -> None:
      channel = await ctx.state.channel(WELCOME_CHANNEL)
      if channel is not None:
-       await channel.send(f"Welcome {member.mention}!")
+       await channel.send(Draft(f"Welcome {member.mention}!"))
 
 ``MESSAGE_CREATE`` and ``MESSAGE_UPDATE`` give a ``Message``; ``GUILD_MEMBER_ADD`` and
 ``GUILD_MEMBER_UPDATE`` a ``Member``; ``CHANNEL_*`` and ``THREAD_*`` a ``Channel``;
@@ -57,6 +59,8 @@ When an event **changes or removes** a member, channel, role, guild, voice state
 shard held, the object as it *was* travels with it, and the handler reads it from ``event.before``:
 
 .. code-block:: python
+
+   from micro.discord import Context
 
    @service.listen(events.GUILD_MEMBER_UPDATE)
    async def changed(ctx: Context, member: Member) -> None:
@@ -95,6 +99,8 @@ Narrowing what you receive
 
 .. code-block:: python
 
+   from micro.discord import Context
+
    @service.listen(events.MESSAGE_CREATE, guild_id=1234)
    async def only_this_guild(ctx: Context, message: Message) -> None: ...
 
@@ -102,6 +108,8 @@ Narrowing what you receive
 ``micro.discord.filters`` read both dicts and models, and combine:
 
 .. code-block:: python
+
+   from micro.discord import Context
 
    from micro.discord.filters import (
      all_of, any_of, content_startswith, from_users, ignore_bots, in_channel, in_guild, not_from

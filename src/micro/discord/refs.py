@@ -135,13 +135,8 @@ class ChannelRef:
 
   async def send(
     self,
-    message: Draft | str | None = UNSET,
+    message: Draft,
     *,
-    sticker_ids: Sequence[int | str] | None = UNSET,
-    poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
-    shared_client_theme: m.CustomClientThemeShareRequest
-    | Mapping[str, Any]
-    | None = UNSET,
     nonce: int | str | None = UNSET,
     enforce_nonce: bool | None = UNSET,
     reason: str | None = None,
@@ -149,9 +144,6 @@ class ChannelRef:
     """POST /channels/{channel_id}/messages"""
     return await self.api.create_message(
       self.channel_id,
-      sticker_ids=sticker_ids,
-      poll=poll,
-      shared_client_theme=shared_client_theme,
       nonce=nonce,
       enforce_nonce=enforce_nonce,
       message=message,
@@ -537,18 +529,13 @@ class MessageRef(_MessageExtras):
 
   async def edit(
     self,
-    message: Draft | str | None = UNSET,
+    message: Draft,
     *,
-    sticker_ids: Sequence[int | str] | None = UNSET,
     reason: str | None = None,
   ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /channels/{channel_id}/messages/{message_id}"""
     return await self.api.update_message(
-      self.channel_id,
-      self.message_id,
-      sticker_ids=sticker_ids,
-      message=message,
-      reason=reason,
+      self.channel_id, self.message_id, message=message, reason=reason
     )
 
   async def delete(
@@ -2125,12 +2112,11 @@ class WebhookTokenRef:
 
   async def execute(
     self,
-    message: Draft | str | None = UNSET,
+    message: Draft,
     *,
     wait: bool | None = UNSET,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
     username: str | None = UNSET,
     avatar_url: str | None = UNSET,
     thread_name: str | None = UNSET,
@@ -2144,7 +2130,6 @@ class WebhookTokenRef:
       wait=wait,
       thread_id=thread_id,
       with_components=with_components,
-      poll=poll,
       username=username,
       avatar_url=avatar_url,
       thread_name=thread_name,
@@ -2167,11 +2152,10 @@ class WebhookTokenRef:
   async def edit_message(
     self,
     message_id: int | str,
-    message: Draft | str | None = UNSET,
+    message: Draft,
     *,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
     reason: str | None = None,
   ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /webhooks/{webhook_id}/{webhook_token}/messages/{message_id}"""
@@ -2181,7 +2165,6 @@ class WebhookTokenRef:
       message_id,
       thread_id=thread_id,
       with_components=with_components,
-      poll=poll,
       message=message,
       reason=reason,
     )
@@ -2214,11 +2197,10 @@ class WebhookTokenRef:
 
   async def edit_original_message(
     self,
-    message: Draft | str | None = UNSET,
+    message: Draft,
     *,
     thread_id: int | str | None = UNSET,
     with_components: bool | None = UNSET,
-    poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
     reason: str | None = None,
   ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /webhooks/{webhook_id}/{webhook_token}/messages/@original"""
@@ -2227,7 +2209,6 @@ class WebhookTokenRef:
       self.webhook_token,
       thread_id=thread_id,
       with_components=with_components,
-      poll=poll,
       message=message,
       reason=reason,
     )

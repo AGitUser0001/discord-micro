@@ -303,7 +303,9 @@ class Commands(InteractionTemplate):
       commands = Commands(service)
 
       @commands.slash("ticket", description="Open a ticket")
-      async def ticket(ctx: Interaction, topic: str, urgent: bool = False) -> None: ...
+      async def ticket(
+        ctx: Context, interaction: Interaction, topic: str, urgent: bool = False
+      ) -> None: ...
 
   Definitions are declared, not synced: run one `CommandSync` component, which
   registers a new definition once every live replica agrees on it.
@@ -384,11 +386,11 @@ class Commands(InteractionTemplate):
     return group
 
   def user(self, name: str, **settings: Unpack[MenuSettings]) -> Registrar:
-    """A context-menu command on users: `async def f(ctx, member: Member)`."""
+    """A context-menu command on users: `async def f(ctx, interaction, member: Member)`."""
     return self._context_menu(CommandType.USER, name, settings)
 
   def message(self, name: str, **settings: Unpack[MenuSettings]) -> Registrar:
-    """A context-menu command on messages: `async def f(ctx, message: Message)`."""
+    """A context-menu command on messages: `async def f(ctx, interaction, message: Message)`."""
     return self._context_menu(CommandType.MESSAGE, name, settings)
 
   def _context_menu(
@@ -527,11 +529,11 @@ class _CustomIdTemplate(InteractionTemplate):
     """Handle every custom_id a route matches (see `Route`, `PatternRoute`).
 
     A `CustomId` owns its prefix (before the first ':') and hands its decoded
-    state to `async def f(ctx, state)`. A plain string owns that prefix and
+    state to `async def f(ctx, interaction, state)`. A plain string owns that prefix and
     what is nested under it (`.` or `:`); with `{name}` placeholders it is a
     template. A compiled regex is used as is (`prefix=` sets its literal head
-    if it cannot be derived). Otherwise the handler is `async def f(ctx)` and
-    the route's result is `ctx.route`.
+    if it cannot be derived). Otherwise the handler is `async def f(ctx, interaction)`
+    and the route's result is `interaction.route`.
     """
     declared = as_route(route, prefix)
 

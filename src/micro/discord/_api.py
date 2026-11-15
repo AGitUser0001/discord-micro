@@ -208,6 +208,14 @@ def _path_value(value: Any) -> Any:
   return _plain(value)
 
 
+def check_draft(message: Any) -> Any:
+  """What a send method was given: not passed, or a `Draft`. Never a string or None, so a
+  message is built one way: `Draft("text")`."""
+  if message is not UNSET and not isinstance(message, ui.Draft):
+    raise TypeError(f'Send a Draft, not {type(message).__name__}: Draft("text").')
+  return message
+
+
 class ApiBase:
   """What the generated methods share, and the way to a ref."""
 

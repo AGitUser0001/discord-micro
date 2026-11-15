@@ -11,6 +11,7 @@ accepts them, and anything a builder lacks can be passed as a plain dict instead
 
    from micro.discord.enums import ButtonStyle, ChannelType, TextInputStyle
    from micro.discord.ui import (
+     Draft,
      AllowedMentions, Button, Colour, Draft, Embed, EmbedField, StringSelect,
    )
 
@@ -70,13 +71,13 @@ and flags that make it, held as a value. Nothing is sent until you hand it to so
    await api.create_message(channel_id, report)    # every message method takes a Draft
 
 A ``Draft`` is the **one way** to say what a message is: there are no separate ``embeds=``,
-``components=``, ``files=`` or ``ephemeral=`` arguments to send it with, and a plain string
-stands for a text-only ``Draft``. It is immutable and compares by value, so build it in a
+``components=``, ``files=`` or ``ephemeral=`` arguments to send it with, and a bare string is
+refused (``Draft("text")`` is the text-only message). It is immutable and compares by value, so build it in a
 helper, keep it in a table, return it from a function, assert on it in a test.
 ``dataclasses.replace(draft, content="...")`` gives a changed copy; ``draft.to_dict()`` is
 the JSON Discord receives and ``draft.uploads`` the files that travel with it. It also takes
-``reply_to`` (reply to a message), ``silent`` (no notification), ``suppress_embeds``, ``tts``
-and, for edits, ``keep``.
+``reply_to`` (reply to a message), ``silent`` (no notification), ``suppress_embeds``, ``tts``,
+``poll`` (a poll to attach), ``sticker_ids`` and ``shared_client_theme``, and, for edits, ``keep``.
 
 **Editing.** A part left as ``None`` stays as it is on the message and an empty one clears
 it: ``Draft(embeds=())`` removes the embeds, ``Draft(content="")`` the text,

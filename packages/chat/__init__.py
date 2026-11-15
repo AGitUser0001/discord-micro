@@ -54,7 +54,7 @@ async def greet(
   shout: bool = False,
 ) -> None:
   reply = (await service.client.request(GREET, Greeting(name=name))).message
-  await interaction.respond(reply.upper() if shout else reply)
+  await interaction.respond(Draft(reply.upper() if shout else reply))
 
 
 @greet.autocomplete("name")

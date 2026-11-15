@@ -47,7 +47,9 @@ A minimal bot
 
 .. code-block:: python
 
-   from micro.discord.interactions import Commands, Interaction
+   from micro.discord.ui import Draft
+
+   from micro.discord.interactions import Commands, Interaction, Context
    from micro.service import Service
 
    service = Service("hello")
@@ -55,7 +57,7 @@ A minimal bot
 
    @commands.slash("hello", description="Say hello")
    async def hello(ctx: Context, interaction: Interaction, name: str = "world") -> None:
-     await interaction.respond(f"Hello, {name}!")
+     await interaction.respond(Draft(f"Hello, {name}!"))
 
 and in ``micro.toml``, once per deployment:
 

@@ -86,7 +86,7 @@ as a value, a :class:`Result`: an :class:`Ok` with the value, or an :class:`Err`
 
 .. code-block:: python
 
-   from micro.discord import NotFound
+   from micro.discord import NotFound, Draft
    from micro.result import Err, Ok
 
    match await message.edit(content="hi"):
@@ -94,8 +94,8 @@ as a value, a :class:`Result`: an :class:`Ok` with the value, or an :class:`Err`
      case Err(NotFound()): ...                   # deleted meanwhile
      case Err(error): raise error
 
-   sent = (await channel.send("hi")).unwrap()    # abort: raises the original error
-   maybe = (await channel.send("hi")).ok()       # the message, or None
+   sent = (await channel.send(Draft("hi"))).unwrap()    # abort: raises the original error
+   maybe = (await channel.send(Draft("hi"))).ok()       # the message, or None
    (await message.delete()).ignore(NotFound)     # only "already gone" is fine
 
 Handle it where you need to, or write ``unwrap()`` to let it fail: that raises the original

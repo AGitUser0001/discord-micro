@@ -2,7 +2,7 @@
 
 from micro.discord import text
 
-await ctx.respond(f"{text.escape(name)} joined {text.timestamp(when, 'R')}")
+await ctx.respond(Draft(f"{text.escape(name)} joined {text.timestamp(when, 'R')}"))
 """
 
 import re

@@ -15,6 +15,8 @@ one of those, or raise**.
 
 .. code-block:: python
 
+   from micro.discord.ui import Draft
+
    from micro.discord.interactions import defers
 
    @components.use
@@ -118,6 +120,8 @@ That is a *serialize hook* (:doc:`ui`): it runs whenever any component becomes J
 call site changes. Services keep writing the plain id, and the handlers keep matching it:
 
 .. code-block:: python
+
+   from micro.discord.ui import Draft
 
    await ctx.respond(Draft("Close it?", components=[
      Button("Close", custom_id=CLOSE.encode(Ticket(id=42))),     # sent as ...~<mac>

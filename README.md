@@ -14,7 +14,7 @@ DISCORD_TOKEN=... micro dev
 
 ```python
 # services/hello/__init__.py
-from micro.discord.interactions import Commands, Interaction
+from micro.discord.interactions import Commands, Context, Interaction
 from micro.service import Service
 
 service = Service("hello")
@@ -22,8 +22,8 @@ commands = Commands(service)
 
 
 @commands.slash("hello", description="Say hello")
-async def hello(ctx: Interaction, name: str = "world") -> None:
-  await ctx.respond(f"Hello, {name}!")
+async def hello(ctx: Context, interaction: Interaction, name: str = "world") -> None:
+  await interaction.respond(Draft(f"Hello, {name}!"))
 ```
 
 Documentation: `micro docs` (sources in [src/micro/docs](src/micro/docs/index.rst)) (quickstart, services,

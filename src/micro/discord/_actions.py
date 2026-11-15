@@ -35,14 +35,10 @@ class MessageActions:
     return await self._ref().get()
 
   async def edit(
-    self,
-    message: Draft | str | None = UNSET,
-    *,
-    sticker_ids: Sequence[int | str] | None = UNSET,
-    reason: str | None = None,
+    self, message: Draft, *, reason: str | None = None
   ) -> Result[m.MessageResponse, DiscordAPIError]:
     """PATCH /channels/{channel_id}/messages/{message_id}"""
-    return await self._ref().edit(message, sticker_ids=sticker_ids, reason=reason)
+    return await self._ref().edit(message, reason=reason)
 
   async def delete(self, *, reason: str | None = None) -> Result[None, DiscordAPIError]:
     """DELETE /channels/{channel_id}/messages/{message_id}"""
@@ -131,9 +127,7 @@ class MessageActions:
     """POST /channels/{channel_id}/polls/{message_id}/expire"""
     return await self._ref().end_poll(reason=reason)
 
-  async def reply(
-    self, message: Draft | str
-  ) -> Result[m.MessageResponse, DiscordAPIError]:
+  async def reply(self, message: Draft) -> Result[m.MessageResponse, DiscordAPIError]:
     """Reply to this message in its channel (the `Draft` gets `reply_to` set to it)."""
     return await self._ref().reply(message)
 
@@ -247,9 +241,7 @@ class MemberActions:
       access_tokens=access_tokens, nicks=nicks, reason=reason
     )
 
-  async def send(
-    self, message: Draft | str
-  ) -> Result[m.MessageResponse, DiscordAPIError]:
+  async def send(self, message: Draft) -> Result[m.MessageResponse, DiscordAPIError]:
     """Direct-message the user: opens the DM channel, then sends to it."""
     return await self._user_ref().send(message)
 
@@ -277,9 +269,7 @@ class UserActions:
     """POST /users/@me/channels"""
     return await self._ref().dm(access_tokens=access_tokens, nicks=nicks, reason=reason)
 
-  async def send(
-    self, message: Draft | str
-  ) -> Result[m.MessageResponse, DiscordAPIError]:
+  async def send(self, message: Draft) -> Result[m.MessageResponse, DiscordAPIError]:
     """Direct-message the user: opens the DM channel, then sends to it."""
     return await self._ref().send(message)
 
@@ -395,26 +385,15 @@ class ChannelActions:
 
   async def send(
     self,
-    message: Draft | str | None = UNSET,
+    message: Draft,
     *,
-    sticker_ids: Sequence[int | str] | None = UNSET,
-    poll: m.PollCreateRequest | Mapping[str, Any] | None = UNSET,
-    shared_client_theme: m.CustomClientThemeShareRequest
-    | Mapping[str, Any]
-    | None = UNSET,
     nonce: int | str | None = UNSET,
     enforce_nonce: bool | None = UNSET,
     reason: str | None = None,
   ) -> Result[m.MessageResponse, DiscordAPIError]:
     """POST /channels/{channel_id}/messages"""
     return await self._ref().send(
-      message,
-      sticker_ids=sticker_ids,
-      poll=poll,
-      shared_client_theme=shared_client_theme,
-      nonce=nonce,
-      enforce_nonce=enforce_nonce,
-      reason=reason,
+      message, nonce=nonce, enforce_nonce=enforce_nonce, reason=reason
     )
 
   async def history(

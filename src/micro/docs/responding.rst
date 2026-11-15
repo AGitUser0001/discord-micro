@@ -7,6 +7,8 @@ command's own options:
 
 .. code-block:: python
 
+   from micro.discord import Context
+
    @commands.slash("whois")
    async def whois(ctx: Context, interaction: Interaction, who: User) -> None:
      member = await ctx.state.member(interaction.guild_id, who.id)    # what the Gateway knows
@@ -16,7 +18,8 @@ A context carries everything a handler reaches for, apart from the runtime:
 
 * ``ctx.api``: every Discord operation (:doc:`api`).
 * ``ctx.state``: what the Gateway connections hold (:doc:`state`), including the bot's own
-  user (``await ctx.state.me()``) and every guild it is in (``await ctx.state.guilds()``).
+  user (``await ctx.state.me()``), every guild it is in (``await ctx.state.guilds()``) and your
+  own application, fetched once (``await ctx.state.application()``, ``owner_ids()``).
 * ``ctx.gateway``: the connections themselves: presence (``update_presence``), voice
   (``update_voice_state``), member lists (``request_guild_members``), ``status()``, intents.
 * ``ctx.timers``: schedule something for later, cancel it, list what is pending.
@@ -34,12 +37,14 @@ interaction has already sent.
 
 .. code-block:: python
 
+   from micro.discord.ui import Draft
+
    await interaction.respond(Draft("hi", ephemeral=True, embeds=[...], components=[...]))
    await interaction.defer()                       # button: silent, update mode. Command: "thinking..."
    await interaction.defer(thinking=True)          # button: "thinking..." (message mode)
-   await interaction.edit_response("changed")
+   await interaction.edit_response(Draft("changed"))
    await interaction.delete_response()
-   await interaction.update_message("new content") # edit the message a button sits on
+   await interaction.update_message(Draft("new content")) # edit the message a button sits on
    await interaction.modal(modal)
    await interaction.autocomplete(["a", "b"])
 
@@ -78,13 +83,15 @@ A message as a value
 --------------------
 
 A message is a :class:`Draft` (:doc:`ui`): ``interaction.respond``, ``edit_response`` and
-``update_message`` each take one, or a plain string for text only. There is no other way to
+``update_message`` each take one (``Draft("text")`` for plain text; a bare string is refused). There is no other way to
 pass embeds, components, files or ``ephemeral``, so a message is always one value you can
 build away from the handler, test, and reuse.
 
 .. code-block:: python
 
-   await interaction.respond("hi")
+   from micro.discord.ui import Draft
+
+   await interaction.respond(Draft("hi"))
    await interaction.respond(Draft("hi", ephemeral=True, embeds=[Embed("T")]))
 
 Files
@@ -111,6 +118,8 @@ A file that is only attached, not shown, goes in the draft's ``files``:
 
 .. code-block:: python
 
+   from micro.discord.ui import Draft
+
    await interaction.respond(Draft("Here you go.", files=[Upload.from_path("report.pdf")]))
 
 ``Upload.text(name, string)``, ``Upload.json(name, value)`` and ``Upload.from_path(path)``
@@ -122,6 +131,8 @@ Files work on the first response, the answer to a deferral, follow-ups and edits
 edit new files are **added** and the ones already there stay; ``keep`` says otherwise:
 
 .. code-block:: python
+
+   from micro.discord.ui import Draft
 
    await interaction.update_message(Draft(components=[MediaGallery(MediaItem(new_chart))], keep=[]))    # replace all
    await interaction.edit_response(Draft("trimmed", keep=[interaction.message.attachments[0]]))      # keep one

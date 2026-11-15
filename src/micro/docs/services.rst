@@ -56,6 +56,8 @@ move from one service to another without its callers noticing.
 
 .. code-block:: python
 
+   from micro.discord import Context
+
    @service.handle(GREET)
    async def greet(ctx: Context, request: Greeting) -> str:
      if not request.name:
@@ -82,6 +84,8 @@ service may have many handlers for one event.
 
 .. code-block:: python
 
+   from micro.discord import Context
+
    @service.listen(GREETED)
    async def log(ctx: Context, event: Greeting) -> None: ...
 
@@ -100,6 +104,8 @@ Work queues
 Jobs are kept until exactly one worker finishes them, even if none is running.
 
 .. code-block:: python
+
+   from micro.discord import Context
 
    @service.work(AUDIT)
    async def record(ctx: Context, job: Greeting) -> None: ...
@@ -176,6 +182,8 @@ any work, and ``shutdown`` once when it closes, after its work has finished:
 
 .. code-block:: python
 
+   from micro.discord import Context
+
    @service.startup
    async def setup(ctx: Context) -> None:
      ...                                     # open a connection, warm a cache
@@ -192,6 +200,8 @@ Doing something on a schedule
 ``every`` runs a handler again and again, like discord.py's ``tasks.loop``:
 
 .. code-block:: python
+
+   from micro.discord import Context
 
    @service.every(minutes=5)
    async def refresh(ctx: Context) -> None:

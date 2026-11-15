@@ -30,6 +30,8 @@ from pydantic import JsonValue
 from .colour import Colour, ColourLike
 
 if TYPE_CHECKING:
+  from micro.discord.models.http import CustomClientThemeShareRequest, PollCreateRequest
+
   from .objects import Object
 
 from .enums import ButtonStyle, ChannelType, TextInputStyle
@@ -2002,8 +2004,8 @@ class Draft(metaclass=_Hooked):
 
   A `Draft` is immutable and comparable, so build it anywhere (a helper, a template, a
   test) and send it wherever; nothing is sent until you do. Change one with
-  `dataclasses.replace`. Every way of sending a message takes a `Draft` (or a plain
-  string for a text-only one).
+  `dataclasses.replace`. Every way of sending a message takes a `Draft`, and nothing else:
+  `Draft("text")` is the text-only one. A poll and stickers are part of it too.
 
   For an edit, a part that is `None` is left as it is on the message and an empty one
   clears it: `Draft(embeds=())` removes the embeds, `Draft(content="")` the text. Files
@@ -2035,6 +2037,12 @@ class Draft(metaclass=_Hooked):
   """Hide the link previews Discord would add."""
   keep: tuple[str, ...] | None
   """On an edit, the existing attachments (ids) that stay; `None` leaves them all, `()` removes them all."""
+  poll: PollCreateRequest | Mapping[str, Any] | None
+  """A poll to attach (`PollCreateRequest`, or its JSON)."""
+  sticker_ids: tuple[str, ...] | None
+  """Stickers to send with the message (up to 3; not in interaction replies)."""
+  shared_client_theme: CustomClientThemeShareRequest | Mapping[str, Any] | None
+  """A client theme to share with the message."""
 
   def __init__(
     self,
@@ -2050,6 +2058,11 @@ class Draft(metaclass=_Hooked):
     silent: bool = False,
     suppress_embeds: bool = False,
     keep: Sequence[Object | str | int] | None = None,
+    poll: PollCreateRequest | Mapping[str, Any] | None = None,
+    sticker_ids: Sequence[Object | str | int] | None = None,
+    shared_client_theme: CustomClientThemeShareRequest
+    | Mapping[str, Any]
+    | None = None,
   ) -> None:
     from .objects import Object
 
@@ -2071,11 +2084,28 @@ class Draft(metaclass=_Hooked):
       if keep is None
       else tuple(item.id if isinstance(item, Object) else str(item) for item in keep),
     )
+    set_(self, "poll", poll)
+    set_(
+      self,
+      "sticker_ids",
+      None
+      if sticker_ids is None
+      else tuple(
+        item.id if isinstance(item, Object) else str(item) for item in sticker_ids
+      ),
+    )
+    set_(self, "shared_client_theme", shared_client_theme)
 
   @classmethod
-  def of(cls, message: Draft | str | None) -> Draft:
-    """The `Draft` for what a send method was given: itself, or a text-only one."""
-    return message if isinstance(message, Draft) else cls(message)
+  def of(cls, message: Draft) -> Draft:
+    """What a send method was given, checked to be a `Draft`.
+
+    Raises:
+      TypeError: It was given a string or anything else: send `Draft("text")`.
+    """
+    if not isinstance(message, Draft):
+      raise TypeError(f'Send a Draft, not {type(message).__name__}: Draft("text").')
+    return message
 
   @property
   def uploads(self) -> tuple[Upload, ...]:
@@ -2111,7 +2141,20 @@ class Draft(metaclass=_Hooked):
     if self.keep is not None:
       # Listing attachments replaces the message's files with exactly these.
       body["attachments"] = attachments(self.uploads, self.keep)
+    if self.poll is not None:
+      body["poll"] = _as_json(self.poll)
+    if self.sticker_ids is not None:
+      body["sticker_ids"] = list(self.sticker_ids)
+    if self.shared_client_theme is not None:
+      body["shared_client_theme"] = _as_json(self.shared_client_theme)
     return body
+
+
+def _as_json(value: Any) -> Json:
+  """A model (or the JSON it already is) as the JSON Discord expects."""
+  if hasattr(value, "model_dump"):
+    return value.model_dump(mode="json", by_alias=True, exclude_none=True)
+  return dict(value)
 
 
 def uploads_in(

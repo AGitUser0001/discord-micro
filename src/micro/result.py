@@ -5,8 +5,8 @@
       case Err(NotFound()): ...            # it was deleted meanwhile
       case Err(error): raise error
 
-    text = (await channel.send("hi")).unwrap()         # abort: the error is raised
-    sent = (await channel.send("hi")).ok()              # the message, or None
+    text = (await channel.send(Draft("hi"))).unwrap()         # abort: the error is raised
+    sent = (await channel.send(Draft("hi"))).ok()              # the message, or None
     (await message.delete()).ignore(NotFound)           # only "already gone" is fine
 
 A `Result[T, E]` is an `Ok` holding the `T` or an `Err` holding the `E`. Handle it where

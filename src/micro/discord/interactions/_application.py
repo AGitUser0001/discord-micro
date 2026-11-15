@@ -18,12 +18,12 @@ class Context:
   """The master object of a bot: everything a handler uses to reach Discord and your own
   services, separate from the interaction it is handling (and from the runtime).
 
-  A handler asks for it by annotation, with the interaction beside it:
+  Every handler gets it as its first argument, with the interaction beside it:
 
       @commands.slash("whois")
       async def whois(ctx: Context, interaction: Interaction, who: User) -> None:
         member = await ctx.state.member(interaction.guild_id, who.id)
-        await interaction.respond(f"{member.display_name}")
+        await interaction.respond(Draft(f"{member.display_name}"))
 
   `ctx.api` calls Discord; `ctx.state` reads what the Gateway connections know;
   `ctx.gateway` controls the connections (status, voice, member lists); `ctx.timers`
@@ -51,8 +51,9 @@ class Context:
   @cached_property
   def state(self) -> DiscordState:
     """What the Gateway connections know of Discord: guilds, roles, channels, members,
-    users, the bot itself (`await ctx.state.member(guild_id, user_id)`). It never asks
-    Discord."""
+    users, the bot itself (`await ctx.state.member(guild_id, user_id)`). It reads what the
+    connections hold and never asks Discord, except for your own application, which it
+    fetches once (`await ctx.state.application()`)."""
     from micro.discord.state import DiscordState
 
     return DiscordState(self.http.runtime, context=self)

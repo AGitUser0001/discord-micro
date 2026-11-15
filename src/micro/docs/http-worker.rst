@@ -159,7 +159,7 @@ there is one, so you catch what you mean:
 
 .. code-block:: python
 
-   from micro.discord import Forbidden, NotFound
+   from micro.discord import Forbidden, NotFound, Context, Draft
 
    try:
      await ctx.api.message(channel_id, message_id).delete()   # ctx: Context

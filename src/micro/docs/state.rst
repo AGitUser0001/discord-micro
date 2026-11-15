@@ -50,7 +50,8 @@ same answers.
    allowed = await state.permissions(guild_id, user_id, channel_id)
 
 Every read returns a typed view (:doc:`objects`) or ``None``. ``None`` means **state does not
-know**, which is not the same as "it does not exist". `DiscordState` never asks Discord:
+know**, which is not the same as "it does not exist". `DiscordState` never asks Discord about these (your own application is
+the one exception, below):
 whether to fetch what is missing through the :doc:`api`, or to treat it as absent, is for the
 caller to decide:
 

@@ -498,15 +498,15 @@ class Interaction:
 
   # High level: state-aware -----------------------------------------------------
 
-  async def respond(self, message: Draft | str | None = None) -> Message | None:
-    """Answer the interaction with a message: a `Draft`, or a string for plain text.
+  async def respond(self, message: Draft) -> Message | None:
+    """Answer the interaction with a message: a `Draft` (`Draft("plain text")`).
 
     The initial response when nothing was sent, the deferred message after a
     `defer(thinking=True)`, and a follow-up (returned) otherwise. An `Upload` shown
     by a component or an embed is attached by itself.
 
     Args:
-      message: What to send: a `Draft`, or a string for plain text.
+      message: What to send.
 
     Returns:
       `None` for the initial response and for the deferred message; the follow-up
@@ -566,14 +566,14 @@ class Interaction:
         data: Json | None = {"flags": EPHEMERAL} if ephemeral else None
         await self._initial(ResponseType.DEFERRED_MESSAGE_CREATE, data)
 
-  async def edit_response(self, message: Draft | str | None = None) -> None:
+  async def edit_response(self, message: Draft) -> None:
     """Edit the message this interaction answered with.
 
     A part of the `Draft` left as None stays as it is, an empty one clears it. Files
     are added to the message; `Draft(keep=[...])` says which of the existing ones stay.
 
     Args:
-      message: What the message should become: a `Draft`, or a string for plain text.
+      message: What the message should become.
     """
     draft = Draft.of(message)
     files = draft.uploads
@@ -588,7 +588,7 @@ class Interaction:
       self._require_original("delete")
       await self._delete()
 
-  async def update_message(self, message: Draft | str | None = None) -> None:
+  async def update_message(self, message: Draft) -> None:
     """Edit the message a component was clicked on (see `edit_response`).
 
     Needs a source message: always there for components, and for modal submits

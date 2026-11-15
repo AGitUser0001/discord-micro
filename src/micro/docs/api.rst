@@ -9,6 +9,8 @@ the token are handled for you.
 
 .. code-block:: python
 
+   from micro.discord import Context, Draft
+
    api = ctx.api                  # in a handler: async def f(ctx: Context, interaction: Interaction)
    sent = await api.create_message(channel_id, Draft("hi", embeds=[Embed("T", "D")]))
    message = sent.unwrap()                                   # or match on Ok / Err
@@ -48,9 +50,11 @@ Arguments
   Discord expects.
 * **Everything else is a keyword**, with the types Discord's models give them. A request
   body's fields and query parameters are all keywords. The exception is a message: every
-  operation that sends or edits one takes it as a :class:`Draft` (or a string for text only)
-  in place of ``content``, ``embeds``, ``components``, ``allowed_mentions``, ``flags``,
-  ``tts``, ``message_reference`` and ``attachments``, the second positional argument.
+  operation that sends or edits one takes it as a :class:`Draft` (``Draft("text")`` for text
+  only; a bare string is refused) in place of ``content``, ``embeds``, ``components``, ``allowed_mentions``, ``flags``,
+  ``tts``, ``message_reference``, ``attachments``, ``poll``, ``sticker_ids`` and
+  ``shared_client_theme``. It is a required argument, right after the path parameters
+  (``nonce`` and ``enforce_nonce`` stay keywords: they are about the request, not the message).
 * **Leaving an argument out leaves it out of the request. Passing ``None`` sends ``null``**,
   which is how you clear a field (a topic, a nickname).
 * A mistake (a wrong type, an unknown field, a value outside Discord's limits) is a
@@ -78,9 +82,11 @@ most on it. Nothing is fetched until you call a method.
 
 .. code-block:: python
 
+   from micro.discord.ui import Draft
+
    channel = api.channel(5)
-   await channel.send("hello", components=[...])
-   await channel.message(9).reply("yes")                   # same as api.message(5, 9)
+   await channel.send(Draft("hello"), components=[...])
+   await channel.message(9).reply(Draft("yes"))                   # same as api.message(5, 9)
    await channel.message(9).react("👍")                    # or Emoji("wave", 123)
    thread = await channel.message(9).start_thread(name="discuss")
 
@@ -88,7 +94,7 @@ most on it. Nothing is fetched until you call a method.
    await member.timeout(datetime(2030, 1, 1, tzinfo=UTC), reason="cool off")
    await member.add_role(20)
    await api.guild(7).ban(8, reason="spam")
-   await api.user(8).send("hello")                         # opens the DM first
+   await api.user(8).send(Draft("hello"))                         # opens the DM first
 
 There are refs for channels, messages, guilds, members, roles, users, emojis, stickers,
 scheduled events, webhooks (``webhook(id)`` and ``webhook_token(id, token)``), invites and

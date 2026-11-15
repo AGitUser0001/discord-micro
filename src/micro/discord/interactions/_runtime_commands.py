@@ -110,8 +110,10 @@ class RuntimeCommands(InteractionTemplate):
       dynamic = RuntimeCommands(service)
 
       @dynamic.handler
-      async def run(ctx: Interaction) -> None:
-        await ctx.respond(await lookup(ctx.guild_id, ctx.command_name))
+      async def run(ctx: Context, interaction: Interaction) -> None:
+        await interaction.respond(
+          await lookup(interaction.guild_id, interaction.command_name)
+        )
 
       await dynamic.add("hello", "Say hello", guild_id=1234)
       await dynamic.remove("hello", guild_id=1234)
@@ -133,14 +135,14 @@ class RuntimeCommands(InteractionTemplate):
     self._watching: asyncio.Task[None] | None = None
 
   def handler[**P](self, function: Handler[P]) -> Handler[P]:
-    """The function that runs any runtime command: `async def f(ctx)`."""
+    """The function that runs any runtime command: `async def f(ctx, interaction)`."""
     if not asyncio.iscoroutinefunction(function):
       raise TypeError("Interaction handlers must be async functions.")
     self._handler = function
     return function
 
   def autocomplete[**P](self, function: Handler[P]) -> Handler[P]:
-    """Suggestions for options declared `autocomplete=True`: `async def f(ctx, value)`."""
+    """Suggestions for options declared `autocomplete=True`: `async def f(ctx, interaction, value)`."""
     self._autocomplete = function
     return function
 
@@ -204,8 +206,12 @@ class RuntimeCommands(InteractionTemplate):
         return False
       stored = current.value
       if guild_id is None:
+        if not stored.everywhere:
+          return False  # it was never everywhere: nothing to remove
         stored = stored.model_copy(update={"everywhere": False})
       else:
+        if str(guild_id) not in stored.guilds:
+          return False  # it was never in that guild: nothing to remove
         stored = stored.model_copy(
           update={"guilds": [g for g in stored.guilds if g != str(guild_id)]}
         )

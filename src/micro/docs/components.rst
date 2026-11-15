@@ -9,7 +9,7 @@ send it and that Discord returns when someone uses it. How you build the compone
 .. code-block:: python
 
    from pydantic import BaseModel
-   from micro.discord.interactions import Components, CustomId, Modals
+   from micro.discord.interactions import Components, CustomId, Modals, Context
    from micro.discord.ui import Button, Draft, Modal, TextInput
 
    class Ticket(BaseModel):
@@ -37,7 +37,7 @@ Typed state: ``CustomId``
 A :class:`CustomId` is a route that owns its prefix (the part before the first ``:``) and
 carries a Pydantic model as state. ``encode(state)`` writes ``prefix:[v1,v2,...]``, the
 field values in declaration order as compact JSON, so state costs only its values.
-``decode`` turns it back; the handler receives the decoded model as its second argument.
+``decode`` turns it back; the handler receives the decoded model as its argument after ``ctx`` and ``interaction``.
 
 * It must fit Discord's 100 characters (:data:`CUSTOM_ID_LIMIT`). ``encode`` raises
   ``ValueError`` if it does not, naming the length.
@@ -53,6 +53,8 @@ Matching other shapes
 **router** evaluates it, so the right service's queue gets the interaction.
 
 .. code-block:: python
+
+   from micro.discord import Context
 
    import re
 

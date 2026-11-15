@@ -3,13 +3,16 @@ Commands
 
 :class:`Commands` declares slash commands, user commands and message commands from typed
 Python functions. The function's parameters become the command's options; Micro builds
-Discord's definition, converts the submitted values back into Python objects, and hands you
-an :class:`Interaction` (``interaction``) first.
+Discord's definition, converts the submitted values back into Python objects, and calls the
+function with the :class:`Context` (``ctx``) and the :class:`Interaction` (``interaction``),
+then the options.
 
 .. code-block:: python
 
+   from micro.discord.ui import Draft
+
    from typing import Annotated, Literal
-   from micro.discord.interactions import Commands, Interaction, Option
+   from micro.discord.interactions import Commands, Interaction, Option, Context
    from micro.discord.objects import Member, Message, User
 
    commands = Commands(service, guild_ids=[...])   # guild_ids optional: guild commands
@@ -22,7 +25,7 @@ an :class:`Interaction` (``interaction``) first.
      level: Literal["low", "high"] = "low",
      assignee: User | None = None,
    ) -> None:
-     await interaction.respond(f"Opened {topic}")
+     await interaction.respond(Draft(f"Opened {topic}"))
 
    @ticket.autocomplete("topic")
    async def topics(ctx: Context, interaction: Interaction, value: str) -> list[str]:
@@ -112,7 +115,9 @@ point at a command in a message, where Discord shows it as a clickable chip:
 
 .. code-block:: python
 
-   await interaction.respond(f"Open one with {await ctx.mention_command('ticket open')}")
+   from micro.discord.ui import Draft
+
+   await interaction.respond(Draft(f"Open one with {await ctx.mention_command('ticket open')}"))
    found = await ctx.command_id("ticket")                    # the id, or None before the first sync
    menu = await ctx.command_id("Say hi", type=CommandType.USER)   # a context-menu command
 

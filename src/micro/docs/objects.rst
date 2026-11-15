@@ -71,11 +71,13 @@ matching :doc:`api` call.
 
 .. code-block:: python
 
-   await message.reply("pong")
+   from micro.discord.ui import Draft
+
+   await message.reply(Draft("pong"))
    await message.react("👍")
    await member.timeout(until, reason="spam")
    await member.add_role(role_id)
-   await member.send("You were warned.")
+   await member.send(Draft("You were warned."))
    await guild.ban(user_id, reason="raid")
    await channel.send(Draft("hi", embeds=[...]))
    await channel.bulk_delete(message_ids)
@@ -107,6 +109,8 @@ and ``deny``, and ``member.permissions`` (on interactions: what the member may d
 channel).
 
 .. code-block:: python
+
+   from micro.discord import Context, Draft
 
    from micro.discord.permissions import Permissions
 

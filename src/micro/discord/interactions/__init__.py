@@ -4,8 +4,8 @@
     commands = Commands(service)
 
     @commands.slash("ticket", description="Open a ticket")
-    async def ticket(ctx: Interaction, topic: str) -> None:
-      await ctx.respond(f"Opened {topic}")
+    async def ticket(ctx: Context, interaction: Interaction, topic: str) -> None:
+      await interaction.respond(Draft(f"Opened {topic}"))
 
 Run `InteractionRouter` (routes raw interactions) and `CommandSync` (registers
 converged commands) once per deployment, with any number of replicas.

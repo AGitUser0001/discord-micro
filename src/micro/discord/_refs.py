@@ -39,9 +39,7 @@ class _MessageExtras:
   channel_id: str
   message_id: str
 
-  async def reply(
-    self, message: Draft | str
-  ) -> Result[m.MessageResponse, DiscordAPIError]:
+  async def reply(self, message: Draft) -> Result[m.MessageResponse, DiscordAPIError]:
     """Reply to this message in its channel (the `Draft` gets `reply_to` set to it)."""
     return await self.api.create_message(
       self.channel_id, replace(Draft.of(message), reply_to=self.message_id)
@@ -54,9 +52,7 @@ class _UserExtras:
   api: DiscordAPI
   user_id: str
 
-  async def send(
-    self, message: Draft | str
-  ) -> Result[m.MessageResponse, DiscordAPIError]:
+  async def send(self, message: Draft) -> Result[m.MessageResponse, DiscordAPIError]:
     """Direct-message the user: opens the DM channel, then sends to it.
 
     The first refusal (the DM could not be opened, or the message was refused) is
