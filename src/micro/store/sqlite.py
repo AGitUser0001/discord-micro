@@ -11,8 +11,9 @@ For other scales, implement `GraphExecutor` for your database.
 import asyncio
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,11 +24,10 @@ from pydantic import JsonValue
 
 from ._store import (
   GraphBackendError,
-  GraphBatch,
-  GraphBatchResult,
   GraphLayout,
   GraphResult,
   GraphStatement,
+  GraphTransaction,
 )
 
 LARGE_VALUE = 4096
@@ -267,6 +267,10 @@ class _Run:
     if kind == "OptionalMatchStatement":
       inner = statement.find_first(ast.SimpleMatchStatement)
       return [found for row in rows for found in self.match(inner, row, optional=True)]
+    if kind == "FilterStatement":
+      condition = statement.filter_statement
+      condition = getattr(condition, "search_condition", condition)  # FILTER WHERE ...
+      return [row for row in rows if self.eval(condition, row) is True]
     if kind == "InsertStatement":
       for row in rows:
         self.insert(statement, row)
@@ -563,18 +567,6 @@ class _Run:
     for step in node.steps or []:
       other = self.eval(step.term, row)
       plus = step.sign.name == "PLUS_SIGN"
-      if (
-        isinstance(other, dict) and plus and (value is None or isinstance(value, dict))
-      ):
-        # A map plus a map: the entries of the second set or replace those of the first
-        # (a missing map counts as empty), so one key changes atomically.
-        value = {**(value or {}), **other}  # pyright: ignore[reportUnknownVariableType]
-        continue
-      if isinstance(value, dict) and not plus and isinstance(other, str | list):
-        # A map minus a key (or a list of keys): those entries are gone.
-        gone = {other} if isinstance(other, str) else set(other)  # pyright: ignore[reportUnknownArgumentType]
-        value = {k: v for k, v in value.items() if k not in gone}  # pyright: ignore[reportUnknownVariableType]
-        continue
       if value is None or other is None:
         return None
       left: Any = value
@@ -786,6 +778,7 @@ class SQLiteGraph:
     self._db: sqlite3.Connection | None = None
     self._gql = Dialect.get_or_raise("fullgql")
     self._parsed: dict[str, ast.StatementBlock] = {}
+    self._lock = asyncio.Lock()
 
   async def start(self) -> None:
     """Open (creating) the SQLite file."""
@@ -798,9 +791,20 @@ class SQLiteGraph:
       self._db = None
     self._worker.shutdown(wait=True)
 
-  async def execute(self, batch: GraphBatch) -> GraphBatchResult:
-    """Run a batch of statements in one transaction."""
-    return await self._call(self._execute, batch)
+  @asynccontextmanager
+  async def transaction(self, *, writes: bool) -> AsyncIterator[GraphTransaction]:
+    """One SQLite transaction (`BEGIN IMMEDIATE` when it writes); transactions of this
+    store run one at a time, so each is serializable."""
+    async with self._lock:
+      db = self._connection()
+      await self._guarded(db.execute, "BEGIN IMMEDIATE" if writes else "BEGIN")
+      try:
+        yield _Transaction(self)
+        await self._guarded(db.execute, "COMMIT")
+      except BaseException:
+        if db.in_transaction:
+          await self._call(db.execute, "ROLLBACK")
+        raise
 
   async def apply_layout(self, layout: GraphLayout) -> None:
     """Record the layout; the graph is schemaless, so nothing physical changes."""
@@ -860,33 +864,17 @@ class SQLiteGraph:
       block = self._parsed[statement.text] = found
     return block
 
-  def _execute(self, batch: GraphBatch) -> GraphBatchResult:
-    db = self._connection()
-    writes = any(
-      keyword in statement.text
-      for statement in batch.statements
-      for keyword in ("INSERT", "SET ", "DELETE")
+  def _run(self, statement: GraphStatement) -> GraphResult:
+    rows = _Run(self._connection(), statement.parameters).statement(
+      self._block(statement)
     )
+    return GraphResult(
+      tuple({column: row.get(column) for column in statement.columns} for row in rows)
+    )
+
+  async def _guarded(self, function: Any, *args: Any) -> Any:
     try:
-      db.execute("BEGIN IMMEDIATE" if writes else "BEGIN")
-      try:
-        results = []
-        for statement in batch.statements:
-          run = _Run(db, statement.parameters)
-          rows = run.statement(self._block(statement))
-          results.append(
-            GraphResult(
-              tuple(
-                {column: row.get(column) for column in statement.columns}
-                for row in rows
-              )
-            )
-          )
-      except BaseException:
-        db.execute("ROLLBACK")
-        raise
-      db.execute("COMMIT")
-      return GraphBatchResult(tuple(results))
+      return await self._call(function, *args)
     except sqlite3.IntegrityError as exc:
       raise GraphBackendError(
         "The graph operation conflicts with existing data.", code="CONFLICT"
@@ -895,6 +883,14 @@ class SQLiteGraph:
       raise GraphBackendError(
         f"The graph backend is unavailable: {exc}", code="UNAVAILABLE", retryable=True
       ) from exc
+
+
+class _Transaction:
+  def __init__(self, graph: SQLiteGraph) -> None:
+    self._graph = graph
+
+  async def run(self, statement: GraphStatement) -> GraphResult:
+    return await self._graph._guarded(self._graph._run, statement)  # pyright: ignore[reportPrivateUsage]
 
 
 __all__ = ("LARGE_VALUE", "SQLiteGraph")

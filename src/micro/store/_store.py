@@ -1,4 +1,5 @@
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
@@ -38,8 +39,6 @@ from micro.errors import BackendExecutionError
 
 from ._module import GraphModule
 from .composer import DirectiveMetadata, TypeDirectiveMetadata
-
-type ResultShaper = Callable[[GraphBatchResult], Mapping[str, JsonValue]]
 
 
 class GraphQLBody(BaseModel):
@@ -95,26 +94,12 @@ class GraphResult:
   rows: tuple[Mapping[str, JsonValue], ...]
 
 
-@dataclass(frozen=True, slots=True)
-class GraphBatch:
-  """Graph statements executed atomically and in order."""
+class GraphTransaction(Protocol):
+  """An open transaction of a `GraphExecutor`."""
 
-  statements: tuple[GraphStatement, ...]
-
-  def __post_init__(self) -> None:
-    if not self.statements:
-      raise ValueError("A graph batch needs at least one statement.")
-
-
-@dataclass(frozen=True, slots=True)
-class GraphBatchResult:
-  """The results of a batch of statements."""
-
-  results: tuple[GraphResult, ...]
-
-  def __post_init__(self) -> None:
-    if not self.results:
-      raise ValueError("A graph batch result needs at least one result.")
+  async def run(self, statement: GraphStatement) -> GraphResult:
+    """Run one statement inside the transaction and return its rows."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,10 +149,13 @@ class GraphQLRequest:
 
 @dataclass(frozen=True, slots=True)
 class CompiledOperation:
-  """A GraphQL operation compiled into storage statements."""
+  """A GraphQL operation compiled into storage statements.
 
-  batch: GraphBatch
-  shape: ResultShaper
+  `run` executes them, in order, in one transaction and returns the operation's `data`.
+  """
+
+  writes: bool
+  run: Callable[[GraphTransaction], Awaitable[Mapping[str, JsonValue]]]
 
 
 class _Compiler(Protocol):
@@ -184,8 +172,16 @@ class GraphExecutor(Protocol):
     """Open the backend. Must be called before use."""
     ...
 
-  async def execute(self, batch: GraphBatch) -> GraphBatchResult:
-    """Run a batch of compiled statements atomically."""
+  def transaction(
+    self, *, writes: bool
+  ) -> AbstractAsyncContextManager[GraphTransaction]:
+    """Open a serializable transaction: it commits when the block ends and rolls back if
+    the block raises. Statements are standard ISO GQL with parameters.
+
+    Inserting a node whose `_micro_id` its label already has must raise
+    `GraphBackendError(code="CONFLICT")`; a busy or unreachable backend raises one
+    with `code="UNAVAILABLE", retryable=True`.
+    """
     ...
 
   async def apply_layout(self, layout: GraphLayout) -> None:
@@ -362,8 +358,8 @@ class GraphEngine:
     )
     try:
       compiled = composition.compiler.compile(request)
-      batch_result = await self.executor.execute(compiled.batch)
-      data = dict(compiled.shape(batch_result))
+      async with self.executor.transaction(writes=compiled.writes) as transaction:
+        data = dict(await compiled.run(transaction))
     except GraphQLError as exc:
       return {"data": None, "errors": [exc.formatted]}  # pyright: ignore[reportReturnType]
     return {"data": data}

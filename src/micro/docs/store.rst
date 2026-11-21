@@ -14,7 +14,9 @@ database (SQLAlchemy, Redis, ...) inside a service instead. See *When to use it*
 That is the whole setup. Data lives in one SQLite file, ``.micro/store.db`` (set
 ``MICRO_STORE_URL=sqlite:/path/to/store.db`` to move it). Store processes on one
 machine share the file. For another database, implement ``GraphExecutor`` and pass
-``Store(executor=...)``.
+``Store(executor=...)``: it runs standard ISO GQL statements, with parameters, inside
+serializable transactions, and refuses a second node with the same ``_micro_id`` in a
+label (``CONFLICT``). Everything else (maps, upserts, keys) is Micro's, compiled to that.
 
 A first module
 --------------
@@ -128,7 +130,8 @@ Rules of the schema
   for them. ``Float`` is exact up to 2^53.
 * **Every root field needs a directive.** The store never guesses where something is
   kept: a ``Query`` field is ``@from``, ``@fromActive`` or ``@scan``; a ``Mutation``
-  field is ``@insert``, ``@update``, ``@delete``, ``@connect`` or ``@disconnect``.
+  field is ``@insert``, ``@update``, ``@upsert``, ``@delete``, ``@connect`` or
+  ``@disconnect``.
 * **Arguments and keys.** In ``key: {guildId: guildId, name: name}`` the left side is the
   entity's field and the right side is the *argument of the same field*.
 
@@ -186,6 +189,17 @@ Writing
 ``null`` if there is none (or ``where`` is false). **Only the fields in** ``set``
 **change**; the rest stay as they are.
 
+``@upsert(key, insert, set)`` changes an entity, creating it first if there is none, and
+returns it. A new one starts with its key fields and ``insert``; then ``set`` applies, the
+same as ``@update``, whether it was just made or already there. Both are optional:
+``@upsert(key: {id: id})`` alone makes sure it exists.
+
+.. code-block:: graphql
+
+   warn(guildId: ID!, userId: ID!): Warning!
+     @upsert(key: {guildId: guildId, userId: userId},
+             insert: {count: "0"}, set: {count: "current.count + 1"})   # first warn: 1
+
 ``@delete(type, key)`` removes an entity and every edge to it. It returns true, or
 ``null`` if there was none.
 
@@ -222,7 +236,8 @@ Plain numbers, ``true`` and ``[]`` are not allowed as ``set`` values: write ``"0
    (await store.execute(t'mutation {{ editBody(guildId: "1", name: "hi", body: null) {{ body }} }}')).unwrap()  # cleared
 
 **One request is one transaction.** Put several mutation fields in one request and they
-all happen or none does. The earlier example creates a command and attaches it to its
+all happen or none does. They run in order, each seeing what the ones before it wrote, and
+each returns its own result as it was right after it ran. The earlier example creates a command and attaches it to its
 guild together.
 
 Relationships
@@ -372,6 +387,7 @@ Directive reference
 ``@scan``           a page of every entity; ``first`` (1 to 1000) and ``offset``
 ``@insert``         ``key``, ``set``: create; ``CONFLICT`` if the key exists
 ``@update``         ``key``, ``set``, optional ``where``: change fields; null if none
+``@upsert``         ``key``, optional ``insert`` and ``set``: create if missing, then change
 ``@delete``         ``type``, ``key``: remove with its edges
 ``@connect``        ``fromType``, ``fromKey``, ``toType``, ``toKey``, ``field``: add an edge
 ``@disconnect``     the same: remove an edge
@@ -401,8 +417,7 @@ The store is a service-side component plus a client. Everything a service normal
    micro.store.GraphQLBody
    micro.store.GraphQLRequest
    micro.store.GraphResult
-   micro.store.GraphBatch
-   micro.store.GraphBatchResult
+   micro.store.GraphTransaction
    micro.store.GraphStatement
    micro.store.MicroGraph
    micro.store.compose_graph
@@ -412,7 +427,6 @@ The store is a service-side component plus a client. Everything a service normal
    micro.store.sqlite.SQLiteGraph
    micro.store.MAX_PAGE_SIZE
    micro.store.STORE_EXECUTE
-   micro.store.ResultShaper
 
 Extending the store with directives
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -425,6 +439,7 @@ types a directive is written with; the ``notes`` package is a small, complete ex
    micro.store.DirectiveBindContext
    micro.store.DirectiveBinding
    micro.store.DirectiveCompileContext
+   micro.store.DirectiveRead
    micro.store.DirectiveResult
    micro.store.TypeDirectiveMetadata
    micro.store.TypeDirectiveBindContext
@@ -449,3 +464,4 @@ types a directive is written with; the ``notes`` package is a small, complete ex
    micro.store.INSERT_DIRECTIVE
    micro.store.SCAN_DIRECTIVE
    micro.store.UPDATE_DIRECTIVE
+   micro.store.UPSERT_DIRECTIVE

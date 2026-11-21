@@ -28,27 +28,25 @@ if TYPE_CHECKING:
 '''
 
 _FOOTER = '''
+  def __getattr__(name: str) -> Any:
+    try:
+      payload = _PAYLOADS[name]
+    except KeyError:
+      raise AttributeError(f"module {{__name__!r}} has no attribute {{name!r}}") from None
+    from micro.discord import objects
+    from micro.discord.models import gateway
 
-def __getattr__(name: str) -> Any:
-  try:
-    payload = _PAYLOADS[name]
-  except KeyError:
-    raise AttributeError(f"module {{__name__!r}} has no attribute {{name!r}}") from None
-  from micro.discord import objects
-  from micro.discord.models import gateway
+    schema = DispatchSchema[Any](
+      id=name,
+      payload=None
+      if payload is None
+      else getattr(objects if payload in _VIEWS else gateway, payload),
+    )
+    globals()[name] = schema
+    return schema
 
-  schema = DispatchSchema[Any](
-    id=name,
-    payload=None
-    if payload is None
-    else getattr(objects if payload in _VIEWS else gateway, payload),
-  )
-  globals()[name] = schema
-  return schema
-
-
-def __dir__() -> list[str]:
-  return sorted(_PAYLOADS)
+  def __dir__() -> list[str]:
+    return sorted(_PAYLOADS)
 
 
 __all__ = (
@@ -130,7 +128,7 @@ def generate(source: Path, output: Path) -> None:
     f"  {item.event}: DispatchSchema[{item.payload}]" for item in dispatches
   )
   payloads = "\n".join(
-    f"  {item.event!r}: "
+    f"    {item.event!r}: "
     + (
       "None"
       if item.payload == "None"
@@ -139,17 +137,19 @@ def generate(source: Path, output: Path) -> None:
     + ","
     for item in dispatches
   )
-  views = "\n".join(f"  {name!r}," for name in sorted(set(VIEWS.values())))
+  views = "\n".join(f"    {name!r}," for name in sorted(set(VIEWS.values())))
   exports = "\n".join(f"  {item.event!r}," for item in dispatches)
   output.parent.mkdir(parents=True, exist_ok=True)
   output.write_text(
     _HEADER
     + annotations
-    + "\n\n_PAYLOADS: dict[str, str | None] = {\n"
+    # The lazy loader is runtime-only: a module __getattr__ a type checker can see
+    # makes every unknown name `Any`, so typos would pass.
+    + "\nelse:\n  _PAYLOADS: dict[str, str | None] = {\n"
     + payloads
-    + "\n}\n\n_VIEWS = {\n"
+    + "\n  }\n\n  _VIEWS = {\n"
     + views
-    + "\n}\n"
+    + "\n  }\n"
     + _FOOTER.format(exports=exports)
   )
 

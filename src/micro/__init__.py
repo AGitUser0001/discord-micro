@@ -30,28 +30,28 @@ if TYPE_CHECKING:
   from micro import service as service
   from micro import store as store
   from micro import subjects as subjects
-
-__getattr__, __dir__ = exports(
-  __name__,
-  {
-    "config": ".config",
-    "coordination": ".coordination",
-    "discord": ".discord",
-    "errors": ".errors",
-    "gateway": ".gateway",
-    "log": ".log",
-    "middleware": ".middleware",
-    "queue": ".queue",
-    "result": ".result",
-    "runtime": ".runtime",
-    "scaffold": ".scaffold",
-    "scheduler": ".scheduler",
-    "schemas": ".schemas",
-    "service": ".service",
-    "store": ".store",
-    "subjects": ".subjects",
-  },
-)
+else:
+  __getattr__, __dir__ = exports(
+    __name__,
+    {
+      "config": ".config",
+      "coordination": ".coordination",
+      "discord": ".discord",
+      "errors": ".errors",
+      "gateway": ".gateway",
+      "log": ".log",
+      "middleware": ".middleware",
+      "queue": ".queue",
+      "result": ".result",
+      "runtime": ".runtime",
+      "scaffold": ".scaffold",
+      "scheduler": ".scheduler",
+      "schemas": ".schemas",
+      "service": ".service",
+      "store": ".store",
+      "subjects": ".subjects",
+    },
+  )
 
 __all__ = [
   "config",

@@ -215,30 +215,34 @@ def split(source: Path, target: Path, package: str, rewrites: dict[str, str]) ->
     HEADER.rstrip(),
     '"""Lazily imported models: each name loads only its own module."""',
     "",
-    "from importlib import import_module",
     "from typing import TYPE_CHECKING, Any",
     "",
     "if TYPE_CHECKING:",
   ]
   index += [f"  from .{module_of[name]} import {name} as {name}" for name in order]
-  index += ["", "_MODULES: dict[str, str] = {"]
-  index += [f'  "{name}": "{module_of[name]}",' for name in order]
+  # The lazy loader is runtime-only: a module __getattr__ a type checker can see makes
+  # every unknown name `Any`, so typos would pass.
   index += [
-    "}",
+    "else:",
+    "  from importlib import import_module",
     "",
+    "  _MODULES: dict[str, str] = {",
+  ]
+  index += [f'    "{name}": "{module_of[name]}",' for name in order]
+  index += [
+    "  }",
     "",
-    "def __getattr__(name: str) -> Any:",
-    "  try:",
-    "    module = _MODULES[name]",
-    "  except KeyError:",
-    f'    raise AttributeError(f"module {package!r} has no attribute {{name!r}}") from None',
-    '  value = getattr(import_module(f".{module}", __name__), name)',
-    "  globals()[name] = value",
-    "  return value",
+    "  def __getattr__(name: str) -> Any:",
+    "    try:",
+    "      module = _MODULES[name]",
+    "    except KeyError:",
+    f'      raise AttributeError(f"module {package!r} has no attribute {{name!r}}") from None',
+    '    value = getattr(import_module(f".{module}", __name__), name)',
+    "    globals()[name] = value",
+    "    return value",
     "",
-    "",
-    "def __dir__() -> list[str]:",
-    "  return sorted(_MODULES)",
+    "  def __dir__() -> list[str]:",
+    "    return sorted(_MODULES)",
     "",
     "",
     "__all__ = (",

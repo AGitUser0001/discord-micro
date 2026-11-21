@@ -41,6 +41,21 @@ class DirectiveResult:
   path: str
   value: str | None = None
   tail: tuple[str, ...] = ()
+  before: tuple[tuple[str, Mapping[str, JsonValue]], ...] = ()
+  """Statements (text without `RETURN`, parameters) run first, in the same transaction."""
+  reads: tuple[DirectiveRead, ...] = ()
+  """Reads run after `before` whose results give parameters of the field's statement."""
+
+
+@dataclass(frozen=True, slots=True)
+class DirectiveRead:
+  """A statement run ahead of a field's own, inside its transaction: `then` turns its
+  first row (None if there is none) into parameters for the field's statement."""
+
+  text: str
+  parameters: Mapping[str, JsonValue]
+  columns: tuple[str, ...]
+  then: Callable[[Mapping[str, JsonValue] | None], Mapping[str, JsonValue]]
 
 
 type DirectiveBinder = Callable[[DirectiveBindContext], Any]

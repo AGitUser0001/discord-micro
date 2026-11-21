@@ -1,8 +1,9 @@
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from graphql import (
@@ -15,6 +16,7 @@ from graphql import (
   GraphQLObjectType,
   GraphQLSchema,
   GraphQLType,
+  OperationType,
   SelectionSetNode,
   get_argument_values,
   get_named_type,
@@ -25,12 +27,11 @@ from pydantic import JsonValue
 
 from ._store import (
   CompiledOperation,
-  GraphBatch,
-  GraphBatchResult,
   GraphQLRequest,
   GraphStatement,
+  GraphTransaction,
 )
-from .composer import DirectiveCompileContext, MicroGraph
+from .composer import DirectiveCompileContext, DirectiveRead, MicroGraph
 
 _LAYOUT_VERSION = "micro:gql-layout:v1"
 _IDENTIFIER = re.compile(r"[^A-Za-z0-9_]")
@@ -56,6 +57,21 @@ class _RootObjectProjection:
   is_list: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _FieldPlan:
+  """What one root field runs: `before`, then `reads`, then its own statement."""
+
+  response_name: str
+  before: tuple[GraphStatement, ...]
+  reads: tuple[DirectiveRead, ...]
+  statement: GraphStatement
+  shape: Callable[[Sequence[Mapping[str, JsonValue]]], JsonValue]
+
+
+def _shape_scalar(column: str, rows: Sequence[Mapping[str, JsonValue]]) -> JsonValue:
+  return rows[0].get(column) if rows else None
+
+
 class GraphCompiler:
   """Compiles a composed Micro graph into canonical GQL."""
 
@@ -79,13 +95,9 @@ class GraphCompiler:
       fragments,
       request.variables,
     )
-    parameters: dict[str, JsonValue] = {}
-    clauses: list[str] = []
-    returns: list[str] = []
-    tail: tuple[str, ...] = ()
     counters = {"node": 0, "column": 0, "parameter": 0}
-    projections: list[_RootObjectProjection | _ScalarProjection] = []
-    for root_index, root_field in enumerate(root_fields):
+    plans: list[_FieldPlan] = []
+    for root_field in root_fields:
       field_definition = root_type.fields[root_field.name.value]
       binding = self.graph.bindings.get((root_type.name, root_field.name.value))
       if binding is None:
@@ -117,21 +129,12 @@ class GraphCompiler:
         raise GraphQLError(
           f"@{binding.directive.name} failed for {root_field.name.value!r}: {exc}"
         ) from exc
-      overlap = set(parameters) & set(source.parameters)
-      if overlap:
-        raise GraphQLError(
-          f"Runtime directive produced duplicate parameters: {', '.join(overlap)}."
-        )
-      parameters.update(source.parameters)
-      if root_index and request.operation.operation.value == "mutation":
-        clauses.append("NEXT")
-      clauses.extend(source.clauses)
-      if source.tail:
-        if tail:
-          raise GraphQLError(
-            "Only one paginated root field is supported per operation."
-          )
-        tail = source.tail
+      parameters: dict[str, JsonValue] = dict(source.parameters)
+      clauses: list[str] = list(source.clauses)
+      returns: list[str] = []
+      response_name = (
+        root_field.alias.value if root_field.alias else root_field.name.value
+      )
       named = get_named_type(field_definition.type)
       if is_leaf_type(named):
         if source.value is None:
@@ -140,19 +143,15 @@ class GraphCompiler:
           )
         column = _column(counters)
         returns.append(f"{source.value} AS {column}")
-        projections.append(
-          _ScalarProjection(
-            root_field.alias.value if root_field.alias else root_field.name.value,
-            column,
+        shape: Callable[[Sequence[Mapping[str, JsonValue]]], JsonValue] = partial(
+          _shape_scalar, column
+        )
+      else:
+        if not isinstance(named, GraphQLObjectType):
+          raise GraphQLError(
+            f"Runtime field {root_field.name.value!r} must return an object."
           )
-        )
-        continue
-      if not isinstance(named, GraphQLObjectType):
-        raise GraphQLError(
-          f"Runtime field {root_field.name.value!r} must return an object."
-        )
-      projections.append(
-        _RootObjectProjection(
+        root = _RootObjectProjection(
           self._project_object(
             request,
             named,
@@ -167,33 +166,50 @@ class GraphCompiler:
           ),
           _is_list(field_definition),
         )
+        shape = partial(_shape_root_projection, root)
+      statement = GraphStatement(  # validated now, run with the reads' parameters
+        " ".join((*clauses, f"RETURN {', '.join(returns)}", *source.tail)),
+        parameters,
+        tuple(_return_columns(returns)),
       )
-    if not returns:
-      returns.append("0 AS _micro_empty")
-    statement = GraphStatement(
-      " ".join((*clauses, f"RETURN {', '.join(returns)}", *tail)),
-      parameters,
-      tuple(_return_columns(returns)),
-    )
-
-    def shape(batch_result: GraphBatchResult) -> Mapping[str, JsonValue]:
-      if len(batch_result.results) != 1:
-        raise GraphQLError("Query compiler expected exactly one graph result.")
-      result = batch_result.results[0]
-      return {
-        (
-          projection.projection.response_name
-          if isinstance(projection, _RootObjectProjection)
-          else projection.response_name
-        ): (
-          _shape_root_projection(projection, result.rows)
-          if isinstance(projection, _RootObjectProjection)
-          else (result.rows[0].get(projection.column) if result.rows else None)
+      plans.append(
+        _FieldPlan(
+          response_name,
+          tuple(
+            GraphStatement(
+              f"{text} RETURN 0 AS _micro_empty", values, ("_micro_empty",)
+            )
+            for text, values in source.before
+          ),
+          source.reads,
+          statement,
+          shape,
         )
-        for projection in projections
-      }
+      )
 
-    return CompiledOperation(GraphBatch((statement,)), shape)
+    async def run(transaction: GraphTransaction) -> Mapping[str, JsonValue]:
+      # One statement per root field, in order: each field sees what the ones before
+      # it wrote, and reports its own result.
+      data: dict[str, JsonValue] = {}
+      for plan in plans:
+        for statement in plan.before:
+          await transaction.run(statement)
+        statement = plan.statement
+        if plan.reads:
+          values = dict(statement.parameters)
+          for read in plan.reads:
+            found = await transaction.run(
+              GraphStatement(read.text, read.parameters, read.columns)
+            )
+            try:
+              values.update(read.then(found.rows[0] if found.rows else None))
+            except (TypeError, ValueError) as exc:
+              raise GraphQLError(f"{plan.response_name!r}: {exc}") from exc
+          statement = GraphStatement(statement.text, values, statement.columns)
+        data[plan.response_name] = plan.shape((await transaction.run(statement)).rows)
+      return data
+
+    return CompiledOperation(request.operation.operation is OperationType.MUTATION, run)
 
   def _project_edge(
     self,

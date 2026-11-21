@@ -90,119 +90,117 @@ if TYPE_CHECKING:
   VOICE_SERVER_UPDATE: DispatchSchema[gateway.GatewayVoiceServerUpdateDispatchData]
   VOICE_STATE_UPDATE: DispatchSchema[gateway.APIVoiceState]
   WEBHOOKS_UPDATE: DispatchSchema[gateway.GatewayWebhooksUpdateDispatchData]
+else:
+  _PAYLOADS: dict[str, str | None] = {
+    'APPLICATION_COMMAND_PERMISSIONS_UPDATE': 'GatewayApplicationCommandPermissionsUpdateDispatchData',
+    'AUTO_MODERATION_ACTION_EXECUTION': 'GatewayAutoModerationActionExecutionDispatchData',
+    'AUTO_MODERATION_RULE_CREATE': 'APIAutoModerationRule',
+    'AUTO_MODERATION_RULE_DELETE': 'APIAutoModerationRule',
+    'AUTO_MODERATION_RULE_UPDATE': 'APIAutoModerationRule',
+    'CHANNEL_CREATE': 'Channel',
+    'CHANNEL_DELETE': 'Channel',
+    'CHANNEL_INFO': 'GatewayChannelInfoDispatchData',
+    'CHANNEL_PINS_UPDATE': 'GatewayChannelPinsUpdateDispatchData',
+    'CHANNEL_UPDATE': 'Channel',
+    'ENTITLEMENT_CREATE': 'APIEntitlement',
+    'ENTITLEMENT_DELETE': 'APIEntitlement',
+    'ENTITLEMENT_UPDATE': 'APIEntitlement',
+    'GUILD_AUDIT_LOG_ENTRY_CREATE': 'GatewayGuildAuditLogEntryCreateDispatchData',
+    'GUILD_BAN_ADD': 'GatewayGuildBanModifyDispatchData',
+    'GUILD_BAN_REMOVE': 'GatewayGuildBanModifyDispatchData',
+    'GUILD_CREATE': 'Guild',
+    'GUILD_DELETE': 'GatewayGuildDeleteDispatchData',
+    'GUILD_EMOJIS_UPDATE': 'GatewayGuildEmojisUpdateDispatchData',
+    'GUILD_INTEGRATIONS_UPDATE': 'GatewayGuildIntegrationsUpdateDispatchData',
+    'GUILD_MEMBERS_CHUNK': 'GatewayGuildMembersChunkDispatchData',
+    'GUILD_MEMBER_ADD': 'Member',
+    'GUILD_MEMBER_REMOVE': 'GatewayGuildMemberRemoveDispatchData',
+    'GUILD_MEMBER_UPDATE': 'Member',
+    'GUILD_ROLE_CREATE': 'Role',
+    'GUILD_ROLE_DELETE': 'Role',
+    'GUILD_ROLE_UPDATE': 'Role',
+    'GUILD_SCHEDULED_EVENT_CREATE': 'APIGuildScheduledEvent',
+    'GUILD_SCHEDULED_EVENT_DELETE': 'APIGuildScheduledEvent',
+    'GUILD_SCHEDULED_EVENT_UPDATE': 'APIGuildScheduledEvent',
+    'GUILD_SCHEDULED_EVENT_USER_ADD': 'GatewayGuildScheduledEventUserAddDispatchData',
+    'GUILD_SCHEDULED_EVENT_USER_REMOVE': 'GatewayGuildScheduledEventUserRemoveDispatchData',
+    'GUILD_SOUNDBOARD_SOUNDS_UPDATE': 'GatewayGuildSoundboardSoundsUpdateDispatchData',
+    'GUILD_SOUNDBOARD_SOUND_CREATE': 'APISoundboardSound',
+    'GUILD_SOUNDBOARD_SOUND_DELETE': 'GatewayGuildSoundboardSoundDeleteDispatchData',
+    'GUILD_SOUNDBOARD_SOUND_UPDATE': 'APISoundboardSound',
+    'GUILD_STICKERS_UPDATE': 'GatewayGuildStickersUpdateDispatchData',
+    'GUILD_UPDATE': 'Guild',
+    'INTEGRATION_CREATE': 'GatewayIntegrationCreateDispatchData',
+    'INTEGRATION_DELETE': 'GatewayIntegrationDeleteDispatchData',
+    'INTEGRATION_UPDATE': 'GatewayIntegrationUpdateDispatchData',
+    'INTERACTION_CREATE': 'APIInteraction',
+    'INVITE_CREATE': 'GatewayInviteCreateDispatchData',
+    'INVITE_DELETE': 'GatewayInviteDeleteDispatchData',
+    'MESSAGE_CREATE': 'Message',
+    'MESSAGE_DELETE': 'GatewayMessageDeleteDispatchData',
+    'MESSAGE_DELETE_BULK': 'GatewayMessageDeleteBulkDispatchData',
+    'MESSAGE_POLL_VOTE_ADD': 'GatewayMessagePollVoteDispatchData',
+    'MESSAGE_POLL_VOTE_REMOVE': 'GatewayMessagePollVoteDispatchData',
+    'MESSAGE_REACTION_ADD': 'GatewayMessageReactionAddDispatchData',
+    'MESSAGE_REACTION_REMOVE': 'GatewayMessageReactionRemoveDispatchData',
+    'MESSAGE_REACTION_REMOVE_ALL': 'GatewayMessageReactionRemoveData',
+    'MESSAGE_REACTION_REMOVE_EMOJI': 'GatewayMessageReactionRemoveEmojiDispatchData',
+    'MESSAGE_UPDATE': 'Message',
+    'PRESENCE_UPDATE': 'GatewayPresenceUpdate',
+    'RATE_LIMITED': 'GatewayRateLimitedDispatchDataRequestGuildMembers',
+    'READY': 'GatewayReadyDispatchData',
+    'RESUMED': None,
+    'SOUNDBOARD_SOUNDS': 'GatewaySoundboardSoundsDispatchData',
+    'STAGE_INSTANCE_CREATE': 'APIStageInstance',
+    'STAGE_INSTANCE_DELETE': 'APIStageInstance',
+    'STAGE_INSTANCE_UPDATE': 'APIStageInstance',
+    'SUBSCRIPTION_CREATE': 'APISubscription',
+    'SUBSCRIPTION_DELETE': 'APISubscription',
+    'SUBSCRIPTION_UPDATE': 'APISubscription',
+    'THREAD_CREATE': 'Channel',
+    'THREAD_DELETE': 'GatewayThreadDeleteDispatchData',
+    'THREAD_LIST_SYNC': 'GatewayThreadListSync',
+    'THREAD_MEMBERS_UPDATE': 'GatewayThreadMembersUpdate',
+    'THREAD_MEMBER_UPDATE': 'GatewayThreadMemberUpdateDispatchData',
+    'THREAD_UPDATE': 'Channel',
+    'TYPING_START': 'GatewayTypingStartDispatchData',
+    'USER_UPDATE': 'User',
+    'VOICE_CHANNEL_EFFECT_SEND': 'GatewayVoiceChannelEffectSendDispatchData',
+    'VOICE_CHANNEL_START_TIME_UPDATE': 'GatewayVoiceChannelStartTimeUpdateDispatchData',
+    'VOICE_CHANNEL_STATUS_UPDATE': 'GatewayVoiceChannelStatusUpdateDispatchData',
+    'VOICE_SERVER_UPDATE': 'GatewayVoiceServerUpdateDispatchData',
+    'VOICE_STATE_UPDATE': 'APIVoiceState',
+    'WEBHOOKS_UPDATE': 'GatewayWebhooksUpdateDispatchData',
+  }
 
-_PAYLOADS: dict[str, str | None] = {
-  'APPLICATION_COMMAND_PERMISSIONS_UPDATE': 'GatewayApplicationCommandPermissionsUpdateDispatchData',
-  'AUTO_MODERATION_ACTION_EXECUTION': 'GatewayAutoModerationActionExecutionDispatchData',
-  'AUTO_MODERATION_RULE_CREATE': 'APIAutoModerationRule',
-  'AUTO_MODERATION_RULE_DELETE': 'APIAutoModerationRule',
-  'AUTO_MODERATION_RULE_UPDATE': 'APIAutoModerationRule',
-  'CHANNEL_CREATE': 'Channel',
-  'CHANNEL_DELETE': 'Channel',
-  'CHANNEL_INFO': 'GatewayChannelInfoDispatchData',
-  'CHANNEL_PINS_UPDATE': 'GatewayChannelPinsUpdateDispatchData',
-  'CHANNEL_UPDATE': 'Channel',
-  'ENTITLEMENT_CREATE': 'APIEntitlement',
-  'ENTITLEMENT_DELETE': 'APIEntitlement',
-  'ENTITLEMENT_UPDATE': 'APIEntitlement',
-  'GUILD_AUDIT_LOG_ENTRY_CREATE': 'GatewayGuildAuditLogEntryCreateDispatchData',
-  'GUILD_BAN_ADD': 'GatewayGuildBanModifyDispatchData',
-  'GUILD_BAN_REMOVE': 'GatewayGuildBanModifyDispatchData',
-  'GUILD_CREATE': 'Guild',
-  'GUILD_DELETE': 'GatewayGuildDeleteDispatchData',
-  'GUILD_EMOJIS_UPDATE': 'GatewayGuildEmojisUpdateDispatchData',
-  'GUILD_INTEGRATIONS_UPDATE': 'GatewayGuildIntegrationsUpdateDispatchData',
-  'GUILD_MEMBERS_CHUNK': 'GatewayGuildMembersChunkDispatchData',
-  'GUILD_MEMBER_ADD': 'Member',
-  'GUILD_MEMBER_REMOVE': 'GatewayGuildMemberRemoveDispatchData',
-  'GUILD_MEMBER_UPDATE': 'Member',
-  'GUILD_ROLE_CREATE': 'Role',
-  'GUILD_ROLE_DELETE': 'Role',
-  'GUILD_ROLE_UPDATE': 'Role',
-  'GUILD_SCHEDULED_EVENT_CREATE': 'APIGuildScheduledEvent',
-  'GUILD_SCHEDULED_EVENT_DELETE': 'APIGuildScheduledEvent',
-  'GUILD_SCHEDULED_EVENT_UPDATE': 'APIGuildScheduledEvent',
-  'GUILD_SCHEDULED_EVENT_USER_ADD': 'GatewayGuildScheduledEventUserAddDispatchData',
-  'GUILD_SCHEDULED_EVENT_USER_REMOVE': 'GatewayGuildScheduledEventUserRemoveDispatchData',
-  'GUILD_SOUNDBOARD_SOUNDS_UPDATE': 'GatewayGuildSoundboardSoundsUpdateDispatchData',
-  'GUILD_SOUNDBOARD_SOUND_CREATE': 'APISoundboardSound',
-  'GUILD_SOUNDBOARD_SOUND_DELETE': 'GatewayGuildSoundboardSoundDeleteDispatchData',
-  'GUILD_SOUNDBOARD_SOUND_UPDATE': 'APISoundboardSound',
-  'GUILD_STICKERS_UPDATE': 'GatewayGuildStickersUpdateDispatchData',
-  'GUILD_UPDATE': 'Guild',
-  'INTEGRATION_CREATE': 'GatewayIntegrationCreateDispatchData',
-  'INTEGRATION_DELETE': 'GatewayIntegrationDeleteDispatchData',
-  'INTEGRATION_UPDATE': 'GatewayIntegrationUpdateDispatchData',
-  'INTERACTION_CREATE': 'APIInteraction',
-  'INVITE_CREATE': 'GatewayInviteCreateDispatchData',
-  'INVITE_DELETE': 'GatewayInviteDeleteDispatchData',
-  'MESSAGE_CREATE': 'Message',
-  'MESSAGE_DELETE': 'GatewayMessageDeleteDispatchData',
-  'MESSAGE_DELETE_BULK': 'GatewayMessageDeleteBulkDispatchData',
-  'MESSAGE_POLL_VOTE_ADD': 'GatewayMessagePollVoteDispatchData',
-  'MESSAGE_POLL_VOTE_REMOVE': 'GatewayMessagePollVoteDispatchData',
-  'MESSAGE_REACTION_ADD': 'GatewayMessageReactionAddDispatchData',
-  'MESSAGE_REACTION_REMOVE': 'GatewayMessageReactionRemoveDispatchData',
-  'MESSAGE_REACTION_REMOVE_ALL': 'GatewayMessageReactionRemoveData',
-  'MESSAGE_REACTION_REMOVE_EMOJI': 'GatewayMessageReactionRemoveEmojiDispatchData',
-  'MESSAGE_UPDATE': 'Message',
-  'PRESENCE_UPDATE': 'GatewayPresenceUpdate',
-  'RATE_LIMITED': 'GatewayRateLimitedDispatchDataRequestGuildMembers',
-  'READY': 'GatewayReadyDispatchData',
-  'RESUMED': None,
-  'SOUNDBOARD_SOUNDS': 'GatewaySoundboardSoundsDispatchData',
-  'STAGE_INSTANCE_CREATE': 'APIStageInstance',
-  'STAGE_INSTANCE_DELETE': 'APIStageInstance',
-  'STAGE_INSTANCE_UPDATE': 'APIStageInstance',
-  'SUBSCRIPTION_CREATE': 'APISubscription',
-  'SUBSCRIPTION_DELETE': 'APISubscription',
-  'SUBSCRIPTION_UPDATE': 'APISubscription',
-  'THREAD_CREATE': 'Channel',
-  'THREAD_DELETE': 'GatewayThreadDeleteDispatchData',
-  'THREAD_LIST_SYNC': 'GatewayThreadListSync',
-  'THREAD_MEMBERS_UPDATE': 'GatewayThreadMembersUpdate',
-  'THREAD_MEMBER_UPDATE': 'GatewayThreadMemberUpdateDispatchData',
-  'THREAD_UPDATE': 'Channel',
-  'TYPING_START': 'GatewayTypingStartDispatchData',
-  'USER_UPDATE': 'User',
-  'VOICE_CHANNEL_EFFECT_SEND': 'GatewayVoiceChannelEffectSendDispatchData',
-  'VOICE_CHANNEL_START_TIME_UPDATE': 'GatewayVoiceChannelStartTimeUpdateDispatchData',
-  'VOICE_CHANNEL_STATUS_UPDATE': 'GatewayVoiceChannelStatusUpdateDispatchData',
-  'VOICE_SERVER_UPDATE': 'GatewayVoiceServerUpdateDispatchData',
-  'VOICE_STATE_UPDATE': 'APIVoiceState',
-  'WEBHOOKS_UPDATE': 'GatewayWebhooksUpdateDispatchData',
-}
+  _VIEWS = {
+    'Channel',
+    'Guild',
+    'Member',
+    'Message',
+    'Role',
+    'User',
+  }
 
-_VIEWS = {
-  'Channel',
-  'Guild',
-  'Member',
-  'Message',
-  'Role',
-  'User',
-}
+  def __getattr__(name: str) -> Any:
+    try:
+      payload = _PAYLOADS[name]
+    except KeyError:
+      raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    from micro.discord import objects
+    from micro.discord.models import gateway
 
+    schema = DispatchSchema[Any](
+      id=name,
+      payload=None
+      if payload is None
+      else getattr(objects if payload in _VIEWS else gateway, payload),
+    )
+    globals()[name] = schema
+    return schema
 
-def __getattr__(name: str) -> Any:
-  try:
-    payload = _PAYLOADS[name]
-  except KeyError:
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-  from micro.discord import objects
-  from micro.discord.models import gateway
-
-  schema = DispatchSchema[Any](
-    id=name,
-    payload=None
-    if payload is None
-    else getattr(objects if payload in _VIEWS else gateway, payload),
-  )
-  globals()[name] = schema
-  return schema
-
-
-def __dir__() -> list[str]:
-  return sorted(_PAYLOADS)
+  def __dir__() -> list[str]:
+    return sorted(_PAYLOADS)
 
 
 __all__ = (

@@ -31,11 +31,9 @@ you ask for them with your own queries. Nothing decides what a record looks like
          warning(guildId: ID!, userId: ID!): Warning @from(key: {guildId: guildId, userId: userId})
        }
        type Mutation {
-         addWarning(guildId: ID!, userId: ID!): Warning!
-           @insert(key: {guildId: guildId, userId: userId},
-                   set: {guildId: guildId, userId: userId, count: "1"})
-         warn(guildId: ID!, userId: ID!): Warning
-           @update(key: {guildId: guildId, userId: userId}, set: {count: "current.count + 1"})
+         warn(guildId: ID!, userId: ID!): Warning!
+           @upsert(key: {guildId: guildId, userId: userId},
+                   insert: {count: "0"}, set: {count: "current.count + 1"})
        }
      """,
    )

@@ -6,7 +6,7 @@ from micro._lazy import exports
 
 if TYPE_CHECKING:
   from . import events as events
-
-__getattr__, __dir__ = exports(__name__, {"events": ".events"})
+else:
+  __getattr__, __dir__ = exports(__name__, {"events": ".events"})
 
 __all__ = ("events",)

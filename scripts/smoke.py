@@ -4630,6 +4630,71 @@ async def store_scenarios() -> None:
       engine.composition_error is None and engine.available,
     )
 
+    counts = SQLiteGraph(os.path.join(raw, "upsert.db"))
+    await counts.start()
+    upsert_engine = GraphEngine(counts)
+    await upsert_engine.apply_modules(
+      [
+        GraphModule(
+          id="warnings",
+          schema="""
+            type Warning @entity(key: ["guildId", "userId"]) {
+              guildId: ID!  userId: ID!  count: Int!  note: String
+            }
+            type Mutation {
+              warn(guildId: ID!, userId: ID!, note: String): Warning!
+                @upsert(key: {guildId: guildId, userId: userId}, insert: {count: "0"},
+                        set: {count: "current.count + 1", note: note})
+              ensure(guildId: ID!, userId: ID!): Warning!
+                @upsert(key: {guildId: guildId, userId: userId}, insert: {count: "0"})
+            }
+            type Query {
+              warning(guildId: ID!, userId: ID!): Warning
+                @from(key: {guildId: guildId, userId: userId})
+            }
+          """,
+        )
+      ]
+    )
+    first = await ask(
+      upsert_engine,
+      'mutation { warn(guildId: "g", userId: "u", note: "spam") { count note } }',
+    )
+    second = await ask(
+      upsert_engine, 'mutation { warn(guildId: "g", userId: "u") { count note } }'
+    )
+    kept = await ask(
+      upsert_engine, 'mutation { ensure(guildId: "g", userId: "u") { count } }'
+    )
+    made = await ask(
+      upsert_engine, 'mutation { ensure(guildId: "g", userId: "v") { count userId } }'
+    )
+    check(
+      "@upsert creates with key + insert then applies set; existing ones are only updated"
+      " (and a field may be named after a GQL keyword: count)",
+      first == {"data": {"warn": {"count": 1, "note": "spam"}}}
+      and second == {"data": {"warn": {"count": 2, "note": "spam"}}}
+      and kept == {"data": {"ensure": {"count": 2}}}
+      and made == {"data": {"ensure": {"count": 0, "userId": "v"}}},
+      (first, second, kept, made),
+    )
+    twice = await ask(
+      upsert_engine,
+      'mutation { a: warn(guildId: "g", userId: "t") { count } '
+      'b: warn(guildId: "g", userId: "t") { count } }',
+    )
+    nothing = await ask(
+      upsert_engine,
+      'mutation { a: ensure(guildId: "g", userId: "s") { count } '
+      'b: warn(guildId: "g", userId: "s") { count } }',
+    )
+    check(
+      "the fields of one request run in order, each reporting its own result",
+      twice == {"data": {"a": {"count": 1}, "b": {"count": 2}}}
+      and nothing == {"data": {"a": {"count": 0}, "b": {"count": 1}}},
+      (twice, nothing),
+    )
+
     maps = SQLiteGraph(os.path.join(raw, "maps.db"))
     await maps.start()
     map_engine = GraphEngine(maps)
@@ -4685,22 +4750,20 @@ async def store_scenarios() -> None:
       after["data"]["user"]["settings"] == {"theme": "light", "x": 1},
       after,
     )
-    from micro.store import GraphBatch, GraphStatement
+    from micro.store import GraphStatement
 
-    await maps.execute(
-      GraphBatch(
+    async with maps.transaction(writes=True) as transaction:
+      for text in (
+        "INSERT (a:A {_micro_id: 'a'})",
+        "INSERT (b:B {_micro_id: 'b'})",
         (
-          GraphStatement("INSERT (a:A {_micro_id: 'a'})"),
-          GraphStatement("INSERT (b:B {_micro_id: 'b'})"),
-          GraphStatement(
-            "MATCH (a:A), (b:B) WHERE a._micro_id = 'a' AND b._micro_id = 'b' "
-            "INSERT (a)-[:r {slot: 7, note: 'x'}]->(b)"
-          ),
-          GraphStatement("MATCH (a:A)-[e:r]->(b:B) SET e.slot = 8"),
-          GraphStatement("MATCH (a:A)-[e:r]->(b:B) SET e.note = NULL"),
-        )
-      )
-    )
+          "MATCH (a:A), (b:B) WHERE a._micro_id = 'a' AND b._micro_id = 'b' "
+          "INSERT (a)-[:r {slot: 7, note: 'x'}]->(b)"
+        ),
+        "MATCH (a:A)-[e:r]->(b:B) SET e.slot = 8",
+        "MATCH (a:A)-[e:r]->(b:B) SET e.note = NULL",
+      ):
+        await transaction.run(GraphStatement(text))
     stored = (
       sqlite3.connect(os.path.join(raw, "maps.db"))
       .execute("SELECT props FROM edges WHERE label = 'r'")
@@ -4827,6 +4890,16 @@ async def store_scenarios() -> None:
     )
     await ask(
       engine, 'mutation { editBody(guildId: "1", name: "nope", body: "x") { body } }'
+    )
+    missed = await ask(
+      engine,
+      'mutation { a: editBody(guildId: "1", name: "nope", body: "x") { body } '
+      'b: editBody(guildId: "1", name: "hello", body: "after") { body } }',
+    )
+    check(
+      "a mutation field that finds nothing does not stop the fields after it",
+      missed == {"data": {"a": None, "b": {"body": "after"}}},
+      missed,
     )
     await ask(engine, 'mutation { removeCommand(guildId: "1", name: "bye") }')
     await ask(engine, '{ guild(id: "1") { commands { name } } }')
