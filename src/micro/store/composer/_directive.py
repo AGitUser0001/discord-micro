@@ -1,6 +1,6 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from graphql import FieldDefinitionNode, ObjectTypeDefinitionNode, OperationType
 from pydantic import JsonValue
@@ -45,6 +45,21 @@ class DirectiveResult:
   """Statements (text without `RETURN`, parameters) run first, in the same transaction."""
   reads: tuple[DirectiveRead, ...] = ()
   """Reads run after `before` whose results give parameters of the field's statement."""
+  checks: tuple[DirectiveCheck, ...] = ()
+  """Run after the field's statement when it returned rows: any failing check fails the
+  request (rolled back)."""
+
+
+@dataclass(frozen=True, slots=True)
+class DirectiveCheck:
+  """A statement that fails the request with `code` and `message` when it returns rows
+  (`fails_when="rows"`) or returns none (`"empty"`)."""
+
+  text: str
+  parameters: Mapping[str, JsonValue]
+  fails_when: Literal["rows", "empty"]
+  code: str
+  message: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -114,11 +114,13 @@ def compose_graph(
   if len(set(module_ids)) != len(module_ids):
     raise GraphCompositionError("Graph module IDs must be unique.")
 
+  from ._check import CHECK_DIRECTIVE
   from ._mutation import MUTATION_DIRECTIVES
   from ._queries import FROM_ACTIVE_DIRECTIVE, SCAN_DIRECTIVE
 
   registered = (
     FROM_DIRECTIVE,
+    CHECK_DIRECTIVE,
     FROM_ACTIVE_DIRECTIVE,
     SCAN_DIRECTIVE,
     *MUTATION_DIRECTIVES,

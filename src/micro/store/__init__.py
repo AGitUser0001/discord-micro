@@ -8,10 +8,12 @@ from ._compiler import (
 )
 from ._module import GraphModule
 from ._service import (
+  STORE_BEGIN,
   STORE_EXECUTE,
   BadQuery,
   Conflict,
   Invalid,
+  Steps,
   Store,
   StoreClient,
   StoreError,
@@ -31,6 +33,7 @@ from ._store import (
   GraphTransaction,
 )
 from .composer import (
+  CHECK_DIRECTIVE,
   CONNECT_DIRECTIVE,
   DELETE_DIRECTIVE,
   DISCONNECT_DIRECTIVE,
@@ -42,8 +45,10 @@ from .composer import (
   UPDATE_DIRECTIVE,
   UPSERT_DIRECTIVE,
   ActiveOwnedLookup,
+  CheckBinding,
   DirectiveBindContext,
   DirectiveBinding,
+  DirectiveCheck,
   DirectiveCompileContext,
   DirectiveMetadata,
   DirectiveRead,
@@ -60,6 +65,7 @@ from .composer import (
 )
 
 __all__ = (
+  "CHECK_DIRECTIVE",
   "CONNECT_DIRECTIVE",
   "DELETE_DIRECTIVE",
   "DISCONNECT_DIRECTIVE",
@@ -68,15 +74,18 @@ __all__ = (
   "MAX_PAGE_SIZE",
   "MUTATION_DIRECTIVES",
   "SCAN_DIRECTIVE",
+  "STORE_BEGIN",
   "STORE_EXECUTE",
   "UPDATE_DIRECTIVE",
   "UPSERT_DIRECTIVE",
   "ActiveOwnedLookup",
   "BadQuery",
+  "CheckBinding",
   "CompiledOperation",
   "Conflict",
   "DirectiveBindContext",
   "DirectiveBinding",
+  "DirectiveCheck",
   "DirectiveCompileContext",
   "DirectiveMetadata",
   "DirectiveRead",
@@ -99,6 +108,7 @@ __all__ = (
   "GraphTransaction",
   "Invalid",
   "MicroGraph",
+  "Steps",
   "Store",
   "StoreClient",
   "StoreError",

@@ -301,8 +301,13 @@ class GraphEngine:
     self._error = None
     self._available = True
 
-  async def execute(self, body: GraphQLBody) -> dict[str, JsonValue]:
-    """Run one operation; failures are GraphQL `errors`, never exceptions."""
+  async def execute(
+    self, body: GraphQLBody, *, transaction: GraphTransaction | None = None
+  ) -> dict[str, JsonValue]:
+    """Run one operation; failures are GraphQL `errors`, never exceptions.
+
+    It runs in its own transaction, or inside `transaction` when one is given (the
+    caller then commits or rolls back)."""
     if not self._available:
       # Still composing its modules (or a module failed to compose): try again.
       error: dict[str, JsonValue] = {
@@ -358,8 +363,11 @@ class GraphEngine:
     )
     try:
       compiled = composition.compiler.compile(request)
-      async with self.executor.transaction(writes=compiled.writes) as transaction:
+      if transaction is not None:
         data = dict(await compiled.run(transaction))
+      else:
+        async with self.executor.transaction(writes=compiled.writes) as own:
+          data = dict(await compiled.run(own))
     except GraphQLError as exc:
       return {"data": None, "errors": [exc.formatted]}  # pyright: ignore[reportReturnType]
     return {"data": data}

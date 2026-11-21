@@ -4565,6 +4565,7 @@ async def store_scenarios() -> None:
     GraphEngine,
     GraphModule,
     GraphQLBody,
+    Steps,
     Store,
     StoreClient,
     StoreError,
@@ -4693,6 +4694,100 @@ async def store_scenarios() -> None:
       twice == {"data": {"a": {"count": 1}, "b": {"count": 2}}}
       and nothing == {"data": {"a": {"count": 0}, "b": {"count": 1}}},
       (twice, nothing),
+    )
+
+    guarded = SQLiteGraph(os.path.join(raw, "invariants.db"))
+    await guarded.start()
+    rules = GraphEngine(guarded)
+    await rules.apply_modules(
+      [
+        GraphModule(
+          id="rules",
+          schema="""
+            type Installation @entity(key: ["id"]) { id: ID!  scope: ID!  name: String!  slots: Int }
+            type Guild @entity(key: ["id"]) { id: ID!  tags: [Tag!]! }
+            type Tag @entity(key: ["id"]) { id: ID! }
+            type Query { installation(id: ID!): Installation @from(key: {id: id}) }
+            type Mutation {
+              nameFree(scope: ID!, name: String!, id: ID!): Boolean
+                @check(none: "MATCH (m:Installation) WHERE m.scope = $scope AND m.name = $name AND m.id <> $id",
+                       message: "That name is taken in this scope.")
+              slotsValid(slots: Int): Boolean
+                @check(none: "FILTER $slots < 0", code: "INVALID", message: "no negative slots")
+              roomForTag(guild: ID!): Boolean
+                @check(none: "MATCH (g:Guild)-[:tags]->(t:Tag) WHERE g.id = $guild RETURN count(t) AS n NEXT FILTER n >= 2",
+                       message: "at most 2 tags")
+              add(id: ID!, scope: ID!, name: String!, slots: Int): Installation!
+                @insert(key: {id: id}, set: {id: id, scope: scope, name: name, slots: slots})
+              rename(id: ID!, name: String!): Installation @update(key: {id: id}, set: {name: name})
+              addGuild(id: ID!): Guild! @insert(key: {id: id}, set: {id: id})
+              addTag(id: ID!): Tag! @insert(key: {id: id}, set: {id: id})
+              tag(guild: ID!, tag: ID!): Boolean
+                @connect(fromType: "Guild", fromKey: {id: guild}, toType: "Tag",
+                         toKey: {id: tag}, field: "tags")
+            }
+          """,
+        )
+      ]
+    )
+    outcomes = [
+      await ask(rules, query)
+      for query in (
+        (
+          'mutation { nameFree(scope: "g", name: "a", id: "1") '
+          'add(id: "1", scope: "g", name: "a") { name } }'
+        ),
+        (
+          'mutation { nameFree(scope: "g", name: "a", id: "2") '
+          'add(id: "2", scope: "g", name: "a") { name } }'
+        ),
+        (
+          'mutation { nameFree(scope: "h", name: "a", id: "3") '
+          'add(id: "3", scope: "h", name: "a") { name } }'
+        ),
+        (
+          'mutation { nameFree(scope: "g", name: "b", id: "4") '
+          'add(id: "4", scope: "g", name: "b") { name } }'
+        ),
+        'mutation { nameFree(scope: "g", name: "a", id: "4") rename(id: "4", name: "a") { name } }',
+        '{ installation(id: "4") { name } }',
+        'mutation { slotsValid(slots: -1) add(id: "5", scope: "z", name: "q", slots: -1) { name } }',
+        '{ installation(id: "5") { name } }',
+        (
+          'mutation { addGuild(id: "g") { id } a: addTag(id: "a") { id } '
+          'b: addTag(id: "b") { id } c: addTag(id: "c") { id } }'
+        ),
+        (
+          'mutation { r1: roomForTag(guild: "g") x: tag(guild: "g", tag: "a") '
+          'r2: roomForTag(guild: "g") y: tag(guild: "g", tag: "b") }'
+        ),
+        'mutation { roomForTag(guild: "g") z: tag(guild: "g", tag: "c") }',
+      )
+    ]
+    codes = [
+      (item.get("errors") or [{}])[0].get("extensions", {}).get("code")
+      for item in outcomes
+    ]
+    check(
+      "@check passes (true) or fails its request with its code, keeping none of it",
+      codes
+      == [
+        None,
+        "CONFLICT",
+        None,
+        None,
+        "CONFLICT",
+        None,
+        "INVALID",
+        None,
+        None,
+        None,
+        "CONFLICT",
+      ]
+      and outcomes[0]["data"]["nameFree"] is True
+      and outcomes[5] == {"data": {"installation": {"name": "b"}}}
+      and outcomes[7] == {"data": {"installation": None}},
+      outcomes,
     )
 
     maps = SQLiteGraph(os.path.join(raw, "maps.db"))
@@ -5007,7 +5102,10 @@ async def store_scenarios() -> None:
       schema="""
       type Tag @entity(key: ["name"]) { name: ID! uses: Int }
       type Query { tag(name: ID!): Tag @from(key: {name: name}) }
-      type Mutation { addTag(name: ID!, uses: Int): Tag! @insert(key: {name: name}, set: {name: name, uses: uses}) }
+      type Mutation {
+        addTag(name: ID!, uses: Int): Tag! @insert(key: {name: name}, set: {name: name, uses: uses})
+        setUses(name: ID!, uses: Int!): Tag @update(key: {name: name}, set: {uses: uses})
+      }
     """,
     )
     owner = Service("tags")
@@ -5068,6 +5166,89 @@ async def store_scenarios() -> None:
         and found == Ok({"tag": {"uses": 3}})
         and refused,
         (made, found),
+      )
+
+      class TooFew(Exception):
+        pass
+
+      async def spend(name: str, cost: int) -> Steps[int, TooFew]:
+        data = yield t"{{ tag(name: {name}) {{ uses }} }}"
+        have = (data.get("tag") or {}).get("uses") or 0
+        await asyncio.sleep(0)  # any async code between the queries
+        if have < cost:
+          yield Err(TooFew(have))
+        yield t"mutation {{ setUses(name: {name}, uses: {have - cost}) {{ uses }} }}"
+        yield Ok(have - cost)
+
+      async def conflicting(name: str) -> Steps[None, TooFew]:
+        yield t"mutation {{ setUses(name: {name}, uses: 99) {{ uses }} }}"
+        yield t'mutation {{ addTag(name: "py", uses: 1) {{ name }} }}'  # a Conflict
+        yield Ok(None)
+
+      async def raising(name: str) -> Steps[None, TooFew]:
+        yield t"mutation {{ setUses(name: {name}, uses: 77) {{ uses }} }}"
+        raise RuntimeError("bug")
+        yield Ok(None)  # pyright: ignore[reportUnreachable]
+
+      async def calls_execute(name: str) -> Steps[None, TooFew]:
+        await client.execute(t"{{ tag(name: {name}) {{ uses }} }}")
+        yield Ok(None)
+
+      async def uses_of(name: str) -> object:
+        return (await client.execute(t"{{ tag(name: {name}) {{ uses }} }}")).unwrap()
+
+      spent = await client.transaction(spend, "py", 1)
+      after_spend = await uses_of("py")
+      refused = await client.transaction(spend, "py", 100)
+      after_refused = await uses_of("py")
+      conflicted = await client.transaction(conflicting, "py")
+      after_conflict = await uses_of("py")
+      try:
+        await client.transaction(raising, "py")
+        raised = False
+      except RuntimeError:
+        raised = True
+      after_raise = await uses_of("py")
+      try:
+        await client.transaction(calls_execute, "py")
+        guarded = False
+      except RuntimeError:
+        guarded = True
+      check(
+        "a transaction commits on Ok and rolls back on Err, a refused query or an exception",
+        spent == Ok(2)
+        and after_spend == {"tag": {"uses": 2}}
+        and isinstance(refused, Err)
+        and isinstance(refused.error, TooFew)
+        and after_refused == {"tag": {"uses": 2}}
+        and isinstance(conflicted, Err)
+        and isinstance(conflicted.error, Conflict)
+        and after_conflict == {"tag": {"uses": 2}}
+        and raised
+        and after_raise == {"tag": {"uses": 2}}
+        and guarded,
+        (spent, after_spend, refused, after_refused, conflicted, after_conflict),
+      )
+
+      # A client that opens a transaction and vanishes: its presence goes, the store
+      # rolls back, and the store serves again.
+      from micro.store._service import STORE_BEGIN, TransactionStart
+
+      ghost = await stack.runtime.register(
+        kind="store-transaction", name="store", id="ghost"
+      )
+      begun = await owner.client.request(STORE_BEGIN, TransactionStart(id="ghost"))
+      await stack.runtime.request(
+        begun.subject,
+        b'{"op": "execute", "body": {"query": "mutation { setUses(name: \\"py\\", uses: 55) { uses } }"}}',
+        timeout=5,
+      )
+      await stack.runtime.unregister(ghost)
+      served = await asyncio.wait_for(uses_of("py"), 30)
+      check(
+        "a transaction whose client is gone is rolled back and the store serves again",
+        served == {"tag": {"uses": 2}},
+        served,
       )
 
 

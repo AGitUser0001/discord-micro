@@ -1,13 +1,18 @@
 import asyncio
+import json
 import os
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
+from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from string.templatelib import Interpolation, Template
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
-from pydantic import JsonValue
+from nats.aio.msg import Msg
+from pydantic import BaseModel, JsonValue
 
-from micro import log
+from micro import log, subjects
 from micro.coordination import Declarations
 from micro.errors import MicroError
 from micro.result import Err, Ok, Result
@@ -44,6 +49,36 @@ STORE_EXECUTE = RequestSchema[GraphQLBody, dict[str, JsonValue]](
 )
 
 
+class TransactionStart(BaseModel):
+  """`micro.store.begin`: open a transaction for the client registered under `id`."""
+
+  id: str
+
+
+class TransactionStarted(BaseModel):
+  """Where the transaction's operations go: the subject of the replica holding it."""
+
+  subject: str
+
+
+STORE_BEGIN = RequestSchema[TransactionStart, TransactionStarted](
+  id="micro.store.begin",
+  input=TransactionStart,
+  output=TransactionStarted,
+)
+
+TRANSACTION_KIND = "store-transaction"
+"""The presence kind a client holds while its transaction is open: when it is gone (the
+client ended it, or its process died and the entry expired), the Store rolls back."""
+
+
+class _Ended(Exception):
+  """Leaves a transaction's block so it rolls back; `reply` gets told it did."""
+
+  def __init__(self, reply: Msg | None = None) -> None:
+    self.reply = reply
+
+
 class Store(Service):
   """An optional graph store, run as an ordinary service.
 
@@ -74,6 +109,7 @@ class Store(Service):
     self._compose_requested = asyncio.Event()
     self._pending: dict[str, str] = {}
     self.handle(STORE_EXECUTE)(self._execute)
+    self.handle(STORE_BEGIN)(self._begin)
 
   @property
   def ready(self) -> bool:
@@ -142,6 +178,93 @@ class Store(Service):
   async def _execute(self, ctx: Context, body: GraphQLBody) -> dict[str, JsonValue]:
     return await self.engine.execute(body)
 
+  # Transactions over several requests -------------------------------------------
+
+  async def _begin(self, ctx: Context, start: TransactionStart) -> TransactionStarted:
+    subject = f"{subjects.PREFIX}.store.transaction.{subjects.token(start.id)}"
+    opened: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    self.spawn(
+      self._transaction(start.id, subject, opened), name=f"transaction.{start.id}"
+    )
+    await opened  # the transaction holds the store now; a failure to open raises here
+    return TransactionStarted(subject=subject)
+
+  async def _transaction(
+    self, client: str, subject: str, opened: asyncio.Future[None]
+  ) -> None:
+    """Hold one executor transaction, running the operations sent to `subject`, until the
+    client commits, rolls back, an operation fails, or the client is gone."""
+    runtime = self.runtime
+    operations: asyncio.Queue[Msg] = asyncio.Queue()
+    gone = asyncio.Event()
+    seen = False
+
+    def check() -> None:
+      nonlocal seen
+      present = any(
+        entry.id == client for entry in runtime.directory.entries(TRANSACTION_KIND)
+      )
+      seen = seen or present
+      if seen and not present:
+        gone.set()
+
+    async def reply(message: Msg, value: object) -> None:
+      await runtime.respond(message, json.dumps(value).encode())
+
+    unwatch = runtime.directory.on_change(check)
+    check()
+    subscription = await runtime.nats.subscribe(subject, cb=operations.put)
+    commit: Msg | None = None
+    try:
+      async with self.engine.executor.transaction(writes=True) as transaction:
+        opened.set_result(None)
+        while commit is None:
+          received = asyncio.ensure_future(operations.get())
+          ended = asyncio.ensure_future(gone.wait())
+          await asyncio.wait({received, ended}, return_when=asyncio.FIRST_COMPLETED)
+          ended.cancel()
+          if not received.done():
+            received.cancel()
+            raise _Ended  # the client is gone: nothing it did is kept
+          message = received.result()
+          request = json.loads(await runtime.payload(message))
+          if request["op"] == "commit":
+            commit = message
+          elif request["op"] == "rollback":
+            raise _Ended(message)
+          else:
+            response = await self.engine.execute(
+              GraphQLBody.model_validate(request["body"]), transaction=transaction
+            )
+            await reply(message, response)
+            if response.get("errors"):
+              raise _Ended  # a failed operation ends the transaction: all of it undone
+      await reply(commit, {})
+    except _Ended as ended:
+      if ended.reply is not None:
+        await reply(ended.reply, {})
+    except Exception as error:
+      if not opened.done():
+        opened.set_exception(error)
+      elif commit is not None:  # the commit itself failed: nothing was kept
+        message = str(error) or type(error).__name__
+        extensions = getattr(error, "extensions", None) or {
+          "code": "UNAVAILABLE",
+          "retryable": True,
+        }
+        await reply(
+          commit, {"errors": [{"message": message, "extensions": extensions}]}
+        )
+      else:
+        raise
+    finally:
+      if not opened.done():
+        opened.set_exception(
+          RuntimeError("The store closed before the transaction opened.")
+        )
+      await subscription.unsubscribe()
+      unwatch()
+
 
 @dataclass(eq=False)
 class StoreError(MicroError):
@@ -207,6 +330,32 @@ def store_error(errors: list[dict[str, Any]]) -> StoreError:
   )
 
 
+type Steps[T, E: Exception] = AsyncGenerator[Template | Ok[T] | Err[E], dict[str, Any]]
+"""A transaction's steps (see `StoreClient.transaction`): it yields each query as a
+t-string and gets its `data` back, then yields `Ok(value)` to commit or `Err(error)` to
+roll back."""
+
+_IN_TRANSACTION: ContextVar[bool] = ContextVar("micro_store_transaction", default=False)
+
+
+def _body(query: Template, operation_name: str | None = None) -> GraphQLBody:
+  """A t-string as GraphQL text, each value sent separately as a variable ($v0, ...)."""
+  if not isinstance(query, Template):
+    raise TypeError('execute takes a t-string: t"{ ... }"')
+  text: list[str] = []
+  variables: dict[str, Any] = {}
+  for part in query:
+    if isinstance(part, Interpolation):
+      name = f"v{len(variables)}"
+      variables[name] = part.value
+      text.append(f"${name}")
+    else:
+      text.append(part)
+  return GraphQLBody.model_validate(
+    {"query": "".join(text), "variables": variables, "operationName": operation_name}
+  )
+
+
 class StoreClient:
   """Executes GraphQL against whichever store replica answers."""
 
@@ -233,28 +382,94 @@ class StoreClient:
       RoutingError, RequestTimeoutError: The store could not be reached. That is broken
         infrastructure, not an answer, so it raises.
     """
-    if not isinstance(query, Template):
-      raise TypeError('execute takes a t-string: t"{ ... }"')
-    text: list[str] = []
-    variables: dict[str, Any] = {}
-    for part in query:
-      if isinstance(part, Interpolation):
-        name = f"v{len(variables)}"
-        variables[name] = part.value
-        text.append(f"${name}")
-      else:
-        text.append(part)
+    if _IN_TRANSACTION.get():
+      raise RuntimeError(
+        "A store transaction is running here: yield the query from its steps instead "
+        "(this call would wait for the transaction to end, and it is waiting for you)."
+      )
     response: dict[str, Any] = await self._client.request(
-      STORE_EXECUTE,
-      GraphQLBody.model_validate(
-        {
-          "query": "".join(text),
-          "variables": variables,
-          "operationName": operation_name,
-        }
-      ),
+      STORE_EXECUTE, _body(query, operation_name)
     )
     errors = response.get("errors")
     if errors:
       return Err(store_error(errors))
     return Ok(response.get("data") or {})
+
+  async def transaction[**P, T, E: Exception](
+    self, steps: Callable[P, Steps[T, E]], /, *args: P.args, **kwargs: P.kwargs
+  ) -> Result[T, E | StoreError]:
+    """Run `steps(*args, **kwargs)` as one transaction: queries, your code between them,
+    and either all of it is kept or none of it::
+
+      async def buy(gid: str, price: int) -> Steps[int, NotEnough]:
+        data = yield t"{{ guild(id: {gid}) {{ coins }} }}"
+        coins = data["guild"]["coins"]
+        if coins < price:
+          yield Err(NotEnough(coins))  # rolls back
+        yield t"mutation {{ setCoins(id: {gid}, coins: {coins - price}) {{ id }} }}"
+        yield Ok(coins - price)  # commits
+
+      match await store.transaction(buy, gid, price): ...
+
+    Returns:
+      What the steps yielded last: `Ok(value)` once committed, or their `Err(error)`
+      (rolled back); or `Err(StoreError)` if the store refused a query (rolled back, and
+      the steps stop there) or the commit.
+
+    The transaction holds the store while it runs (with SQLite, every other write waits),
+    so keep slow work (Discord calls, downloads) outside it. If this process dies, the
+    store rolls back when its presence expires. An exception in the steps rolls back and
+    propagates.
+    """
+    if _IN_TRANSACTION.get():
+      raise RuntimeError("Store transactions do not nest: yield the queries instead.")
+    runtime = self._client.runtime
+    client = uuid4().hex
+    presence = await runtime.register(kind=TRANSACTION_KIND, name="store", id=client)
+    entered = _IN_TRANSACTION.set(True)
+    try:
+      started = await self._client.request(STORE_BEGIN, TransactionStart(id=client))
+
+      async def send(message: str) -> dict[str, Any]:
+        reply = await runtime.request(
+          started.subject, message.encode(), timeout=self._client.timeout
+        )
+        return json.loads(reply.data)
+
+      generator = steps(*args, **kwargs)
+      try:
+        step = await generator.asend(None)  # pyright: ignore[reportArgumentType]
+        while isinstance(step, Template):
+          body = _body(step).model_dump_json(by_alias=True)
+          response = await send(f'{{"op": "execute", "body": {body}}}')
+          if response.get("errors"):  # the store has rolled back already
+            return Err(store_error(response["errors"]))
+          step = await generator.asend(response.get("data") or {})
+        if not isinstance(step, Ok | Err):
+          raise TypeError(
+            "A transaction's steps yield t-strings, then Ok(value) or Err(error); "
+            f"not {type(step).__name__}."
+          )
+      except StopAsyncIteration:
+        with suppress(Exception):
+          await send('{"op": "rollback"}')
+        raise TypeError(
+          "A transaction's steps must end with `yield Ok(value)` (commit) or "
+          "`yield Err(error)` (roll back)."
+        ) from None
+      except BaseException:
+        with suppress(Exception):
+          await send('{"op": "rollback"}')
+        raise
+      finally:
+        await generator.aclose()
+      if isinstance(step, Err):
+        await send('{"op": "rollback"}')
+        return step
+      committed = await send('{"op": "commit"}')
+      if committed.get("errors"):
+        return Err(store_error(committed["errors"]))
+      return step
+    finally:
+      _IN_TRANSACTION.reset(entered)
+      await runtime.unregister(presence)

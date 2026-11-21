@@ -237,8 +237,76 @@ Plain numbers, ``true`` and ``[]`` are not allowed as ``set`` values: write ``"0
 
 **One request is one transaction.** Put several mutation fields in one request and they
 all happen or none does. They run in order, each seeing what the ones before it wrote, and
-each returns its own result as it was right after it ran. The earlier example creates a command and attaches it to its
-guild together.
+each returns its own result as it was right after it ran. The earlier example creates a
+command and attaches it to its guild together.
+
+**Several queries, with your code between them, as one transaction.** Write the steps as
+an async generator: ``yield`` each query (a t-string) and get its ``data`` back, then
+``yield Ok(value)`` to commit or ``yield Err(error)`` to roll back:
+
+.. code-block:: python
+
+   from micro.discord import Err, Ok
+   from micro.store import Steps
+
+   async def buy(gid: str, price: int) -> Steps[int, NotEnough]:
+     data = yield t"{{ guild(id: {gid}) {{ coins }} }}"
+     coins = data["guild"]["coins"]
+     if coins < price:
+       yield Err(NotEnough(coins))                                  # rolls back
+     yield t"mutation {{ setCoins(id: {gid}, coins: {coins - price}) {{ id }} }}"
+     yield Ok(coins - price)                                        # commits
+
+   match await ctx.store.transaction(buy, gid, price):
+     case Ok(left): ...
+     case Err(NotEnough()): ...                                     # yours
+     case Err(Conflict()): ...                                      # the store refused a query
+
+Nothing between the first query and the commit is visible to anyone else, and nothing is
+kept unless it commits. A query the store refuses ends the transaction (rolled back) and
+comes back as the ``Err``; an exception in the steps rolls back and propagates; if the
+process dies, the store rolls back once its presence expires. Calling
+``ctx.store.execute`` inside the steps raises: yield the query instead.
+
+The transaction holds the store while it runs. With SQLite every other write waits for
+it, so await only what the logic needs, and keep slow work (Discord calls, downloads)
+before or after it.
+
+Checks
+------
+
+``@check`` is a field that runs GQL over its arguments and fails the request when it finds
+something (``none:``) or nothing (``some:``), with ``code`` (default ``CONFLICT``) and
+``message``. Put it before the writes it guards, in the same request: fields run in order
+in one transaction, so a failing check keeps none of the request. It returns ``true``
+when it passes.
+
+.. code-block:: graphql
+
+   type Mutation {
+     nameFree(scope: ID!, name: String!, id: ID!): Boolean
+       @check(none: "MATCH (m:Installation) WHERE m.scope = $scope AND m.name = $name AND m.id <> $id",
+              message: "That name is taken in this scope.")
+     roomForTag(guild: ID!): Boolean
+       @check(none: "MATCH (g:Guild)-[:tags]->(t:Tag) WHERE g.id = $guild RETURN count(t) AS n NEXT FILTER n >= 25",
+              message: "A guild has at most 25 tags.")
+   }
+
+.. code-block:: python
+
+   match await ctx.store.execute(t"""mutation {{
+     nameFree(scope: {scope}, name: {name}, id: {iid})
+     addInstallation(id: {iid}, scope: {scope}, name: {name}) {{ id }}
+   }}"""):
+     case Err(Conflict()): ...   # taken; nothing was written
+
+* Use the schema's names: types as labels, fields as properties, an edge as
+  ``-[:field]->`` from the type that has the field, and the field's arguments as
+  ``$name``. Micro rewrites them to how they are stored, so a check stays right as the
+  schema evolves.
+* Nothing extra is stored: a check reads the data as it is.
+* A check that scans many rows (the first reads every installation) costs that much each
+  time; with SQLite that is fine for thousands.
 
 Relationships
 -------------
@@ -406,6 +474,7 @@ The store is a service-side component plus a client. Everything a service normal
 .. api::
    micro.store.Store
    micro.store.StoreClient
+   micro.store.Steps
    micro.store.StoreError
    micro.store.Conflict
    micro.store.Unavailable
@@ -427,6 +496,7 @@ The store is a service-side component plus a client. Everything a service normal
    micro.store.sqlite.SQLiteGraph
    micro.store.MAX_PAGE_SIZE
    micro.store.STORE_EXECUTE
+   micro.store.STORE_BEGIN
 
 Extending the store with directives
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -439,6 +509,7 @@ types a directive is written with; the ``notes`` package is a small, complete ex
    micro.store.DirectiveBindContext
    micro.store.DirectiveBinding
    micro.store.DirectiveCompileContext
+   micro.store.DirectiveCheck
    micro.store.DirectiveRead
    micro.store.DirectiveResult
    micro.store.TypeDirectiveMetadata
@@ -457,6 +528,8 @@ types a directive is written with; the ``notes`` package is a small, complete ex
    micro.store.physical_reference
    micro.store.physical_type
    micro.store.MUTATION_DIRECTIVES
+   micro.store.CHECK_DIRECTIVE
+   micro.store.CheckBinding
    micro.store.CONNECT_DIRECTIVE
    micro.store.DELETE_DIRECTIVE
    micro.store.DISCONNECT_DIRECTIVE

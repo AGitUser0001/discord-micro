@@ -1,3 +1,4 @@
+from ._check import CHECK_DIRECTIVE, CheckBinding
 from ._composer import (
   ENTITY_DIRECTIVE,
   FROM_DIRECTIVE,
@@ -10,6 +11,7 @@ from ._composer import (
 from ._directive import (
   DirectiveBindContext,
   DirectiveBinding,
+  DirectiveCheck,
   DirectiveCompileContext,
   DirectiveMetadata,
   DirectiveRead,
@@ -39,6 +41,7 @@ from ._queries import (
 )
 
 __all__ = (
+  "CHECK_DIRECTIVE",
   "CONNECT_DIRECTIVE",
   "DELETE_DIRECTIVE",
   "DISCONNECT_DIRECTIVE",
@@ -52,9 +55,11 @@ __all__ = (
   "UPDATE_DIRECTIVE",
   "UPSERT_DIRECTIVE",
   "ActiveOwnedLookup",
+  "CheckBinding",
   "DeleteMutation",
   "DirectiveBindContext",
   "DirectiveBinding",
+  "DirectiveCheck",
   "DirectiveCompileContext",
   "DirectiveMetadata",
   "DirectiveRead",

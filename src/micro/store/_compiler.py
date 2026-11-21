@@ -31,7 +31,7 @@ from ._store import (
   GraphStatement,
   GraphTransaction,
 )
-from .composer import DirectiveCompileContext, DirectiveRead, MicroGraph
+from .composer import DirectiveCheck, DirectiveCompileContext, DirectiveRead, MicroGraph
 
 _LAYOUT_VERSION = "micro:gql-layout:v1"
 _IDENTIFIER = re.compile(r"[^A-Za-z0-9_]")
@@ -65,6 +65,7 @@ class _FieldPlan:
   before: tuple[GraphStatement, ...]
   reads: tuple[DirectiveRead, ...]
   statement: GraphStatement
+  checks: tuple[DirectiveCheck, ...]
   shape: Callable[[Sequence[Mapping[str, JsonValue]]], JsonValue]
 
 
@@ -183,6 +184,7 @@ class GraphCompiler:
           ),
           source.reads,
           statement,
+          source.checks,
           shape,
         )
       )
@@ -206,7 +208,16 @@ class GraphCompiler:
             except (TypeError, ValueError) as exc:
               raise GraphQLError(f"{plan.response_name!r}: {exc}") from exc
           statement = GraphStatement(statement.text, values, statement.columns)
-        data[plan.response_name] = plan.shape((await transaction.run(statement)).rows)
+        rows = (await transaction.run(statement)).rows
+        for check in plan.checks if rows else ():  # only once something was written
+          found = await transaction.run(
+            GraphStatement(check.text, check.parameters, ("found",))
+          )
+          if bool(found.rows) == (check.fails_when == "rows"):
+            raise GraphQLError(
+              check.message, extensions={"code": check.code, "retryable": False}
+            )
+        data[plan.response_name] = plan.shape(rows)
       return data
 
     return CompiledOperation(request.operation.operation is OperationType.MUTATION, run)

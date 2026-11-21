@@ -486,7 +486,11 @@ def _compile_entity_mutation(context: DirectiveCompileContext) -> DirectiveResul
       clauses_list.append(f"SET {', '.join(assignments)}")
     clauses = tuple(clauses_list)
   return DirectiveResult(
-    clauses, parameters, binding.entity.name, before=before, reads=reads
+    clauses,
+    parameters,
+    binding.entity.name,
+    before=before,
+    reads=reads,
   )
 
 
@@ -631,15 +635,17 @@ def _compile_relationship(context: DirectiveCompileContext) -> DirectiveResult:
     if edge_filters:  # only the entry under that key (and any other edge property)
       clauses[1] += " AND " + " AND ".join(edge_filters)
     clauses.append(f"DELETE {relationship_variable}")
+  source_identity = entity_identity(
+    binding.source.name, binding.source_key.evaluate(context.arguments)
+  )
+  target_identity = entity_identity(
+    binding.target.name, binding.target_key.evaluate(context.arguments)
+  )
   return DirectiveResult(
     tuple(clauses),
     {
-      source_parameter: entity_identity(
-        binding.source.name, binding.source_key.evaluate(context.arguments)
-      ),
-      target_parameter: entity_identity(
-        binding.target.name, binding.target_key.evaluate(context.arguments)
-      ),
+      source_parameter: source_identity,
+      target_parameter: target_identity,
       **edge_parameters,
     },
     "",

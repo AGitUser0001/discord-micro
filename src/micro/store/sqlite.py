@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from graphglot import ast
 from graphglot.dialect import Dialect
@@ -98,6 +98,8 @@ class _Run:
   db: sqlite3.Connection
   params: Mapping[str, JsonValue]
   nodes: dict[int, _Node] = field(default_factory=dict)
+  group: list[_Row] | None = None
+  """The rows an aggregate (`count(x)`, `sum(x)`, ...) runs over, while one is evaluated."""
 
   # Storage -----------------------------------------------------------------------
 
@@ -250,12 +252,15 @@ class _Run:
       *(item.statement for item in block.list_next_statement or []),
     ]
     result: list[dict[str, JsonValue]] = []
-    for part in parts:
+    for index, part in enumerate(parts):
       statements, returned = _part(part)
       for item in statements:
         rows = self.apply(item, rows)
       if returned is not None:
         result = self.result(returned, rows)
+        if index < len(parts) - 1:
+          # NEXT continues from what was returned: its columns are the bindings now
+          rows = [cast(_Row, dict(row)) for row in result]
     return result
 
   def apply(self, statement: Any, rows: list[_Row]) -> list[_Row]:
@@ -461,6 +466,22 @@ class _Run:
     limit = self._count(page.limit_clause) if page is not None else None
     selected = rows[offset:] if limit is None else rows[offset : offset + limit]
     items = body.return_item_list.list_return_item
+    aggregated = [item.find_first(ast.AggregateFunction) is not None for item in items]
+    if any(aggregated):
+      if not all(aggregated):
+        raise Unsupported("aggregates next to plain values (GROUP BY)")
+      self.group = rows  # every matched row is one group: one result row
+      try:
+        return [
+          {
+            item.return_item_alias.identifier.name: self.eval(
+              item.aggregating_value_expression, rows[0] if rows else {}
+            )
+            for item in items
+          }
+        ]
+      finally:
+        self.group = None
     return [
       {
         item.return_item_alias.identifier.name: self.eval(
@@ -621,6 +642,43 @@ class _Run:
     if name not in row:
       raise _Unbound(name)
     return row[name]
+
+  def _eval_AggregateFunction(self, node: Any, row: _Row) -> Any:
+    if self.group is None:
+      raise Unsupported("an aggregate outside RETURN")
+    function = node.aggregate_function
+    if type(function).__name__ == "_CountAsterisk":
+      return len(self.group)
+    kind = type(function.general_set_function_type.general_set_function_type).__name__
+    group, self.group = self.group, None  # the argument is evaluated per row
+    try:
+      values = [
+        value
+        for item in group
+        if (value := self.eval(function.value_expression, item)) is not None
+      ]
+    finally:
+      self.group = group
+    if (
+      function.set_quantifier is not None and function.set_quantifier.name == "DISTINCT"
+    ):
+      unique: dict[str, Any] = {}
+      for value in values:
+        unique.setdefault(json.dumps(value, sort_keys=True, default=id), value)
+      values = list(unique.values())
+    if kind == "_Count":
+      return len(values)
+    if not values:
+      return None
+    if kind == "_Sum":
+      return sum(values)
+    if kind == "_Min":
+      return min(values)
+    if kind == "_Max":
+      return max(values)
+    if kind == "_Avg":
+      return sum(values) / len(values)
+    raise Unsupported(kind.strip("_").upper())
 
   def _eval_BooleanLiteral(self, node: Any, row: _Row) -> Any:
     return node.value
