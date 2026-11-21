@@ -1758,6 +1758,17 @@ async def logging_scenarios() -> None:
       [r.getMessage() for r in catch.records[before:]],
     )
     before = len(catch.records)
+    made().map(str)
+    gc.collect()
+    check(
+      "map passes an Err along without handling it: dropping the result is still logged",
+      any(
+        "dropped without being looked at" in r.getMessage()
+        for r in catch.records[before:]
+      ),
+      [r.getMessage() for r in catch.records[before:]],
+    )
+    before = len(catch.records)
     made().unwrap_or(None)
     gc.collect()
 
@@ -4937,7 +4948,7 @@ async def store_scenarios() -> None:
       while time.monotonic() < deadline:
         try:
           answer = await client.execute(
-            'mutation { addTag(name: "py", uses: 3) { name uses } }'
+            t'mutation {{ addTag(name: "py", uses: 3) {{ name uses }} }}'
           )
           if isinstance(answer, Ok):
             result = {"data": answer.value}
@@ -4951,8 +4962,10 @@ async def store_scenarios() -> None:
         (result.get("data") or {}).get("addTag") == {"name": "py", "uses": 3},
         result,
       )
-      again = await client.execute('mutation { addTag(name: "py", uses: 1) { name } }')
-      broken = await client.execute("{ noSuchField }")
+      again = await client.execute(
+        t'mutation {{ addTag(name: "py", uses: 1) {{ name }} }}'
+      )
+      broken = await client.execute(t"{{ noSuchField }}")
       check(
         "a refused write is a Conflict (so .ignore(Conflict) works), a broken query a BadQuery",
         isinstance(again, Err)
@@ -4965,11 +4978,24 @@ async def store_scenarios() -> None:
         and broken.error.code is None,
         (again, broken),
       )
-      (
-        await client.execute(
-          'query($n: ID!) { tag(name: $n) { uses } }', variables={"n": "py"}
-        )
-      ).unwrap()
+      tricky, uses = 'py") { name } } # "', 2
+      made = await client.execute(
+        t"mutation {{ addTag(name: {tricky}, uses: {uses}) {{ name uses }} }}"
+      )
+      name = "py"
+      found = await client.execute(t"{{ tag(name: {name}) {{ uses }} }}")
+      try:
+        await client.execute("{ tag }")  # type: ignore[arg-type]
+        refused = False
+      except TypeError:
+        refused = True
+      check(
+        "a t-string query sends each value as a variable, typed by the store, injection-safe",
+        made == Ok({"addTag": {"name": tricky, "uses": 2}})
+        and found == Ok({"tag": {"uses": 3}})
+        and refused,
+        (made, found),
+      )
 
 
 SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {

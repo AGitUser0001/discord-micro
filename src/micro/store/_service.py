@@ -2,6 +2,7 @@ import asyncio
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from string.templatelib import Interpolation, Template
 from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
@@ -210,13 +211,15 @@ class StoreClient:
     self._client = runtime if isinstance(runtime, Client) else Client(runtime)
 
   async def execute(
-    self,
-    query: str,
-    *,
-    variables: dict[str, Any] | None = None,
-    operation_name: str | None = None,
+    self, query: Template, *, operation_name: str | None = None
   ) -> Result[dict[str, Any], StoreError]:
-    """Run a GraphQL query or mutation.
+    """Run a GraphQL query or mutation, written as a t-string.
+
+    Each `{value}` is sent as a GraphQL variable, never pasted into the text, so any
+    value is safe, quotes and all. Write it bare where the value goes; the store types
+    it from the argument it is passed to. Braces of the query itself are doubled:
+
+      await store.execute(t"mutation {{ addUser(id: {user_id}) {{ id }} }}")
 
     Returns:
       `Ok(data)`, the operation's `data`; or `Err(StoreError)` when the store refused it
@@ -227,10 +230,25 @@ class StoreClient:
       RoutingError, RequestTimeoutError: The store could not be reached. That is broken
         infrastructure, not an answer, so it raises.
     """
+    if not isinstance(query, Template):
+      raise TypeError('execute takes a t-string: t"{ ... }"')
+    text: list[str] = []
+    variables: dict[str, Any] = {}
+    for part in query:
+      if isinstance(part, Interpolation):
+        name = f"v{len(variables)}"
+        variables[name] = part.value
+        text.append(f"${name}")
+      else:
+        text.append(part)
     response: dict[str, Any] = await self._client.request(
       STORE_EXECUTE,
       GraphQLBody.model_validate(
-        {"query": query, "variables": variables, "operationName": operation_name}
+        {
+          "query": "".join(text),
+          "variables": variables,
+          "operationName": operation_name,
+        }
       ),
     )
     errors = response.get("errors")

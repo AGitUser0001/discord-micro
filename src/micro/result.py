@@ -159,8 +159,10 @@ class Err[E: Exception]:
     raise self._error
 
   def map[U](self, function: Callable[[object], U]) -> Err[E]:
-    """This `Err`, unchanged (an `Ok` applies `function` to its value)."""
-    self._looked = True
+    """This `Err`, unchanged (an `Ok` applies `function` to its value).
+
+    Passing it along is not looking at it: the `Err` this returns still has to be handled.
+    """
     return self
 
   def __eq__(self, other: object) -> bool:

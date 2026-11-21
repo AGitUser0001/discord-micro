@@ -65,8 +65,8 @@ def store() -> StoreClient:
 async def run(ctx: Context, interaction: Interaction) -> None:
   data = (
     await store().execute(
-      "query($g: ID!, $n: String!) { custom(guildId: $g, name: $n) { text } }",
-      variables={"g": interaction.guild_id, "n": interaction.command_name},
+      t"{{ custom(guildId: {interaction.guild_id}, name: {interaction.command_name}) "
+      t"{{ text }} }}"
     )
   ).unwrap()
   found = data.get("custom") or {}
@@ -91,28 +91,25 @@ async def add(
     return
   (
     await store().execute(
-      "mutation($g: ID!) { addGuild(id: $g) { id } }",
-      variables={"g": interaction.guild_id},
+      t"mutation {{ addGuild(id: {interaction.guild_id}) {{ id }} }}"
     )
   ).ignore(Conflict)  # made now, or already there
-  variables = {"g": interaction.guild_id, "n": name, "t": text}
+  guild = interaction.guild_id
   match await store().execute(
+    t"""
+    mutation {{
+      addCustom(guildId: {guild}, name: {name}, text: {text}) {{ name }}
+      attach(guildId: {guild}, name: {name})
+    }}
     """
-    mutation($g: ID!, $n: String!, $t: String!) {
-      addCustom(guildId: $g, name: $n, text: $t) { name }
-      attach(guildId: $g, name: $n)
-    }
-    """,
-    variables=variables,
   ):
     case Ok():
       pass
     case Err(Conflict()):  # it exists: change its text
       (
         await store().execute(
-          "mutation($g: ID!, $n: String!, $t: String!) "
-          "{ editCustom(guildId: $g, name: $n, text: $t) { name } }",
-          variables=variables,
+          t"mutation {{ editCustom(guildId: {guild}, name: {name}, text: {text}) "
+          t"{{ name }} }}"
         )
       ).unwrap()
     case Err(error):
@@ -136,8 +133,7 @@ async def remove(
   name = name.lower().lstrip("/")
   data = (
     await store().execute(
-      "mutation($g: ID!, $n: String!) { removeCustom(guildId: $g, name: $n) }",
-      variables={"g": interaction.guild_id, "n": name},
+      t"mutation {{ removeCustom(guildId: {interaction.guild_id}, name: {name}) }}"
     )
   ).unwrap()
   gone = data.get("removeCustom") is True
@@ -152,8 +148,7 @@ async def remove(
 async def list_commands(ctx: Context, interaction: Interaction) -> None:
   data = (
     await store().execute(
-      "query($g: ID!) { guild(id: $g) { commands { name } } }",
-      variables={"g": interaction.guild_id},
+      t"{{ guild(id: {interaction.guild_id}) {{ commands {{ name }} }} }}"
     )
   ).unwrap()
   guild = data.get("guild") or {}

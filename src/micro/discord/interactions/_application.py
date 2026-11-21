@@ -105,7 +105,7 @@ class Context:
   @cached_property
   def store(self) -> StoreClient:
     """The Store: your durable records, in your own typed schema, with your own queries
-    (`await ctx.store.execute("{ guild(id: ...) { ... } }")`). Needs a Store process."""
+    (`await ctx.store.execute(t"{{ guild(id: {guild_id}) {{ ... }} }}")`). Needs a Store process."""
     from micro.store import StoreClient
 
     return StoreClient(self.http.runtime)

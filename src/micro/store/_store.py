@@ -8,14 +8,27 @@ from graphql import (
   DocumentNode,
   FieldNode,
   GraphQLError,
+  GraphQLList,
+  GraphQLNonNull,
   GraphQLSchema,
+  ListTypeNode,
+  NamedTypeNode,
+  NameNode,
+  NonNullTypeNode,
   OperationDefinitionNode,
+  TypeInfo,
+  TypeInfoVisitor,
+  TypeNode,
+  VariableDefinitionNode,
+  VariableNode,
+  Visitor,
   build_schema,
   execute_sync,
   get_operation_ast,
   parse,
   print_schema,
   validate,
+  visit,
 )
 from graphql.error import GraphQLSyntaxError
 from graphql.execution.values import get_variable_values
@@ -310,6 +323,7 @@ class GraphEngine:
     if cached is None:
       try:
         parsed = parse(body.query)
+        declare_variables(composition.schema, parsed)
         problems = [error.formatted for error in validate(composition.schema, parsed)]
       except GraphQLSyntaxError as exc:
         parsed, problems = None, [exc.formatted]
@@ -368,3 +382,53 @@ def _is_introspection(operation: OperationDefinitionNode) -> bool:
     isinstance(selection, FieldNode) and selection.name.value.startswith("__")
     for selection in operation.selection_set.selections
   )
+
+
+def declare_variables(schema: GraphQLSchema, document: DocumentNode) -> None:
+  """Declare, on each operation, the variables it uses without declaring, typed from the
+  argument or input field each one is passed to.
+
+  `StoreClient.execute(t"... {value} ...")` turns every value into a variable (`$v0`)
+  and leaves the declarations to the store, which knows the schema: `addUser(id: $v0)`
+  gets `$v0: ID!`. A variable used where no type is expected stays undeclared, and
+  validation then says so.
+  """
+  for operation in document.definitions:
+    if isinstance(operation, OperationDefinitionNode):
+      _declare_operation_variables(schema, operation)
+
+
+def _declare_operation_variables(
+  schema: GraphQLSchema, operation: OperationDefinitionNode
+) -> None:
+  declared = {item.variable.name.value for item in operation.variable_definitions or ()}
+  found: dict[str, TypeNode] = {}
+  info = TypeInfo(schema)
+
+  class Collect(Visitor):
+    def enter_variable(self, node: VariableNode, *_: object) -> None:
+      name = node.name.value
+      expected = info.get_input_type()
+      if name not in declared and name not in found and expected is not None:
+        found[name] = _type_node(expected)
+
+  visit(operation, TypeInfoVisitor(info, Collect()))
+  if found:
+    operation.variable_definitions = (
+      *(operation.variable_definitions or ()),
+      *(
+        VariableDefinitionNode(
+          variable=VariableNode(name=NameNode(value=name)), type=kind
+        )
+        for name, kind in found.items()
+      ),
+    )
+
+
+def _type_node(kind: object) -> TypeNode:
+  """The AST for a GraphQL input type (`ID!`, `[String!]`, ...)."""
+  if isinstance(kind, GraphQLNonNull):
+    return NonNullTypeNode(type=_type_node(kind.of_type))
+  if isinstance(kind, GraphQLList):
+    return ListTypeNode(type=_type_node(kind.of_type))
+  return NamedTypeNode(name=NameNode(value=kind.name))  # type: ignore[attr-defined]

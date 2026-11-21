@@ -74,17 +74,23 @@ commands. Read it once; the sections below explain each part.
    service.uses(COMMANDS)                # the Store process serves it
    store = StoreClient(service.client)   # or StoreClient(runtime)
 
-   (await store.execute(
-     'mutation($g: ID!, $n: String!, $b: String!) {'
-     '  c: addCommand(guildId: $g, name: $n, body: $b) { name }'
-     '  a: attach(guildId: $g, name: $n)'
-     '}',
-     variables={"g": "1234", "n": "hello", "b": "Hi!"},
-   )).unwrap()
+   guild, name, body = "1234", "hello", "Hi!"
+   (await store.execute(t"""
+     mutation {{
+       c: addCommand(guildId: {guild}, name: {name}, body: {body}) {{ name }}
+       a: attach(guildId: {guild}, name: {name})
+     }}
+   """)).unwrap()
    data = (await store.execute(
-     '{ guild(id: "1234") { name commands { name uses } } }'
+     t"{{ guild(id: {guild}) {{ name commands {{ name uses }} }} }}"
    )).unwrap()
    data["guild"]["commands"]               # [{"name": "hello", "uses": 0}]
+
+A query is a **t-string** (``t"..."``). Each ``{value}`` is sent to the store as a GraphQL
+variable, never pasted into the text, so any value is safe, quotes and all. Write it bare
+where the value goes (``id: {guild}``, not ``id: "{guild}"``); the store types it from
+the argument it is passed to, so there is nothing to declare. The query's own braces are
+doubled: ``{{ ... }}``. A query with no values is still a t-string.
 
 ``execute`` returns a :class:`Result` (:doc:`errors`): ``Ok(data)`` with the operation's
 ``data``, or ``Err(StoreError)`` for a bad query or a refused write (see *Errors*). An
@@ -147,8 +153,7 @@ Reading
    offset = 0
    while True:
      page = (await store.execute(
-       "query($o: Int!) { allGuilds(first: 500, offset: $o) { id name } }",
-       variables={"o": offset},
+       t"{{ allGuilds(first: 500, offset: {offset}) {{ id name }} }}"
      )).unwrap()["allGuilds"]
      for guild in page: ...
      if len(page) < 500: break
@@ -213,8 +218,8 @@ Plain numbers, ``true`` and ``[]`` are not allowed as ``set`` values: write ``"0
 
 .. code-block:: python
 
-   (await store.execute('mutation { editBody(guildId: "1", name: "hi") { body } }')).unwrap()              # no change
-   (await store.execute('mutation { editBody(guildId: "1", name: "hi", body: null) { body } }')).unwrap()  # cleared
+   (await store.execute(t'mutation {{ editBody(guildId: "1", name: "hi") {{ body }} }}')).unwrap()              # no change
+   (await store.execute(t'mutation {{ editBody(guildId: "1", name: "hi", body: null) {{ body }} }}')).unwrap()  # cleared
 
 **One request is one transaction.** Put several mutation fields in one request and they
 all happen or none does. The earlier example creates a command and attaches it to its

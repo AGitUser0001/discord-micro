@@ -55,19 +55,14 @@ async def add(
 
     async with httpx2.AsyncClient() as http:
       data = base64.b64encode((await http.get(file.url)).content).decode()
+  note_id, author = f"{time.time_ns()}", interaction.user.display_name
   (
     await StoreClient(service.client).execute(
+      t"""
+      mutation {{
+        addNote(id: {note_id}, author: {author}, text: {text}, file: {data}) {{ id }}
+      }}
       """
-      mutation($id: ID!, $author: String!, $text: String!, $file: Bytes) {
-        addNote(id: $id, author: $author, text: $text, file: $file) { id }
-      }
-      """,
-      variables={
-        "id": f"{time.time_ns()}",
-        "author": interaction.user.display_name,
-        "text": text,
-        "file": data,
-      },
     )
   ).unwrap()
   await interaction.respond(Draft("Saved.", ephemeral=True))
@@ -77,7 +72,7 @@ async def add(
 async def list_notes(ctx: Context, interaction: Interaction) -> None:
   data = (
     await StoreClient(service.client).execute(
-      "{ notes(first: 10, offset: 0) { author text } }"
+      t"{{ notes(first: 10, offset: 0) {{ author text }} }}"
     )
   ).unwrap()
   notes = data.get("notes") or []
