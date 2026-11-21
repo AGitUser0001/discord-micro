@@ -1155,12 +1155,83 @@ async def helper_scenarios() -> None:
     and "sticker_ids" not in FullDraft("hi").to_dict(),
     full,
   )
+  import logging
+
+  from nats.errors import TimeoutError as NatsTimeout
+
   from micro.discord.http_service import DiscordAPIError
   from micro.discord.interactions._pattern import RouteTable, as_route, wire_of
   from micro.discord.interactions._templates import report_failure
   from micro.discord.objects import Application
   from micro.discord.state import DiscordState
   from micro.discord.text import escape
+  from micro.runtime._outage import Outage
+
+  outage_lines: list[str] = []
+
+  class OutageCatch(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+      outage_lines.append(record.getMessage())
+
+  outage_logger = logging.getLogger("micro.runtime._outage")
+  outage_catch = OutageCatch()
+  outage_logger.addHandler(outage_catch)
+  try:
+    outage = Outage("Publishing", counted="event(s) were lost")
+    counted = [outage.failed(NatsTimeout()) for _ in range(5)]
+    bug = outage.failed(KeyError("a bug"))
+    outage.recovered()
+    outage.recovered()  # nothing more to say
+  finally:
+    outage_logger.removeHandler(outage_catch)
+  check(
+    "a NATS outage is one line when it starts and one when it ends, and a bug is not hidden",
+    counted == [True] * 5
+    and bug is False
+    and len(outage_lines) == 2
+    and "NATS is not answering" in outage_lines[0]
+    and "5 event(s) were lost" in outage_lines[1],
+    outage_lines,
+  )
+  from micro.gateway._connection import _quiet_closing_heartbeats
+
+  passed_on: list[str] = []
+  quiet_loop = asyncio.new_event_loop()
+  try:
+    quiet_loop.set_exception_handler(
+      lambda _loop, context: passed_on.append(context["message"])
+    )
+    _quiet_closing_heartbeats(quiet_loop)
+    _quiet_closing_heartbeats(quiet_loop)  # installing twice keeps one layer
+
+    async def idle() -> None:
+      return None
+
+    heartbeat = asyncio.get_running_loop().create_task(
+      idle(), name="heartbeat (shard 0)"
+    )
+    other = asyncio.get_running_loop().create_task(idle(), name="something else")
+    await asyncio.gather(heartbeat, other)
+    handle = quiet_loop.get_exception_handler()
+    assert handle is not None
+    handle(
+      quiet_loop,
+      {"message": "hb", "future": heartbeat, "exception": ConnectionResetError()},
+    )
+    handle(
+      quiet_loop,
+      {"message": "other", "future": other, "exception": ConnectionResetError()},
+    )
+    handle(
+      quiet_loop, {"message": "hb-bug", "future": heartbeat, "exception": KeyError("x")}
+    )
+  finally:
+    quiet_loop.close()
+  check(
+    "only hikari's heartbeat racing a closing connection is dropped; every other error is passed on",
+    passed_on == ["other", "hb-bug"],
+    passed_on,
+  )
   from micro.discord.ui import Draft as SendDraft
 
   def not_a_draft(value: Any) -> bool:

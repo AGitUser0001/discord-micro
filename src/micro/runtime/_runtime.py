@@ -91,6 +91,7 @@ class Runtime:
     self._components: list[Component] = []
     self._presences: dict[int, Presence] = {}
     self._started = False
+    self._closing = False
     self._payloads: ObjectStore | None = None
     self._configs: list[Config[Any]] = []
     self._reconnects = 0
@@ -150,8 +151,22 @@ class Runtime:
       if theirs is not None:
         await theirs()
 
+    their_errors = options.pop("error_cb", None)
+
+    async def errored(error: Exception) -> None:
+      # nats-py's own callback logs every failed connection attempt with a traceback,
+      # including the ones a close cancels. One line, and nothing while closing.
+      if their_errors is not None:
+        await their_errors(error)
+      elif not self._closing:
+        log.warning("NATS: %s", str(error) or type(error).__name__)
+
     self._nats = await nats.connect(
-      list(self.servers), name=self.name, reconnected_cb=reconnected, **options
+      list(self.servers),
+      name=self.name,
+      reconnected_cb=reconnected,
+      error_cb=errored,
+      **options,
     )
     self._jetstream = self._nats.jetstream()
     await self.ensure_stream(
@@ -194,8 +209,19 @@ class Runtime:
       except Exception:
         log.exception("Draining %s failed", component.name)
 
+  @property
+  def connected(self) -> bool:
+    """Whether the runtime is started, not closing, and connected to NATS."""
+    return (
+      self._started
+      and not self._closing
+      and self._nats is not None
+      and self._nats.is_connected
+    )
+
   async def close(self) -> None:
     """Close hosted components and disconnect."""
+    self._closing = True
     for component in reversed(self._components):
       try:
         await component.close()
@@ -218,6 +244,7 @@ class Runtime:
     self._jetstream = None
     self._tables.clear()
     self._started = False
+    self._closing = False
 
   async def __aenter__(self) -> Self:
     await self.start()

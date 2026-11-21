@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from micro import log, subjects
 from micro.coordination import Table
 
+from ._outage import Outage
+
 
 class Registration(BaseModel):
   """What one live component advertises to the rest of the deployment."""
@@ -38,6 +40,7 @@ class Presence:
     )
     self._revision: int | None = None
     self._renewer: asyncio.Task[None] | None = None
+    self._outage = Outage(f"Renewing presence {self._key}")
 
   async def start(self) -> None:
     """Write the registration and begin renewing it."""
@@ -74,8 +77,11 @@ class Presence:
         )
       except asyncio.CancelledError:
         raise
-      except Exception:
-        log.warning("Could not renew presence %s", self._key, exc_info=True)
+      except Exception as error:
+        if not self._outage.failed(error):
+          log.warning("Could not renew presence %s", self._key, exc_info=True)
+      else:
+        self._outage.recovered()
 
 
 class Directory:

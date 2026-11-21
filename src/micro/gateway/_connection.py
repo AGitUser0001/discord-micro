@@ -95,6 +95,7 @@ class HikariShard:
         banner=None,
         rest_url=self.host.api_url,
       )
+      _quiet_closing_heartbeats(asyncio.get_running_loop())
       bot.listen(hikari.ShardPayloadEvent)(self._on_dispatch)
       bot.listen(hikari.ShardConnectedEvent)(self._on_connected)
       bot.listen(hikari.ShardDisconnectedEvent)(self._on_disconnected)
@@ -258,3 +259,31 @@ async def _close_bot(bot: Any) -> None:
   except asyncio.CancelledError:
     await closing  # finish closing before the cancel goes on
     raise
+
+
+def _quiet_closing_heartbeats(loop: asyncio.AbstractEventLoop) -> None:
+  """Drop one known hikari race from the loop's error log, and nothing else.
+
+  When a connection closes, hikari's `heartbeat (shard N)` task can still try to write to
+  the closing websocket; it fails with a connection reset that hikari never retrieves,
+  so asyncio prints "Task exception was never retrieved". The shard is closing or
+  reconnecting either way. Every other error goes to the handler that was there before.
+  """
+  previous = loop.get_exception_handler()
+  if getattr(previous, "_micro_heartbeats", False):
+    return
+
+  def handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+    task = context.get("future") or context.get("task")
+    name = task.get_name() if isinstance(task, asyncio.Task) else ""
+    if name.startswith("heartbeat (shard") and isinstance(
+      context.get("exception"), ConnectionError
+    ):
+      return
+    if previous is not None:
+      previous(loop, context)
+    else:
+      loop.default_exception_handler(context)
+
+  handler._micro_heartbeats = True  # type: ignore[attr-defined]
+  loop.set_exception_handler(handler)

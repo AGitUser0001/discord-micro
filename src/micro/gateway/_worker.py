@@ -15,6 +15,7 @@ from micro import log, subjects
 from micro.config import Applied, Config, Refresh
 from micro.coordination import Locks, Table, Versioned
 from micro.runtime import Component, Presence, default_backoff
+from micro.runtime._outage import Outage
 
 from ._connection import HikariShard, ShardHost, ShardSession
 from ._control import (
@@ -195,6 +196,8 @@ class GatewayWorker(Component):
     self._desired: GatewayGeneration | None = None
     self._active: GatewayGeneration | None = None
     self._status: PresenceUpdate | None = None
+    self._reconciling = Outage("Gateway reconciliation")
+    self._publishing = Outage("Publishing Gateway events", counted="event(s) were lost")
     self._leases: dict[str, Versioned[ShardLease]] = {}
     self._released = asyncio.Event()
 
@@ -393,8 +396,11 @@ class GatewayWorker(Component):
           await self._reconcile()
       except asyncio.CancelledError:
         raise
-      except Exception:
-        log.exception("Gateway reconciliation failed")
+      except Exception as error:
+        if not self._reconciling.failed(error):
+          log.exception("Gateway reconciliation failed")
+      else:
+        self._reconciling.recovered()
 
   def _peers_changed(self) -> None:
     """A worker joined or left: reconcile, and let a drain re-check who is left."""
@@ -760,12 +766,18 @@ class GatewayWorker(Component):
       headers[CONNECTION_HEADER] = session.connection_id
     if before is not None:
       headers[subjects.BEFORE_HEADER] = json.dumps(before, separators=(",", ":"))
-    await self.runtime.jetstream.publish(
-      subjects.dispatch(name, guild),
-      body,
-      stream=subjects.EVENTS_STREAM,
-      headers=headers,
-    )
+    try:
+      await self.runtime.jetstream.publish(
+        subjects.dispatch(name, guild),
+        body,
+        stream=subjects.EVENTS_STREAM,
+        headers=headers,
+      )
+    except Exception as error:
+      if self._publishing.failed(error):
+        return  # counted: the recovery line says how many events were lost
+      raise
+    self._publishing.recovered()
 
   async def on_connection(
     self, session: ShardSession, kind: ConnectionEventKind
@@ -785,6 +797,8 @@ class GatewayWorker(Component):
       ):
         held.ready = False
       self._wake.set()
+    if not self.runtime.connected:
+      return  # shutting down, or NATS is away: there is nobody to tell
     event = ConnectionEvent(
       kind=kind,
       shard_id=session.shard_id,
@@ -792,8 +806,13 @@ class GatewayWorker(Component):
       connection_id=session.connection_id,
       worker=self.address,
     )
-    await self.runtime.jetstream.publish(
-      subjects.connection(session.shard_id),
-      event.model_dump_json().encode(),
-      stream=subjects.EVENTS_STREAM,
-    )
+    try:
+      await self.runtime.jetstream.publish(
+        subjects.connection(session.shard_id),
+        event.model_dump_json().encode(),
+        stream=subjects.EVENTS_STREAM,
+      )
+    except Exception as error:
+      log.warning(
+        "Could not publish shard %s %s: %s", session.shard_id, kind.value, error
+      )
