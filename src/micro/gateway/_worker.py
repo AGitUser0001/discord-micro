@@ -199,6 +199,10 @@ class GatewayWorker(Component):
     self._status: PresenceUpdate | None = None
     self._reconciling = Outage("Gateway reconciliation")
     self._publishing = Outage("Publishing Gateway events")
+    self._watching = {
+      what: Outage(f"The Gateway's watch on {what}")
+      for what in ("generations", "shard leases")
+    }
     self._backlog: deque[tuple[str, bytes, dict[str, str]]] = deque()
     """Dispatches that came while NATS was away, in order, waiting to be published."""
     self._waited = 0
@@ -347,6 +351,7 @@ class GatewayWorker(Component):
   async def _watch_generations(self) -> None:
     async def follow() -> None:
       async for change in self._generations.watch("generation.*", lenient=True):
+        self._watching["generations"].recovered()
         if change is not None and change.value is not None:
           self._generation_intents[change.value.id] = change.value.intents
           if change.key == DESIRED_KEY:
@@ -363,6 +368,7 @@ class GatewayWorker(Component):
       # while a previous watch was down does not linger.
       fresh: dict[str, Versioned[ShardLease]] | None = {}
       async for change in self._shards.watch(lenient=True):
+        self._watching["shard leases"].recovered()
         if change is None:
           if fresh is not None:
             self._leases, fresh = fresh, None
@@ -393,8 +399,11 @@ class GatewayWorker(Component):
         log.warning("The Gateway's watch on %s ended; restarting", what)
       except asyncio.CancelledError:
         raise
-      except Exception:
-        log.warning("The Gateway's watch on %s failed; restarting", what, exc_info=True)
+      except Exception as error:
+        if not self._watching[what].failed(error):  # NATS away: one line per outage
+          log.warning(
+            "The Gateway's watch on %s failed; restarting", what, exc_info=True
+          )
       # A watch that ran for a while failed for a new reason: start the backoff over.
       if asyncio.get_running_loop().time() - started > 60:
         failures = 0

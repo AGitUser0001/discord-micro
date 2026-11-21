@@ -19,7 +19,7 @@ from ._store import GraphEngine, GraphExecutor, GraphQLBody
 
 if TYPE_CHECKING:
   from micro.discord import Context
-from .composer import DirectiveMetadata, TypeDirectiveMetadata
+from .composer import DirectiveMetadata, GraphCompositionError, TypeDirectiveMetadata
 
 DEFAULT_STORE_URL = "sqlite:.micro/store.db"
 
@@ -112,6 +112,9 @@ class Store(Service):
     try:
       modules = await self.declared_modules()
       await self.engine.apply_modules(modules)
+    except GraphCompositionError as error:  # a schema mistake: the message says it all
+      log.error("Store keeps its last good graph; the new module set failed: %s", error)
+      return
     except Exception:
       log.exception("Store keeps its last good graph; the new module set failed")
       return
