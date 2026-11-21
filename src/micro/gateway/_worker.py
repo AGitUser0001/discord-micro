@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 import os
+from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -15,7 +16,7 @@ from micro import log, subjects
 from micro.config import Applied, Config, Refresh
 from micro.coordination import Locks, Table, Versioned
 from micro.runtime import Component, Presence, default_backoff
-from micro.runtime._outage import Outage
+from micro.runtime._outage import Outage, unavailable
 
 from ._connection import HikariShard, ShardHost, ShardSession
 from ._control import (
@@ -197,7 +198,11 @@ class GatewayWorker(Component):
     self._active: GatewayGeneration | None = None
     self._status: PresenceUpdate | None = None
     self._reconciling = Outage("Gateway reconciliation")
-    self._publishing = Outage("Publishing Gateway events", counted="event(s) were lost")
+    self._publishing = Outage("Publishing Gateway events")
+    self._backlog: deque[tuple[str, bytes, dict[str, str]]] = deque()
+    """Dispatches that came while NATS was away, in order, waiting to be published."""
+    self._waited = 0
+    self._flusher: asyncio.Task[None] | None = None
     self._leases: dict[str, Versioned[ShardLease]] = {}
     self._released = asyncio.Event()
 
@@ -289,6 +294,18 @@ class GatewayWorker(Component):
       self._presence = None
     for held in tuple(self._held.values()):
       await self._stop(held, delete_lease=True)
+    if self._flusher is not None:
+      self._flusher.cancel()
+      with suppress(asyncio.CancelledError):
+        await self._flusher
+      self._flusher = None
+    if self._backlog:
+      log.warning(
+        "%d Gateway event(s) were still waiting for NATS when this worker closed; "
+        "they are lost",
+        len(self._backlog),
+      )
+      self._backlog.clear()
 
   # Networked settings ----------------------------------------------------------
 
@@ -766,18 +783,58 @@ class GatewayWorker(Component):
       headers[CONNECTION_HEADER] = session.connection_id
     if before is not None:
       headers[subjects.BEFORE_HEADER] = json.dumps(before, separators=(",", ":"))
+    await self._publish_event(subjects.dispatch(name, guild), body, headers)
+
+  async def _publish_event(
+    self, subject: str, body: bytes, headers: dict[str, str]
+  ) -> None:
+    """Publish a dispatch, or, while NATS is away, keep it to publish later, in order.
+
+    Discord does not send an event twice, so one that cannot be published now is held,
+    not dropped, and everything after it waits behind it so the order is kept.
+    """
+    if self._backlog:
+      self._backlog.append((subject, body, headers))
+      self._waited += 1
+      return
     try:
       await self.runtime.jetstream.publish(
-        subjects.dispatch(name, guild),
-        body,
-        stream=subjects.EVENTS_STREAM,
-        headers=headers,
+        subject, body, stream=subjects.EVENTS_STREAM, headers=headers
       )
     except Exception as error:
-      if self._publishing.failed(error):
-        return  # counted: the recovery line says how many events were lost
-      raise
-    self._publishing.recovered()
+      if not self._publishing.failed(error):
+        raise
+      self._backlog.append((subject, body, headers))
+      self._waited += 1
+      if self._flusher is None or self._flusher.done():
+        self._flusher = asyncio.create_task(self._flush(), name="micro.gateway.backlog")
+
+  async def _flush(self) -> None:
+    """Publish the held events, oldest first, once NATS answers again."""
+    attempts = 0
+    while self._backlog:
+      subject, body, headers = self._backlog[0]
+      try:
+        await self.runtime.jetstream.publish(
+          subject, body, stream=subjects.EVENTS_STREAM, headers=headers
+        )
+      except asyncio.CancelledError:
+        raise
+      except Exception as error:
+        if unavailable(error):
+          attempts += 1
+          await asyncio.sleep(default_backoff(attempts))
+          continue
+        log.exception("A held Gateway event could not be published; it is dropped")
+      attempts = 0
+      self._backlog.popleft()
+    log.warning(
+      "Publishing Gateway events works again; %d event(s) waited while NATS was away "
+      "and are published now",
+      self._waited,
+    )
+    self._waited = 0
+    self._publishing.failures = 0
 
   async def on_connection(
     self, session: ShardSession, kind: ConnectionEventKind

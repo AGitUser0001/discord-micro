@@ -1157,6 +1157,7 @@ async def helper_scenarios() -> None:
   )
   import logging
 
+  from nats.errors import TimeoutError as NatsDown
   from nats.errors import TimeoutError as NatsTimeout
 
   from micro.discord.http_service import DiscordAPIError
@@ -1165,6 +1166,29 @@ async def helper_scenarios() -> None:
   from micro.discord.objects import Application
   from micro.discord.state import DiscordState
   from micro.discord.text import escape
+
+  published: list[str] = []
+  calls = {"n": 0}
+
+  async def flaky_publish(subject: str, body: bytes, **_: Any) -> None:
+    calls["n"] += 1
+    if calls["n"] <= 2:  # NATS is away for the first two tries
+      raise NatsDown()
+    published.append(subject)
+
+  held_worker: Any = GatewayWorker(TOKEN)
+  held_worker._runtime = SimpleNamespace(
+    jetstream=SimpleNamespace(publish=flaky_publish)
+  )
+  for number in (1, 2, 3):
+    await held_worker._publish_event(f"e{number}", b"{}", {})
+  waiting = len(held_worker._backlog)
+  await held_worker._flusher
+  check(
+    "events that come while NATS is away are held and published in order when it is back",
+    waiting == 3 and published == ["e1", "e2", "e3"] and not held_worker._backlog,
+    (waiting, published),
+  )
   from micro.runtime._outage import Outage
 
   outage_lines: list[str] = []
