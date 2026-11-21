@@ -2,7 +2,7 @@ import asyncio
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
@@ -146,8 +146,9 @@ class StoreError(MicroError):
   `Invalid` or `BadQuery`. It is the first of the store's errors; all are in `errors`."""
 
   message: str
-  code: Literal["CONFLICT", "UNAVAILABLE", "INVALID"] | None = None
-  """The store's error code; None for a mistake in the query (`BadQuery`)."""
+  code: str | None = None
+  """The store's error code exactly as it sent it (`"CONFLICT"`, ...), even one this version
+  does not know; None for a mistake in the query (`BadQuery`)."""
   retryable: bool = False
   """Whether trying the same operation again may succeed."""
   path: tuple[str | int, ...] = ()
@@ -185,6 +186,23 @@ _KINDS: dict[str | None, type[StoreError]] = {
 }
 
 
+def store_error(errors: list[dict[str, Any]]) -> StoreError:
+  """The `StoreError` for the store's GraphQL `errors`: the subclass for the first one's
+  code, or the base class for a code this version does not know (the code is kept)."""
+  first = errors[0]
+  extensions = first.get("extensions") or {}
+  raw = extensions.get("code")
+  code = None if raw is None else str(raw)
+  kind = _KINDS.get(code, StoreError)
+  return kind(
+    message=str(first.get("message", "")),
+    code=code,
+    retryable=bool(extensions.get("retryable")) or kind is Unavailable,
+    path=tuple(first.get("path") or ()),
+    errors=tuple(errors),
+  )
+
+
 class StoreClient:
   """Executes GraphQL against whichever store replica answers."""
 
@@ -217,17 +235,5 @@ class StoreClient:
     )
     errors = response.get("errors")
     if errors:
-      first = errors[0]
-      extensions = first.get("extensions") or {}
-      code = extensions.get("code")
-      kind = _KINDS.get(code, StoreError)
-      return Err(
-        kind(
-          message=str(first.get("message", "")),
-          code=code if code in ("CONFLICT", "UNAVAILABLE", "INVALID") else None,
-          retryable=bool(extensions.get("retryable")) or kind is Unavailable,
-          path=tuple(first.get("path") or ()),
-          errors=tuple(errors),
-        )
-      )
+      return Err(store_error(errors))
     return Ok(response.get("data") or {})

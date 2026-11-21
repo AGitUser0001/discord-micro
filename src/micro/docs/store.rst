@@ -287,9 +287,10 @@ and ``.ignore(Conflict)`` work:
 * ``BadQuery``: a mistake in the query itself (a syntax error, an unknown field, a missing
   argument); trying again will not help.
 
-Each has the first error's ``message``, ``code`` (``"CONFLICT"``, ``"UNAVAILABLE"``,
-``"INVALID"``, or None for ``BadQuery``), ``retryable`` and ``path``, and every error in
-``errors``.
+Each has the first error's ``message``, ``code`` (the store's code exactly as it sent it, or
+None for ``BadQuery``), ``retryable`` and ``path``, and every error in ``errors``. A code
+this version does not know yet arrives as a plain ``StoreError`` that still has it in
+``code``.
 
 * A mistake in your query (unknown field, missing argument, a bad enum value, ``first``
   out of range) is an ordinary GraphQL error with a message and a location.

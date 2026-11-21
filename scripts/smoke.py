@@ -1190,6 +1190,20 @@ async def helper_scenarios() -> None:
     (waiting, published),
   )
   from micro.runtime._outage import Outage
+  from micro.store import Conflict as StoreConflict
+  from micro.store import StoreError as AnyStoreError
+  from micro.store._service import store_error
+
+  newer = store_error([{"message": "x", "extensions": {"code": "NEWTHING"}}])
+  known = store_error([{"message": "y", "extensions": {"code": "CONFLICT"}}])
+  check(
+    "a store code this version does not know is a plain StoreError that keeps its code",
+    type(newer) is AnyStoreError
+    and newer.code == "NEWTHING"
+    and isinstance(known, StoreConflict)
+    and known.code == "CONFLICT",
+    (type(newer).__name__, newer.code),
+  )
 
   outage_lines: list[str] = []
 
