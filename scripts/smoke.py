@@ -4438,7 +4438,15 @@ async def scheduler_scenarios() -> None:
 
 async def store_scenarios() -> None:
   print("store: the behavior docs/store.rst promises")
-  from micro.store import GraphEngine, GraphModule, GraphQLBody, Store, StoreClient
+  from micro.result import Err, Ok
+  from micro.store import (
+    GraphEngine,
+    GraphModule,
+    GraphQLBody,
+    Store,
+    StoreClient,
+    StoreError,
+  )
   from micro.store.sqlite import SQLiteGraph
 
   commands = """
@@ -4817,11 +4825,13 @@ async def store_scenarios() -> None:
       result: dict[str, Any] = {}
       while time.monotonic() < deadline:
         try:
-          result = await client.execute(
+          answer = await client.execute(
             'mutation { addTag(name: "py", uses: 3) { name uses } }'
           )
-          if result.get("data"):
+          if isinstance(answer, Ok):
+            result = {"data": answer.value}
             break
+          result = {"error": str(answer.error)}
         except Exception as error:  # the Store is still composing the module
           result = {"error": str(error)}
         await asyncio.sleep(0.2)
@@ -4830,9 +4840,19 @@ async def store_scenarios() -> None:
         (result.get("data") or {}).get("addTag") == {"name": "py", "uses": 3},
         result,
       )
-      await client.execute(
-        'query($n: ID!) { tag(name: $n) { uses } }', variables={"n": "py"}
+      again = await client.execute('mutation { addTag(name: "py", uses: 1) { name } }')
+      check(
+        "a refused write is an Err holding a StoreError with the store's code",
+        isinstance(again, Err)
+        and isinstance(again.error, StoreError)
+        and again.error.code == "CONFLICT",
+        again,
       )
+      (
+        await client.execute(
+          'query($n: ID!) { tag(name: $n) { uses } }', variables={"n": "py"}
+        )
+      ).unwrap()
 
 
 SCENARIOS: dict[str, Callable[[], Awaitable[None]]] = {

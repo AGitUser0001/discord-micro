@@ -74,21 +74,22 @@ commands. Read it once; the sections below explain each part.
    service.uses(COMMANDS)                # the Store process serves it
    store = StoreClient(service.client)   # or StoreClient(runtime)
 
-   await store.execute(
+   (await store.execute(
      'mutation($g: ID!, $n: String!, $b: String!) {'
      '  c: addCommand(guildId: $g, name: $n, body: $b) { name }'
      '  a: attach(guildId: $g, name: $n)'
      '}',
      variables={"g": "1234", "n": "hello", "b": "Hi!"},
-   )
-   result = await store.execute(
+   )).unwrap()
+   data = (await store.execute(
      '{ guild(id: "1234") { name commands { name uses } } }'
-   )
-   result["data"]["guild"]["commands"]     # [{"name": "hello", "uses": 0}]
+   )).unwrap()
+   data["guild"]["commands"]               # [{"name": "hello", "uses": 0}]
 
-``execute`` returns GraphQL's ``{"data": ..., "errors": [...]}`` and does not raise for
-a bad query or a refused write: look at ``errors`` (see *Errors*). It raises only when
-the store cannot be reached.
+``execute`` returns a :class:`Result` (:doc:`errors`): ``Ok(data)`` with the operation's
+``data``, or ``Err(StoreError)`` for a bad query or a refused write (see *Errors*). An
+operation succeeds or fails whole, so there is never part of the data. It raises only
+when the store cannot be reached.
 
 Rules of the schema
 -------------------
@@ -148,7 +149,7 @@ Reading
      page = (await store.execute(
        "query($o: Int!) { allGuilds(first: 500, offset: $o) { id name } }",
        variables={"o": offset},
-     ))["data"]["allGuilds"]
+     )).unwrap()["allGuilds"]
      for guild in page: ...
      if len(page) < 500: break
      offset += 500
@@ -212,8 +213,8 @@ Plain numbers, ``true`` and ``[]`` are not allowed as ``set`` values: write ``"0
 
 .. code-block:: python
 
-   await store.execute('mutation { editBody(guildId: "1", name: "hi") { body } }')              # no change
-   await store.execute('mutation { editBody(guildId: "1", name: "hi", body: null) { body } }')  # cleared
+   (await store.execute('mutation { editBody(guildId: "1", name: "hi") { body } }')).unwrap()              # no change
+   (await store.execute('mutation { editBody(guildId: "1", name: "hi", body: null) { body } }')).unwrap()  # cleared
 
 **One request is one transaction.** Put several mutation fields in one request and they
 all happen or none does. The earlier example creates a command and attaches it to its
@@ -266,12 +267,17 @@ Errors
 
 .. code-block:: python
 
-   result = await store.execute(...)
-   if result.get("errors"):
-     error = result["errors"][0]
-     error["message"]
-     error["extensions"]["code"]    # "CONFLICT", "INVALID", "UNAVAILABLE", ...
-     error["extensions"]["retryable"]
+   from micro.discord import Err, Ok
+   from micro.store import StoreError
+
+   match await store.execute(...):
+     case Ok(data): ...
+     case Err(StoreError(code="CONFLICT")): ...    # the key exists: "already there"
+     case Err(StoreError(retryable=True)): ...     # the store is busy or starting
+     case Err(error): raise error                   # a mistake in the query
+
+``StoreError`` has the first error's ``message``, ``code`` (``"CONFLICT"``, ``"INVALID"``,
+``"UNAVAILABLE"``, ...), ``retryable`` and ``path``, and every error in ``errors``.
 
 * A mistake in your query (unknown field, missing argument, a bad enum value, ``first``
   out of range) is an ordinary GraphQL error with a message and a location.
@@ -366,6 +372,7 @@ The store is a service-side component plus a client. Everything a service normal
 .. api::
    micro.store.Store
    micro.store.StoreClient
+   micro.store.StoreError
    micro.store.GraphModule
    micro.store.GraphEngine
    micro.store.GraphExecutor

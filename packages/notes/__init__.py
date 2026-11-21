@@ -55,27 +55,31 @@ async def add(
 
     async with httpx2.AsyncClient() as http:
       data = base64.b64encode((await http.get(file.url)).content).decode()
-  await StoreClient(service.client).execute(
-    """
-    mutation($id: ID!, $author: String!, $text: String!, $file: Bytes) {
-      addNote(id: $id, author: $author, text: $text, file: $file) { id }
-    }
-    """,
-    variables={
-      "id": f"{time.time_ns()}",
-      "author": interaction.user.display_name,
-      "text": text,
-      "file": data,
-    },
-  )
+  (
+    await StoreClient(service.client).execute(
+      """
+      mutation($id: ID!, $author: String!, $text: String!, $file: Bytes) {
+        addNote(id: $id, author: $author, text: $text, file: $file) { id }
+      }
+      """,
+      variables={
+        "id": f"{time.time_ns()}",
+        "author": interaction.user.display_name,
+        "text": text,
+        "file": data,
+      },
+    )
+  ).unwrap()
   await interaction.respond(Draft("Saved.", ephemeral=True))
 
 
 @note.command("list", description="Show recent notes")
 async def list_notes(ctx: Context, interaction: Interaction) -> None:
-  result = await StoreClient(service.client).execute(
-    "{ notes(first: 10, offset: 0) { author text } }"
-  )
-  notes = (result.get("data") or {}).get("notes") or []
+  data = (
+    await StoreClient(service.client).execute(
+      "{ notes(first: 10, offset: 0) { author text } }"
+    )
+  ).unwrap()
+  notes = data.get("notes") or []
   lines = [f"**{item['author']}**: {item['text']}" for item in notes]
   await interaction.respond(Draft("\n".join(lines) or "No notes yet.", ephemeral=True))

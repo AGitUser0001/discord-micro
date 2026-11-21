@@ -8,10 +8,10 @@ store, so they survive restarts and work from every replica.
 
 from typing import Annotated
 
-from micro.discord import Commands, Context, Draft, Interaction, Option
+from micro.discord import Commands, Context, Draft, Err, Interaction, Ok, Option
 from micro.discord.interactions import RuntimeCommands
 from micro.service import Service
-from micro.store import GraphModule, StoreClient
+from micro.store import GraphModule, StoreClient, StoreError
 
 CUSTOM = GraphModule(
   id="example.custom",
@@ -63,11 +63,13 @@ def store() -> StoreClient:
 
 @dynamic.handler
 async def run(ctx: Context, interaction: Interaction) -> None:
-  result = await store().execute(
-    "query($g: ID!, $n: String!) { custom(guildId: $g, name: $n) { text } }",
-    variables={"g": interaction.guild_id, "n": interaction.command_name},
-  )
-  found = ((result.get("data") or {}).get("custom")) or {}
+  data = (
+    await store().execute(
+      "query($g: ID!, $n: String!) { custom(guildId: $g, name: $n) { text } }",
+      variables={"g": interaction.guild_id, "n": interaction.command_name},
+    )
+  ).unwrap()
+  found = data.get("custom") or {}
   await interaction.respond(
     Draft(found.get("text") or "That command was removed.", ephemeral=True)
   )
@@ -87,12 +89,16 @@ async def add(
   if name == "custom":
     await interaction.respond(Draft("That name is taken.", ephemeral=True))
     return
-  await store().execute(
+  match await store().execute(
     "mutation($g: ID!) { addGuild(id: $g) { id } }",
     variables={"g": interaction.guild_id},
-  )  # already there is fine: a CONFLICT is reported, the data is untouched
+  ):
+    case Ok() | Err(StoreError(code="CONFLICT")):
+      pass  # made now, or already there
+    case Err(error):
+      raise error
   variables = {"g": interaction.guild_id, "n": name, "t": text}
-  created = await store().execute(
+  match await store().execute(
     """
     mutation($g: ID!, $n: String!, $t: String!) {
       addCustom(guildId: $g, name: $n, text: $t) { name }
@@ -100,13 +106,19 @@ async def add(
     }
     """,
     variables=variables,
-  )
-  if created.get("errors"):  # it exists: change its text
-    await store().execute(
-      "mutation($g: ID!, $n: String!, $t: String!) "
-      "{ editCustom(guildId: $g, name: $n, text: $t) { name } }",
-      variables=variables,
-    )
+  ):
+    case Ok():
+      pass
+    case Err(StoreError(code="CONFLICT")):  # it exists: change its text
+      (
+        await store().execute(
+          "mutation($g: ID!, $n: String!, $t: String!) "
+          "{ editCustom(guildId: $g, name: $n, text: $t) { name } }",
+          variables=variables,
+        )
+      ).unwrap()
+    case Err(error):
+      raise error
   try:
     await dynamic.add(name, "Custom command", guild_id=interaction.guild_id)
   except ValueError:
@@ -124,11 +136,13 @@ async def remove(
   ctx: Context, interaction: Interaction, name: Annotated[str, Option("Its name")]
 ) -> None:
   name = name.lower().lstrip("/")
-  result = await store().execute(
-    "mutation($g: ID!, $n: String!) { removeCustom(guildId: $g, name: $n) }",
-    variables={"g": interaction.guild_id, "n": name},
-  )
-  gone = ((result.get("data") or {}).get("removeCustom")) is True
+  data = (
+    await store().execute(
+      "mutation($g: ID!, $n: String!) { removeCustom(guildId: $g, name: $n) }",
+      variables={"g": interaction.guild_id, "n": name},
+    )
+  ).unwrap()
+  gone = data.get("removeCustom") is True
   if gone and interaction.guild_id is not None:
     await dynamic.remove(name, guild_id=interaction.guild_id)
   await interaction.respond(
@@ -138,11 +152,13 @@ async def remove(
 
 @custom.command("list", description="Show this server's custom commands")
 async def list_commands(ctx: Context, interaction: Interaction) -> None:
-  result = await store().execute(
-    "query($g: ID!) { guild(id: $g) { commands { name } } }",
-    variables={"g": interaction.guild_id},
-  )
-  guild = (result.get("data") or {}).get("guild") or {}
+  data = (
+    await store().execute(
+      "query($g: ID!) { guild(id: $g) { commands { name } } }",
+      variables={"g": interaction.guild_id},
+    )
+  ).unwrap()
+  guild = data.get("guild") or {}
   names = sorted(item["name"] for item in guild.get("commands") or [])
   await interaction.respond(
     Draft(" ".join(f"`/{name}`" for name in names) or "None yet.", ephemeral=True)

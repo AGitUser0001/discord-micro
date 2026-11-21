@@ -1,12 +1,15 @@
 import asyncio
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
 from micro import log
 from micro.coordination import Declarations
+from micro.errors import MicroError
+from micro.result import Err, Ok, Result
 from micro.runtime import Runtime, default_backoff
 from micro.service import Client, RequestSchema, Service
 
@@ -136,6 +139,27 @@ class Store(Service):
     return await self.engine.execute(body)
 
 
+@dataclass(eq=False)
+class StoreError(MicroError):
+  """The store refused an operation: a mistake in the query (unknown field, bad argument),
+  a refused write (`code="CONFLICT"`: the key exists), or a busy store
+  (`code="UNAVAILABLE"`, `retryable`). The first of the store's errors; all are in
+  `errors`."""
+
+  message: str
+  code: str | None = None
+  """The store's error code (`CONFLICT`, `INVALID`, `UNAVAILABLE`, ...), if it gave one."""
+  retryable: bool = False
+  """Whether trying the same operation again may succeed."""
+  path: tuple[str | int, ...] = ()
+  """Which field of the operation failed, if one did."""
+  errors: tuple[dict[str, Any], ...] = ()
+  """Every error the store returned, as GraphQL formats them."""
+
+  def __str__(self) -> str:
+    return f"{self.code}: {self.message}" if self.code else self.message
+
+
 class StoreClient:
   """Executes GraphQL against whichever store replica answers."""
 
@@ -148,11 +172,35 @@ class StoreClient:
     *,
     variables: dict[str, Any] | None = None,
     operation_name: str | None = None,
-  ) -> dict[str, Any]:
-    """Run a GraphQL query or mutation; returns `{"data", "errors"}` and raises only if the store cannot be reached."""
-    return await self._client.request(
+  ) -> Result[dict[str, Any], StoreError]:
+    """Run a GraphQL query or mutation.
+
+    Returns:
+      `Ok(data)`, the operation's `data`; or `Err(StoreError)` when the store refused it
+      (a mistake in the query, `CONFLICT`, `UNAVAILABLE`). The store never answers with
+      part of the data: an operation succeeds or fails whole.
+
+    Raises:
+      RoutingError, RequestTimeoutError: The store could not be reached. That is broken
+        infrastructure, not an answer, so it raises.
+    """
+    response: dict[str, Any] = await self._client.request(
       STORE_EXECUTE,
       GraphQLBody.model_validate(
         {"query": query, "variables": variables, "operationName": operation_name}
       ),
     )
+    errors = response.get("errors")
+    if errors:
+      first = errors[0]
+      extensions = first.get("extensions") or {}
+      return Err(
+        StoreError(
+          message=str(first.get("message", "")),
+          code=None if extensions.get("code") is None else str(extensions["code"]),
+          retryable=bool(extensions.get("retryable")),
+          path=tuple(first.get("path") or ()),
+          errors=tuple(errors),
+        )
+      )
+    return Ok(response.get("data") or {})

@@ -41,8 +41,10 @@ you ask for them with your own queries. Nothing decides what a record looks like
    )
    service.uses(WARNINGS)                       # the Store process serves it
 
-   await ctx.store.execute('mutation($g: ID!, $u: ID!) { warn(guildId: $g, userId: $u) { count } }',
-                           variables={"g": str(guild_id), "u": str(user_id)})
+   data = (await ctx.store.execute(
+     'mutation($g: ID!, $u: ID!) { warn(guildId: $g, userId: $u) { count } }',
+     variables={"g": str(guild_id), "u": str(user_id)},
+   )).unwrap()                                  # Ok(data), or Err(StoreError): see the Store page
 
 The Store keeps its data on disk, answers queries, and makes the steps of one mutation
 all-or-nothing. See :doc:`store` for the schema language.

@@ -7,7 +7,7 @@ from ._compiler import (
   physical_type,
 )
 from ._module import GraphModule
-from ._service import STORE_EXECUTE, Store, StoreClient
+from ._service import STORE_EXECUTE, Store, StoreClient, StoreError
 from ._store import (
   CompiledOperation,
   GraphBackendError,
@@ -89,6 +89,7 @@ __all__ = (
   "ResultShaper",
   "Store",
   "StoreClient",
+  "StoreError",
   "TypeDirectiveBindContext",
   "TypeDirectiveBinding",
   "TypeDirectiveMetadata",
