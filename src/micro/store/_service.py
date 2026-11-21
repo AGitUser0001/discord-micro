@@ -2,7 +2,7 @@ import asyncio
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import JsonValue
 
@@ -141,14 +141,13 @@ class Store(Service):
 
 @dataclass(eq=False)
 class StoreError(MicroError):
-  """The store refused an operation: a mistake in the query (unknown field, bad argument),
-  a refused write (`code="CONFLICT"`: the key exists), or a busy store
-  (`code="UNAVAILABLE"`, `retryable`). The first of the store's errors; all are in
-  `errors`."""
+  """The store refused an operation. Raised as the subclass for its kind, so
+  `except Conflict:` and `result.ignore(Conflict)` work: `Conflict`, `Unavailable`,
+  `Invalid` or `BadQuery`. It is the first of the store's errors; all are in `errors`."""
 
   message: str
-  code: str | None = None
-  """The store's error code (`CONFLICT`, `INVALID`, `UNAVAILABLE`, ...), if it gave one."""
+  code: Literal["CONFLICT", "UNAVAILABLE", "INVALID"] | None = None
+  """The store's error code; None for a mistake in the query (`BadQuery`)."""
   retryable: bool = False
   """Whether trying the same operation again may succeed."""
   path: tuple[str | int, ...] = ()
@@ -158,6 +157,32 @@ class StoreError(MicroError):
 
   def __str__(self) -> str:
     return f"{self.code}: {self.message}" if self.code else self.message
+
+
+class Conflict(StoreError):
+  """A write the store refused because the key exists (an insert or connect of something
+  already there): update it instead, or `result.ignore(Conflict)` to mean "already there"."""
+
+
+class Unavailable(StoreError):
+  """The store is busy or still starting; the same operation may work if tried again."""
+
+
+class Invalid(StoreError):
+  """The store's backend refused the operation's statement."""
+
+
+class BadQuery(StoreError):
+  """A mistake in the query itself: a syntax error, an unknown field, a missing argument,
+  a value of the wrong type. Trying again will not help; the query must change."""
+
+
+_KINDS: dict[str | None, type[StoreError]] = {
+  "CONFLICT": Conflict,
+  "UNAVAILABLE": Unavailable,
+  "INVALID": Invalid,
+  None: BadQuery,
+}
 
 
 class StoreClient:
@@ -194,11 +219,13 @@ class StoreClient:
     if errors:
       first = errors[0]
       extensions = first.get("extensions") or {}
+      code = extensions.get("code")
+      kind = _KINDS.get(code, StoreError)
       return Err(
-        StoreError(
+        kind(
           message=str(first.get("message", "")),
-          code=None if extensions.get("code") is None else str(extensions["code"]),
-          retryable=bool(extensions.get("retryable")),
+          code=code if code in ("CONFLICT", "UNAVAILABLE", "INVALID") else None,
+          retryable=bool(extensions.get("retryable")) or kind is Unavailable,
           path=tuple(first.get("path") or ()),
           errors=tuple(errors),
         )

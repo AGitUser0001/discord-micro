@@ -11,7 +11,7 @@ from typing import Annotated
 from micro.discord import Commands, Context, Draft, Err, Interaction, Ok, Option
 from micro.discord.interactions import RuntimeCommands
 from micro.service import Service
-from micro.store import GraphModule, StoreClient, StoreError
+from micro.store import Conflict, GraphModule, StoreClient
 
 CUSTOM = GraphModule(
   id="example.custom",
@@ -89,14 +89,12 @@ async def add(
   if name == "custom":
     await interaction.respond(Draft("That name is taken.", ephemeral=True))
     return
-  match await store().execute(
-    "mutation($g: ID!) { addGuild(id: $g) { id } }",
-    variables={"g": interaction.guild_id},
-  ):
-    case Ok() | Err(StoreError(code="CONFLICT")):
-      pass  # made now, or already there
-    case Err(error):
-      raise error
+  (
+    await store().execute(
+      "mutation($g: ID!) { addGuild(id: $g) { id } }",
+      variables={"g": interaction.guild_id},
+    )
+  ).ignore(Conflict)  # made now, or already there
   variables = {"g": interaction.guild_id, "n": name, "t": text}
   match await store().execute(
     """
@@ -109,7 +107,7 @@ async def add(
   ):
     case Ok():
       pass
-    case Err(StoreError(code="CONFLICT")):  # it exists: change its text
+    case Err(Conflict()):  # it exists: change its text
       (
         await store().execute(
           "mutation($g: ID!, $n: String!, $t: String!) "

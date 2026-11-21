@@ -268,16 +268,28 @@ Errors
 .. code-block:: python
 
    from micro.discord import Err, Ok
-   from micro.store import StoreError
+   from micro.store import Conflict, Unavailable
 
    match await store.execute(...):
      case Ok(data): ...
-     case Err(StoreError(code="CONFLICT")): ...    # the key exists: "already there"
-     case Err(StoreError(retryable=True)): ...     # the store is busy or starting
-     case Err(error): raise error                   # a mistake in the query
+     case Err(Conflict()): ...         # the key exists: "already there"
+     case Err(Unavailable()): ...      # the store is busy or starting: try again
+     case Err(error): raise error      # a mistake in the query, or the backend refused it
 
-``StoreError`` has the first error's ``message``, ``code`` (``"CONFLICT"``, ``"INVALID"``,
-``"UNAVAILABLE"``, ...), ``retryable`` and ``path``, and every error in ``errors``.
+   (await store.execute(insert)).ignore(Conflict)   # fine if it was already there
+
+Every error is a ``StoreError`` raised as the subclass for its kind, so ``except Conflict:``
+and ``.ignore(Conflict)`` work:
+
+* ``Conflict``: you inserted (or connected) something that exists.
+* ``Unavailable``: the store is busy or still starting; it is ``retryable``.
+* ``Invalid``: the store's backend refused the statement.
+* ``BadQuery``: a mistake in the query itself (a syntax error, an unknown field, a missing
+  argument); trying again will not help.
+
+Each has the first error's ``message``, ``code`` (``"CONFLICT"``, ``"UNAVAILABLE"``,
+``"INVALID"``, or None for ``BadQuery``), ``retryable`` and ``path``, and every error in
+``errors``.
 
 * A mistake in your query (unknown field, missing argument, a bad enum value, ``first``
   out of range) is an ordinary GraphQL error with a message and a location.
@@ -373,6 +385,10 @@ The store is a service-side component plus a client. Everything a service normal
    micro.store.Store
    micro.store.StoreClient
    micro.store.StoreError
+   micro.store.Conflict
+   micro.store.Unavailable
+   micro.store.Invalid
+   micro.store.BadQuery
    micro.store.GraphModule
    micro.store.GraphEngine
    micro.store.GraphExecutor

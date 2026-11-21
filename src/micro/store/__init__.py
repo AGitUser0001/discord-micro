@@ -7,7 +7,16 @@ from ._compiler import (
   physical_type,
 )
 from ._module import GraphModule
-from ._service import STORE_EXECUTE, Store, StoreClient, StoreError
+from ._service import (
+  STORE_EXECUTE,
+  BadQuery,
+  Conflict,
+  Invalid,
+  Store,
+  StoreClient,
+  StoreError,
+  Unavailable,
+)
 from ._store import (
   CompiledOperation,
   GraphBackendError,
@@ -62,7 +71,9 @@ __all__ = (
   "STORE_EXECUTE",
   "UPDATE_DIRECTIVE",
   "ActiveOwnedLookup",
+  "BadQuery",
   "CompiledOperation",
+  "Conflict",
   "DirectiveBindContext",
   "DirectiveBinding",
   "DirectiveCompileContext",
@@ -85,6 +96,7 @@ __all__ = (
   "GraphQLRequest",
   "GraphResult",
   "GraphStatement",
+  "Invalid",
   "MicroGraph",
   "ResultShaper",
   "Store",
@@ -93,6 +105,7 @@ __all__ = (
   "TypeDirectiveBindContext",
   "TypeDirectiveBinding",
   "TypeDirectiveMetadata",
+  "Unavailable",
   "compose_graph",
   "entity_identity",
   "physical_field",

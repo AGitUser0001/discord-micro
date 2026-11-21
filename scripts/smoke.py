@@ -4535,6 +4535,8 @@ async def store_scenarios() -> None:
   print("store: the behavior docs/store.rst promises")
   from micro.result import Err, Ok
   from micro.store import (
+    BadQuery,
+    Conflict,
     GraphEngine,
     GraphModule,
     GraphQLBody,
@@ -4936,12 +4938,18 @@ async def store_scenarios() -> None:
         result,
       )
       again = await client.execute('mutation { addTag(name: "py", uses: 1) { name } }')
+      broken = await client.execute("{ noSuchField }")
       check(
-        "a refused write is an Err holding a StoreError with the store's code",
+        "a refused write is a Conflict (so .ignore(Conflict) works), a broken query a BadQuery",
         isinstance(again, Err)
+        and isinstance(again.error, Conflict)
         and isinstance(again.error, StoreError)
-        and again.error.code == "CONFLICT",
-        again,
+        and again.error.code == "CONFLICT"
+        and again.ignore(Conflict) is None
+        and isinstance(broken, Err)
+        and isinstance(broken.error, BadQuery)
+        and broken.error.code is None,
+        (again, broken),
       )
       (
         await client.execute(

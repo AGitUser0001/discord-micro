@@ -129,7 +129,7 @@ class GraphBackendError(GraphQLError, BackendExecutionError):
     self,
     message: str,
     *,
-    code: Literal["CONFLICT", "UNAVAILABLE", "INVALID", "INTERNAL"],
+    code: Literal["CONFLICT", "UNAVAILABLE", "INVALID"],
     retryable: bool = False,
   ) -> None:
     super().__init__(
@@ -295,7 +295,11 @@ class GraphEngine:
   async def execute(self, body: GraphQLBody) -> dict[str, JsonValue]:
     """Run one operation; failures are GraphQL `errors`, never exceptions."""
     if not self._available:
-      error: dict[str, JsonValue] = {"message": "Store graph is unavailable."}
+      # Still composing its modules (or a module failed to compose): try again.
+      error: dict[str, JsonValue] = {
+        "message": "Store graph is unavailable.",
+        "extensions": {"code": "UNAVAILABLE", "retryable": True},
+      }
       if self._error is not None:
         error["detail"] = self._error
       return {"data": None, "errors": [error]}
