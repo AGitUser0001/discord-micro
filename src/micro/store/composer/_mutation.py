@@ -170,6 +170,9 @@ class EntityMutation:
 class DeleteMutation:
   entity: Entity
   key: KeyBinding
+  cascade: tuple[tuple[tuple[str, str, str], ...], ...] = ()
+  """Every chain of `@cascade` fields from the entity, as (owner, field, target) steps,
+  the longest first."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,30 +511,61 @@ def _attach_delete(context: DirectiveBindContext) -> DeleteMutation:
   )
   if key.key_fields not in entity.keys:
     raise GraphCompositionError("@delete key does not match an @entity key.")
-  return DeleteMutation(entity, key)
+  paths = sorted(_cascade_paths(entity, context.entities), key=len, reverse=True)
+  return DeleteMutation(entity, key, tuple(paths))
 
 
 def _compile_delete(context: DirectiveCompileContext) -> DirectiveResult:
-  from .._compiler import entity_identity, physical_type
+  from .._compiler import entity_identity, physical_reference, physical_type
 
   binding = context.binding
   if not isinstance(binding, DeleteMutation):
     raise TypeError("@delete received invalid attached metadata.")
   parameter = f"{context.parameter_prefix}_identity"
+  identity = entity_identity(
+    binding.entity.name, binding.key.evaluate(context.arguments)
+  )
+  # What it owns through @cascade fields goes first, the deepest level first, so every
+  # level is still reachable from the row when it is deleted.
+  before = tuple(
+    (
+      f"MATCH (root:{physical_type(binding.entity.name)})"
+      + "".join(
+        f"-[:{physical_reference(f'{owner}.{field}')}]->(n{index}:{physical_type(target)})"
+        for index, (owner, field, target) in enumerate(path)
+      )
+      + f" WHERE root._micro_id = ${parameter} DETACH DELETE n{len(path) - 1}",
+      {parameter: identity},
+    )
+    for path in binding.cascade
+  )
   return DirectiveResult(
     (
       f"MATCH ({context.variable}:{physical_type(binding.entity.name)})",
       f"WHERE {context.variable}._micro_id = ${parameter}",
       f"DETACH DELETE {context.variable}",
     ),
-    {
-      parameter: entity_identity(
-        binding.entity.name, binding.key.evaluate(context.arguments)
-      )
-    },
+    {parameter: identity},
     "",
     "true",
+    before=before,
   )
+
+
+def _cascade_paths(
+  entity: Entity, entities: Mapping[str, Entity]
+) -> list[tuple[tuple[str, str, str], ...]]:
+  """Every chain of `@cascade` fields from `entity`, as (owner, field, target) steps."""
+  paths: list[tuple[tuple[str, str, str], ...]] = []
+
+  def walk(owner: Entity, path: tuple[tuple[str, str, str], ...]) -> None:
+    for field, target in owner.cascades:
+      step = (*path, (owner.name, field, target))
+      paths.append(step)
+      walk(entities[target], step)
+
+  walk(entity, ())
+  return paths
 
 
 def _attach_relationship(

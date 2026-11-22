@@ -4790,6 +4790,113 @@ async def store_scenarios() -> None:
       outcomes,
     )
 
+    owned = SQLiteGraph(os.path.join(raw, "cascade.db"))
+    await owned.start()
+    owners = GraphEngine(owned)
+    await owners.apply_modules(
+      [
+        GraphModule(
+          id="owners",
+          schema="""
+            type User @entity(key: ["id"]) {
+              id: ID!  bots: [Bot!]! @cascade  favorites: [Installation!]!
+            }
+            type Bot @entity(key: ["id"]) { id: ID!  installations: [Installation!]! @cascade }
+            type Installation @entity(key: ["id"]) { id: ID!  storage: [Storage!]! @cascade }
+            type Storage @entity(key: ["id"]) { id: ID! }
+            type Query {
+              user(id: ID!): User @from(key: {id: id})
+              bot(id: ID!): Bot @from(key: {id: id})
+              installation(id: ID!): Installation @from(key: {id: id})
+              storage(id: ID!): Storage @from(key: {id: id})
+            }
+            type Mutation {
+              addUser(id: ID!): User! @insert(key: {id: id}, set: {id: id})
+              addBot(id: ID!): Bot! @insert(key: {id: id}, set: {id: id})
+              addInstallation(id: ID!): Installation! @insert(key: {id: id}, set: {id: id})
+              addStorage(id: ID!): Storage! @insert(key: {id: id}, set: {id: id})
+              own(user: ID!, bot: ID!): Boolean
+                @connect(fromType: "User", fromKey: {id: user}, toType: "Bot", toKey: {id: bot}, field: "bots")
+              install(bot: ID!, installation: ID!): Boolean
+                @connect(fromType: "Bot", fromKey: {id: bot}, toType: "Installation",
+                         toKey: {id: installation}, field: "installations")
+              keep(installation: ID!, storage: ID!): Boolean
+                @connect(fromType: "Installation", fromKey: {id: installation}, toType: "Storage",
+                         toKey: {id: storage}, field: "storage")
+              favorite(user: ID!, installation: ID!): Boolean
+                @connect(fromType: "User", fromKey: {id: user}, toType: "Installation",
+                         toKey: {id: installation}, field: "favorites")
+              deleteBot(id: ID!): Boolean @delete(type: "Bot", key: {id: id})
+              deleteUser(id: ID!): Boolean @delete(type: "User", key: {id: id})
+            }
+          """,
+        )
+      ]
+    )
+    setup = " ".join(
+      [
+        *(f'{n}: addUser(id: "{n}") {{ id }}' for n in ("u1", "u2")),
+        *(f'{n}: addBot(id: "{n}") {{ id }}' for n in ("b1", "b2")),
+        *(f'{n}: addInstallation(id: "{n}") {{ id }}' for n in ("i1", "i2", "i3")),
+        *(f'{n}: addStorage(id: "{n}") {{ id }}' for n in ("s1", "s2")),
+        'o1: own(user: "u1", bot: "b1") o2: own(user: "u1", bot: "b2")',
+        'n1: install(bot: "b1", installation: "i1") n2: install(bot: "b1", installation: "i2")',
+        'n3: install(bot: "b2", installation: "i3")',
+        'k1: keep(installation: "i1", storage: "s1") k2: keep(installation: "i3", storage: "s2")',
+        'f1: favorite(user: "u2", installation: "i1")',
+      ]
+    )
+    await ask(owners, f"mutation {{ {setup} }}")
+
+    async def alive() -> list[str]:
+      found = await ask(
+        owners,
+        "{ "
+        + " ".join(
+          f'{n}: {kind}(id: "{n}") {{ id }}'
+          for kind, names in (
+            ("user", ("u1", "u2")),
+            ("bot", ("b1", "b2")),
+            ("installation", ("i1", "i2", "i3")),
+            ("storage", ("s1", "s2")),
+          )
+          for n in names
+        )
+        + " }",
+      )
+      return sorted(name for name, value in found["data"].items() if value)
+
+    await ask(owners, 'mutation { deleteBot(id: "b1") }')
+    after_bot = await alive()
+    favorites = await ask(owners, '{ user(id: "u2") { favorites { id } } }')
+    await ask(owners, 'mutation { deleteUser(id: "u1") }')
+    after_user = await alive()
+    try:
+      await GraphEngine(owned).apply_modules(
+        [
+          GraphModule(
+            id="loop",
+            schema="""
+              type A @entity(key: ["id"]) { id: ID!  bs: [B!]! @cascade }
+              type B @entity(key: ["id"]) { id: ID!  as: [A!]! @cascade }
+              type Query { a(id: ID!): A @from(key: {id: id}) }
+            """,
+          )
+        ]
+      )
+      loop = ""
+    except Exception as error:
+      loop = str(error)
+    check(
+      "@cascade deletes what a row owns, level by level; shared rows only lose the edge;"
+      " a loop is refused",
+      after_bot == ["b2", "i3", "s2", "u1", "u2"]
+      and favorites == {"data": {"user": {"favorites": []}}}
+      and after_user == ["u2"]
+      and "loops" in loop,
+      (after_bot, favorites, after_user, loop),
+    )
+
     maps = SQLiteGraph(os.path.join(raw, "maps.db"))
     await maps.start()
     map_engine = GraphEngine(maps)

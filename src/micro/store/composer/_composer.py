@@ -1,3 +1,4 @@
+import dataclasses
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -7,11 +8,13 @@ from typing import Any, cast
 from graphql import (
   DocumentNode,
   FieldDefinitionNode,
+  GraphQLObjectType,
   GraphQLSchema,
   ObjectTypeDefinitionNode,
   ObjectTypeExtensionNode,
   OperationType,
   build_ast_schema,
+  get_named_type,
   parse,
   print_ast,
 )
@@ -87,6 +90,9 @@ class Entity:
   fields: frozenset[str]
   maps: tuple[tuple[str, str, str], ...] = ()
   """`(field, key scalar, value scalar)` for each `Map @map(key: K, value: V)` field."""
+  cascades: tuple[tuple[str, str], ...] = ()
+  """`(field, entity type)` for each `@cascade` field: deleting one of these deletes what
+  the field points to (and so on, down their own `@cascade` fields)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +157,7 @@ def compose_graph(
     if (binding := bindings_for_type.get("entity")) is not None
     and isinstance(binding.value, Entity)
   }
+  entities = _with_cascades(schema_document, schema, entities, type_bindings)
   bindings = _collect_bindings(schema_document, schema, entities, directive_map)
   return MicroGraph(
     schema,
@@ -165,6 +172,51 @@ def compose_graph(
       }
     ),
   )
+
+
+def _with_cascades(
+  document: DocumentNode,
+  schema: GraphQLSchema,
+  entities: Mapping[str, Entity],
+  type_bindings: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Entity]:
+  """`entities` with their `@cascade` fields resolved to the entity type each points at
+  (through an `@edge` entry type to its target); a cascade that loops is refused."""
+  found: dict[str, list[tuple[str, str]]] = {}
+  for definition in document.definitions:
+    if not isinstance(definition, ObjectTypeDefinitionNode | ObjectTypeExtensionNode):
+      continue
+    for field in definition.fields or ():
+      if not any(item.name.value == "cascade" for item in field.directives or ()):
+        continue
+      where = f"{definition.name.value}.{field.name.value}"
+      if definition.name.value not in entities:
+        raise GraphCompositionError(f"@cascade on {where}: only @entity types cascade.")
+      target = _named_type(field.type)
+      edge = type_bindings.get(target, {}).get("edge")
+      if edge is not None and isinstance(edge.value, EdgeType):
+        entry = schema.get_type(target)
+        assert isinstance(entry, GraphQLObjectType)
+        target = get_named_type(entry.fields[edge.value.target].type).name
+      if target not in entities:
+        raise GraphCompositionError(
+          f"@cascade on {where}: the field must point at @entity rows."
+        )
+      found.setdefault(definition.name.value, []).append((field.name.value, target))
+
+  def visit(name: str, path: tuple[str, ...]) -> None:
+    for _, target in found.get(name, ()):
+      if target in path:
+        loop = " -> ".join((*path[path.index(target) :], target))
+        raise GraphCompositionError(f"@cascade loops: {loop}.")
+      visit(target, (*path, target))
+
+  for name in found:
+    visit(name, (name,))
+  return {
+    name: dataclasses.replace(entity, cascades=tuple(found.get(name, ())))
+    for name, entity in entities.items()
+  }
 
 
 def _merge_documents(
@@ -229,6 +281,7 @@ def _merge_documents(
     (
       "scalar GQL",
       "directive @map(key: String!, value: String!) on FIELD_DEFINITION",
+      "directive @cascade on FIELD_DEFINITION",
       *(item.definition for item in type_directives),
       *(item.definition for item in directives),
     )

@@ -333,7 +333,7 @@ class _Run:
     if not paths:
       yield row
       return
-    for extended in self._path(list(paths[0].factors), row, lookups, None):
+    for extended in self._path(list(paths[0].factors), row, lookups):
       yield from self._paths(paths[1:], extended, lookups)
 
   def _path(
@@ -341,7 +341,6 @@ class _Run:
     factors: list[Any],
     row: _Row,
     lookups: Mapping[str, Any],
-    previous: _Node | None,
   ) -> Iterator[_Row]:
     if not factors:
       yield row
@@ -352,40 +351,47 @@ class _Run:
       raise Unsupported(f"pattern element {kind}")
     name, label = _filler(head.element_pattern_filler)
     for node in self._nodes(name, label, row, lookups):
-      bound = {**row, name: node} if name else row
-      if len(factors) == 1:
-        yield bound
+      yield from self._walk(
+        factors[1:], {**row, name: node} if name else row, lookups, node
+      )
+
+  def _walk(
+    self, factors: list[Any], row: _Row, lookups: Mapping[str, Any], node: _Node
+  ) -> Iterator[_Row]:
+    """The rest of a path from `node`: (edge, node) pairs, as many hops as there are."""
+    if not factors:
+      yield row
+      return
+    edge_pattern, target_pattern, rest = factors[0], factors[1], factors[2:]
+    edge_kind = type(edge_pattern).__name__
+    if edge_kind not in ("FullEdgePointingRight", "FullEdgePointingLeft"):
+      raise Unsupported(f"edge pattern {edge_kind}")
+    edge_name, edge_label = _filler(edge_pattern.element_pattern_filler)
+    if edge_label is None:
+      raise Unsupported("edges without a label")
+    outgoing = edge_kind == "FullEdgePointingRight"
+    next_name, next_label = _filler(target_pattern.element_pattern_filler)
+    for edge in self.edges(node, edge_label, outgoing):
+      target = self.node(edge.dst if outgoing else edge.src)
+      if target.deleted:
         continue
-      edge_pattern, rest = factors[1], factors[2:]
-      edge_kind = type(edge_pattern).__name__
-      if edge_kind not in ("FullEdgePointingRight", "FullEdgePointingLeft"):
-        raise Unsupported(f"edge pattern {edge_kind}")
-      edge_name, edge_label = _filler(edge_pattern.element_pattern_filler)
-      if edge_label is None:
-        raise Unsupported("edges without a label")
-      outgoing = edge_kind == "FullEdgePointingRight"
-      for edge in self.edges(node, edge_label, outgoing):
-        target = self.node(edge.dst if outgoing else edge.src)
-        if target.deleted:
+      if next_label is not None and target.label != next_label:
+        continue
+      if next_name and next_name in row and row[next_name] is not target:
+        continue
+      if next_name is not None and next_name in lookups:
+        try:
+          expected = self.eval(lookups[next_name], row)
+        except _Unbound:
+          expected = None
+        if expected is not None and target.micro_id != str(expected):
           continue
-        next_name, next_label = _filler(rest[0].element_pattern_filler)
-        if next_label is not None and target.label != next_label:
-          continue
-        if next_name and next_name in bound and bound[next_name] is not target:
-          continue
-        if next_name is not None and next_name in lookups:
-          try:
-            expected = self.eval(lookups[next_name], bound)
-          except _Unbound:
-            expected = None
-          if expected is not None and target.micro_id != str(expected):
-            continue
-        extended = dict(bound)
-        if edge_name:
-          extended[edge_name] = edge
-        if next_name:
-          extended[next_name] = target
-        yield from self._path(rest[1:], extended, lookups, target)
+      extended = dict(row)
+      if edge_name:
+        extended[edge_name] = edge
+      if next_name:
+        extended[next_name] = target
+      yield from self._walk(rest, extended, lookups, target)
 
   def _nodes(
     self, name: str | None, label: str | None, row: _Row, lookups: Mapping[str, Any]

@@ -343,6 +343,18 @@ An entity-typed field is an **edge** to another entity. You make and remove edge
 * A list-valued field (``[Command!]!``) holds many; a single-valued one (``guild: Guild``)
   holds one.
 * Edges go one way. For both directions, declare both fields and connect both.
+* **Owned rows: ``@cascade``.** Mark a field ``@cascade`` and deleting its row deletes
+  what the field points at, then what *those* rows own through their own ``@cascade``
+  fields, all in the delete's transaction. A row that is also linked from elsewhere is
+  deleted all the same; the other link just disappears. A cascade that loops back to a
+  type it started from does not compose::
+
+     type User @entity(key: ["id"]) { id: ID!  bots: [Bot!]! @cascade }
+     type Bot  @entity(key: ["id"]) { id: ID!  installations: [Installation!]! @cascade }
+     # deleting a User deletes its bots, and every bot's installations
+
+  Only mark fields whose rows mean nothing without the parent: ``@cascade`` on a list of
+  things others share ("users who favorited this") deletes them for everyone.
 * ``@connect`` returns true, or ``null`` if either end does not exist. ``@disconnect``
   removes only the edge. Deleting an entity removes its edges.
 * This is how you ask for "everything of this kind that belongs to that guild": give
