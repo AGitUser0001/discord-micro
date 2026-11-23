@@ -61,7 +61,6 @@ class CommandSync(Component):
     self._changed = asyncio.Event()
     self.synced = asyncio.Event()
     """Set after each successful pass."""
-    self._application_id: str | None = None
     self._verified = False
 
   async def on_start(self) -> None:
@@ -131,17 +130,17 @@ class CommandSync(Component):
     `verify` also compares scopes that look up to date with what Discord has.
     """
     from micro.discord import DiscordHTTPClient
+    from micro.discord.state import DiscordState
 
     http = DiscordHTTPClient(self.runtime)
-    if self._application_id is None:
-      self._application_id = str((await http.call("get_my_application"))["id"])
+    application_id = str((await DiscordState(self.runtime).application()).id)
     locks = await self.runtime.locks()
     async with locks.hold(SYNC_LOCK, ttl=30):
       try:
         changed = await sync_commands(
           self.runtime,
           http,
-          self._application_id,
+          application_id,
           verify=verify or not self._verified,
         )
       except SyncFailed:

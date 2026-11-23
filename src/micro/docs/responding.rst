@@ -19,7 +19,8 @@ A context carries everything a handler reaches for, apart from the runtime:
 * ``ctx.api``: every Discord operation (:doc:`api`).
 * ``ctx.state``: what the Gateway connections hold (:doc:`state`), including the bot's own
   user (``await ctx.state.me()``), every guild it is in (``await ctx.state.guilds()``) and your
-  own application, fetched once (``await ctx.state.application()``, ``owner_ids()``).
+  own application, fetched once for the deployment (``await ctx.state.application()``,
+  ``owner_ids()``; ``refresh=True`` refetches it for every process).
 * ``ctx.gateway``: the connections themselves: presence (``update_presence``), voice
   (``update_voice_state``), member lists (``request_guild_members``), ``status()``, intents.
 * ``ctx.timers``: schedule something for later, cancel it, list what is pending.

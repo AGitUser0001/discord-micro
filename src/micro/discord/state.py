@@ -26,13 +26,13 @@ every shard at once: whichever shards know it answer, and the newest copy of a u
 A shard that is down simply does not contribute.
 
 The one thing that does come from Discord is your own application (`application()`,
-`owner_ids()`): fetched once per process and then kept, with `refresh=True` to fetch it again.
+`owner_ids()`): fetched once for the whole deployment and shared through NATS; one
+`refresh=True` fetches it again for every process.
 """
 
 import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from weakref import WeakKeyDictionary
 
 from nats.errors import NoRespondersError
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -61,17 +61,8 @@ if TYPE_CHECKING:
   from micro.runtime import Runtime
 
 
-class _Cached:
-  """The application of one runtime, fetched once."""
-
-  def __init__(self) -> None:
-    self.value: Application | None = None
-    self.lock = asyncio.Lock()
-
-
-_applications: WeakKeyDictionary[Any, _Cached] = WeakKeyDictionary()
-"""One per runtime, so every `ctx.state` of a process shares it (an interaction gets a
-fresh context each time)."""
+APPLICATION_KEY = "discord.application"
+"""Where the deployment's one copy of the application lives, in the state bucket."""
 
 ADMINISTRATOR = Permissions.ADMINISTRATOR
 ALL_PERMISSIONS = Permissions((1 << 53) - 1)
@@ -107,31 +98,31 @@ class DiscordState:
     """The `Context` the objects it returns are bound to (`ctx.state` has it)."""
 
   async def application(self, *, refresh: bool = False) -> Application:
-    """Your application: fetched from Discord once, then kept (per process), so asking again
-    costs nothing. Pass `refresh=True` after changing it (a new owner, a team member) to
-    fetch it again. It is the one thing here that comes from Discord and not the Gateway;
-    `ctx.api.get_my_application()` is the call itself, uncached.
+    """Your application. The deployment keeps one copy, in NATS: the first ask fetches it
+    from Discord, every later one (from any process) reads that copy. Discord says nothing
+    when it changes, so after changing it (a new owner, a team member) pass
+    `refresh=True` once: it fetches it again and every process sees the new one.
+    `ctx.api.get_my_application()` is the Discord call itself, uncached.
 
     Raises:
       DiscordAPIError: Discord refused the request (only on a fetch).
     """
-    cache = _applications.setdefault(self.runtime, _Cached())
-    async with cache.lock:
-      if cache.value is None or refresh:
-        if self._context is not None:
-          api = self._context.api
-        else:
-          from micro.discord.http_service import DiscordHTTPClient
+    table = await self.runtime.table(subjects.STATE_BUCKET, dict[str, JsonValue])
+    stored = None if refresh else await table.get(APPLICATION_KEY)
+    if stored is not None:
+      return self._make(Application, stored.value)
+    if self._context is not None:
+      api = self._context.api
+    else:
+      from micro.discord.http_service import DiscordHTTPClient
 
-          api = DiscordHTTPClient(self.runtime).api
-        fetched = (await api.get_my_application()).unwrap()
-        cache.value = self._make(
-          Application,
-          # What Discord left out is None in the generated model: leave it out, so the
-          # view's own defaults apply.
-          fetched.model_dump(mode="json", by_alias=True, exclude_none=True),
-        )
-      return cache.value
+      api = DiscordHTTPClient(self.runtime).api
+    fetched = (await api.get_my_application()).unwrap()
+    # What Discord left out is None in the generated model: leave it out, so the view's
+    # own defaults apply.
+    data = fetched.model_dump(mode="json", by_alias=True, exclude_none=True)
+    await table.put(APPLICATION_KEY, data)
+    return self._make(Application, data)
 
   async def owner_ids(self, *, refresh: bool = False) -> frozenset[int]:
     """The ids of who owns the bot: its owner, or, for a team, the owner and every member

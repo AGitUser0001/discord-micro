@@ -1348,31 +1348,57 @@ async def helper_scenarios() -> None:
     fetches.append(1)
     return Ok(Fetched(served[0]))
 
-  state = DiscordState.__new__(DiscordState)
+  shared: dict[str, Any] = {}
+
+  class SharedTable:
+    """The state bucket every process of a deployment sees."""
+
+    async def get(self, key: str) -> Any:
+      return SimpleNamespace(value=shared[key]) if key in shared else None
+
+    async def put(self, key: str, value: Any) -> int:
+      shared[key] = value
+      return 1
 
   class FakeRuntime:
-    pass
+    async def table(self, bucket: str, value_type: Any) -> SharedTable:
+      return SharedTable()
 
-  fake_runtime: Any = FakeRuntime()
-  state.runtime = fake_runtime
-  state._context = SimpleNamespace(
-    api=SimpleNamespace(get_my_application=get_my_application)
-  )
-  first = await state.application()
-  again = await state.application()
+  def process() -> DiscordState:
+    state = DiscordState.__new__(DiscordState)
+    fake_runtime: Any = FakeRuntime()
+    state.runtime = fake_runtime
+    state._context = SimpleNamespace(
+      api=SimpleNamespace(get_my_application=get_my_application)
+    )
+    return state
+
+  one, other = process(), process()
+  first = await one.application()
+  read_elsewhere = await other.owner_ids()
   served[0] = application(owner={"id": "7", "username": "new owner", **generated})
-  cached_ids = await state.owner_ids()
-  refreshed_ids = await state.owner_ids(refresh=True)
+  still = await one.owner_ids()
+  refreshed_ids = await other.owner_ids(refresh=True)
+  seen_by_first = await one.owner_ids()
   check(
-    "the application is fetched once and kept; refresh fetches it again; owners are the "
-    "owner, or a team's owner and accepted members",
+    "the application is fetched once for the deployment; a refresh anywhere is seen "
+    "everywhere; owners are the owner, or a team's owner and accepted members",
     solo.owner_ids == {1}
     and team.owner_ids == {2, 3}
-    and first is again
-    and cached_ids == {1}
+    and first.owner_ids == {1}
+    and read_elsewhere == {1}
+    and still == {1}
     and refreshed_ids == {7}
+    and seen_by_first == {7}
     and len(fetches) == 2,
-    (solo.owner_ids, team.owner_ids, cached_ids, refreshed_ids, len(fetches)),
+    (
+      solo.owner_ids,
+      team.owner_ids,
+      read_elsewhere,
+      still,
+      refreshed_ids,
+      len(fetches),
+    ),
   )
 
   def machine(*groups: str) -> Any:

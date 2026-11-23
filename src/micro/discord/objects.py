@@ -259,7 +259,8 @@ class Team(Object):
 
 class Application(Object):
   """Your application (the bot), as Discord describes it. `ctx.state.application()`
-  fetches it once and keeps it; `ctx.api.get_my_application()` is the uncached call."""
+  reads the deployment's shared copy (fetched once; `refresh=True` refetches it for every
+  process); `ctx.api.get_my_application()` is the uncached call."""
 
   _full = "PrivateApplicationResponse"
 

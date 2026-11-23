@@ -384,8 +384,37 @@ class FakeDiscord:
         }
       )
     if method == "GET" and path in ("/oauth2/applications/@me", "/applications/@me"):
-      return web.json_response(
-        {"id": self.application_id, "name": "fake-bot", "flags": 0, "bot_public": True}
+      return web.json_response(  # every field Discord's application response requires
+        {
+          "id": self.application_id,
+          "name": "fake-bot",
+          "icon": None,
+          "description": "",
+          "type": None,
+          "flags": 0,
+          "flags_new": "0",
+          "verify_key": "0" * 64,
+          "redirect_uris": [],
+          "interactions_endpoint_url": None,
+          "role_connections_verification_url": None,
+          "owner": {
+            "id": "1",
+            "username": "owner",
+            "avatar": None,
+            "discriminator": "0",
+            "public_flags": 0,
+            "flags": 0,
+            "global_name": None,
+            "primary_guild": None,
+          },
+          "approximate_guild_count": 1,
+          "approximate_user_install_count": 0,
+          "approximate_user_authorization_count": 0,
+          "explicit_content_filter": 0,
+          "team": None,
+          "eligible_oauth2_scopes": [],
+          "bot_public": True,
+        }
       )
     if method == "GET" and path == "/users/@me":
       return web.json_response(
