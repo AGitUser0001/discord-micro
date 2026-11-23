@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 import os
+import time
 from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -772,6 +773,7 @@ class GatewayWorker(Component):
   ) -> None:
     """Fold a dispatch into what this connection knows, and publish it if this
     connection owns the shard (one that is only waiting to take over just listens)."""
+    received = time.time()
     held = self._held.get(lease_key(session.generation, session.shard_id))
     if held is None or held.session is not session:
       return  # a connection this worker has let go of
@@ -792,6 +794,8 @@ class GatewayWorker(Component):
       headers[CONNECTION_HEADER] = session.connection_id
     if before is not None:
       headers[subjects.BEFORE_HEADER] = json.dumps(before, separators=(",", ":"))
+    if name == "INTERACTION_CREATE":
+      headers[subjects.RECEIVED_HEADER] = f"{received:.3f}"
     await self._publish_event(subjects.dispatch(name, guild), body, headers)
 
   async def _publish_event(

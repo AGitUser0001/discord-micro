@@ -184,6 +184,7 @@ class InteractionTemplate:
     return self._http
 
   async def _deliver(self, message: Msg) -> None:
+    delivered = time.time()
     payload = json.loads(message.data)
     flow = Flow(
       payload,
@@ -196,11 +197,11 @@ class InteractionTemplate:
     if age > LATE_WARNING:
       log.warning(
         "Interaction %s reached a handler %.1f s after Discord created it "
-        "(Discord allows %d s to answer); the delay is before the handler "
-        "(gateway, NATS, or this machine's clock).",
+        "(Discord allows %d s to answer): %s.",
         flow.interaction.id,
         age,
         RESPONSE_DEADLINE,
+        where_the_time_went(flow.interaction.created_at, message, delivered),
       )
     await self.handle(flow)
 
@@ -254,6 +255,34 @@ async def run_error_hook(hook: ErrorHook, flow: Flow, error: BaseException) -> N
 
 UNKNOWN_INTERACTION = 10062
 """Discord's error code for an interaction it no longer knows: answered too late."""
+
+
+def where_the_time_went(created: float, message: Msg, delivered: float) -> str:
+  """A late interaction's delay, hop by hop, from the times stamped along the way."""
+  headers = message.headers or {}
+  hops = (
+    "until the Gateway had it (Discord, or this machine's clock)",
+    "to publish it",
+    "in the router",
+    "to reach this handler",
+  )
+  points: list[float | None] = [created]
+  for name in (subjects.RECEIVED_HEADER, subjects.EVENT_STORED_HEADER):
+    try:
+      points.append(float(headers[name]))
+    except KeyError, ValueError:
+      points.append(None)
+  stored = getattr(getattr(message, "metadata", None), "timestamp", None)
+  points.append(None if stored is None else stored.timestamp())
+  points.append(delivered)
+  parts = []
+  for index, label in enumerate(hops):
+    start, end = points[index], points[index + 1]
+    if start is not None and end is not None:
+      parts.append(f"{max(0.0, end - start):.1f} s {label}")
+  if len(parts) < len(hops):
+    return "before the handler (gateway, NATS, or this machine's clock)"
+  return ", ".join(parts)
 
 
 def _answered_too_late(error: BaseException) -> bool:

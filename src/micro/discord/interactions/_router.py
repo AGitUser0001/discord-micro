@@ -1,7 +1,8 @@
 """The interaction router: raw INTERACTION_CREATE in, one routed queue item out."""
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, overload
 
 from nats.js.errors import NotFoundError
@@ -36,6 +37,11 @@ RAW_INTERACTION = DispatchSchema[dict[str, Any]](
 
 UNAVAILABLE = "This isn't available right now. Please try again in a moment."
 
+_HOPS: ContextVar[tuple[tuple[str, str], ...]] = ContextVar(
+  "micro_interaction_hops", default=()
+)
+"""The timing headers of the dispatch being routed, passed on with it."""
+
 
 class InteractionRouter(Service):
   """Splits interactions onto per-route work queues.
@@ -69,6 +75,7 @@ class InteractionRouter(Service):
     self._tables: dict[str, RouteTable] | None = None
     self._unwatch: Callable[[], None] | None = None
     self.listen(RAW_INTERACTION)(self._on_interaction)
+    Service.use(self, RAW_INTERACTION.id, self._remember_hops)
 
   @overload
   def use(self, scope: Middleware, /) -> Middleware: ...
@@ -217,6 +224,24 @@ class InteractionRouter(Service):
       log.exception("Interaction middleware failed in %s", self.name)
       await run_error_hook(self._on_error, flow, error)
 
+  async def _remember_hops(
+    self, call: Any, next: Callable[[], Awaitable[None]]
+  ) -> None:
+    """Keep when the Gateway got the interaction and when it was stored, for `_publish`."""
+    hops: dict[str, str] = {}
+    received = (call.message.headers or {}).get(subjects.RECEIVED_HEADER)
+    if received:
+      hops[subjects.RECEIVED_HEADER] = received
+    metadata = getattr(call.message, "metadata", None)
+    stored = getattr(metadata, "timestamp", None)
+    if stored is not None:
+      hops[subjects.EVENT_STORED_HEADER] = f"{stored.timestamp():.3f}"
+    token = _HOPS.set(tuple(hops.items()))
+    try:
+      await next()
+    finally:
+      _HOPS.reset(token)
+
   async def _publish(self, flow: Flow) -> None:
     payload = flow.payload
     route = self.route(payload)
@@ -233,6 +258,6 @@ class InteractionRouter(Service):
       subjects.interaction(route),
       json.dumps(payload, separators=(",", ":")).encode(),
       stream=subjects.INTERACTIONS_STREAM,
-      headers={"Nats-Msg-Id": str(payload.get("id"))},
+      headers={"Nats-Msg-Id": str(payload.get("id")), **dict(_HOPS.get())},
       msg_ttl=RESPONSE_DEADLINE,
     )

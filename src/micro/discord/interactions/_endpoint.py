@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 from contextlib import suppress
 from typing import Any
 
@@ -108,6 +109,7 @@ class InteractionEndpoint(Component):
 
   async def receive(self, request: Any) -> Any:
     """Handle one POST from Discord: verify, publish, and wait for the first response."""
+    received = time.time()
     from starlette.responses import JSONResponse, Response
 
     body = await request.body()
@@ -140,6 +142,7 @@ class InteractionEndpoint(Component):
           subjects.dispatch("INTERACTION_CREATE", guild),
           json.dumps({**payload, REPLY_KEY: subject}, separators=(",", ":")).encode(),
           stream=subjects.EVENTS_STREAM,
+          headers={subjects.RECEIVED_HEADER: f"{received:.3f}"},
         )
         # No timeout of our own: Discord abandons the request after its 3 seconds,
         # and we stop waiting when it hangs up.

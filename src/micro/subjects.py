@@ -101,6 +101,13 @@ def dispatch_filter(name: str = "*", guild_id: int | str | None = "*") -> str:
 
 
 BEFORE_HEADER = "Micro-Before"
+
+RECEIVED_HEADER = "Micro-Received"
+"""When the Gateway (or the HTTP endpoint) got an interaction from Discord, Unix seconds."""
+
+EVENT_STORED_HEADER = "Micro-Event-Stored"
+"""When an interaction's dispatch was stored in the events stream, Unix seconds (the router
+passes it on, so a late interaction can say where its time went)."""
 """On a dispatch that changed or removed an object the shard held: that object as it was."""
 
 
@@ -174,6 +181,7 @@ __all__ = (
   "BEFORE_HEADER",
   "CONFIG_BUCKET",
   "EVENTS_STREAM",
+  "EVENT_STORED_HEADER",
   "EVENT_STREAM_SUBJECTS",
   "GATEWAY_BUCKET",
   "HTTP_GLOBAL_LIMIT",
@@ -183,6 +191,7 @@ __all__ = (
   "PAYLOADS_BUCKET",
   "PREFIX",
   "PRESENCE_BUCKET",
+  "RECEIVED_HEADER",
   "RETIRED_EVENT_STREAM_SUBJECTS",
   "SHARDS_BUCKET",
   "STATE_BUCKET",
