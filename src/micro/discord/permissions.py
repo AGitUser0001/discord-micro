@@ -110,8 +110,13 @@ class Permissions(IntFlag):
     return core_schema.no_info_before_validator_function(
       cls.parse,
       core_schema.is_instance_schema(cls),
+      # What it accepts as JSON, so a model holding permissions has a JSON schema (an
+      # event's schema is hashed when a service starts listening to it).
+      json_schema_input_schema=core_schema.union_schema(
+        [core_schema.str_schema(), core_schema.int_schema()]
+      ),
       serialization=core_schema.plain_serializer_function_ser_schema(
-        lambda value: str(int(value))
+        lambda value: str(int(value)), return_schema=core_schema.str_schema()
       ),
     )
 

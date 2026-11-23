@@ -996,6 +996,27 @@ async def ui_limits_scenarios() -> None:
 
 async def helper_scenarios() -> None:
   print("helpers: permissions, error classes, text, picture links")
+  from micro.discord import objects as discord_objects
+  from micro.schemas import events
+
+  unhashable = []
+  for event_name in events.__all__:
+    try:
+      _ = getattr(events, event_name).hash
+    except Exception as problem:  # a payload model without a JSON schema
+      unhashable.append(f"{event_name}: {problem}")
+  for view in (discord_objects.Guild, discord_objects.Role, discord_objects.Member):
+    for mode in ("validation", "serialization"):
+      try:
+        view.model_json_schema(mode=mode)
+      except Exception as problem:
+        unhashable.append(f"{view.__name__} ({mode}): {problem}")
+  check(
+    "every event's schema hashes (a service listening to it can start), and Discord's"
+    " objects have JSON schemas",
+    not unhashable,
+    unhashable,
+  )
   from datetime import UTC, datetime
 
   from micro.discord import DiscordAPIError, DiscordServerError, NotFound

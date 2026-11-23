@@ -63,7 +63,7 @@ class Asset:
       _validated,
       json_schema_input_schema=core_schema.str_schema(),
       serialization=core_schema.plain_serializer_function_ser_schema(
-        lambda asset: asset.key
+        lambda asset: asset.key, return_schema=core_schema.str_schema()
       ),
     )
 
